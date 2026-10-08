@@ -594,6 +594,10 @@ class App:
                 except queue.Empty:
                     return True
             t = item[1].t_ns if item[0] == "dg" else item[1]
+            if self.past_end(t):
+                self.held = None
+                self.quit, self.quit_why = True, "seconds"
+                return False
             wait = self.pacer.due(t)
             if wait > 0:
                 self.held = item
@@ -607,6 +611,13 @@ class App:
                 self.handle_dg(item[1])
             else:
                 self.handle_event(*item[1:])
+
+    def past_end(self, t_ns):
+        """Replay with --seconds: the recording time `t_ns` is beyond the bound."""
+        a = self.a
+        if self.live or not a.seconds or not self.play_t0:
+            return False
+        return t_ns - self.play_t0 > a.seconds * NS
 
     def tick(self, dry):
         """Clock-driven work, done when the input queue is drained."""

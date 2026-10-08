@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 
+import pytest
 from make_sample import build
 
 from stvwatch import events as ge
@@ -68,6 +69,16 @@ def test_replay_of_the_sample_gives_the_expected_events(tmp_path):
     assert (session / "events.jsonl").read_text(encoding="utf-8").splitlines() == lines
 
 
+def test_replay_seconds_bound_what_is_shown_even_at_max_speed(tmp_path):
+    """The sample's first datagram is at 0.100 s and its last line at 6.100 s:
+    with --seconds 1 nothing after 1.100 s is shown, and the run says why it
+    ended."""
+    args = ("--speed", "0", "--seconds", "1", "--json", "--events", "all")
+    lines = [json.loads(ln) for ln in replay(tmp_path, *args)]
+    shown = max(r["t_utc"] for r in lines if r["type"] not in ("play", "done"))
+    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "seconds")
+
+
 def check(value, schema, where="$"):
     """The subset of JSON Schema the event schema uses."""
     errors = []
@@ -81,13 +92,15 @@ def check(value, schema, where="$"):
         ok = True
     if not ok:
         return [f"{where}: {value!r} is not {t}"]
+    if "const" in schema and value != schema["const"]:
+        errors.append(f"{where}: {value!r} is not {schema['const']!r}")
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{where}: {value!r} not in enum")
     if "pattern" in schema and not re.search(schema["pattern"], value):
         errors.append(f"{where}: {value!r} does not match {schema['pattern']}")
     if "minimum" in schema and value < schema["minimum"]:
         errors.append(f"{where}: {value!r} below {schema['minimum']}")
-    if t == "object":
+    if isinstance(value, dict):
         props = schema.get("properties", {})
         errors += [f"{where}: {k} missing" for k in schema.get("required", []) if k not in value]
         for k, v in value.items():
@@ -95,6 +108,14 @@ def check(value, schema, where="$"):
                 errors += check(v, props[k], f"{where}.{k}")
             elif schema.get("additionalProperties") is False:
                 errors.append(f"{where}: unexpected {k}")
+        for sub in schema.get("allOf", []):
+            if not check(value, sub["if"], where):
+                errors += check(value, sub["then"], where)
+        for k, sub in schema.get("dependentSchemas", {}).items():
+            if k in value and check(value, sub, where):
+                errors.append(f"{where}: {k} on {value.get('type')!r}")
+        for k, need in schema.get("dependentRequired", {}).items():
+            errors += [f"{where}: {k} without {n}" for n in need if k in value and n not in value]
     return errors
 
 
@@ -120,6 +141,31 @@ def test_every_line_matches_the_schema(tmp_path):
         "$.nick: 1 is not string",
         "$: unexpected z",
     ]
+
+
+CHAT = {
+    "t_utc": "2025-10-07T09:40:00.200Z",
+    "type": "chat",
+    "steamid64": 0,
+    "nick": "a",
+    "text": "",
+}
+DEATH = dict(CHAT, type="death", weapon="slam", userid=2, attacker=3)
+
+
+@pytest.mark.parametrize(
+    "line, errors",
+    [
+        (dict(CHAT, channel="all", ent=1), []),
+        (CHAT, ["$: channel missing", "$: ent missing"]),
+        (dict(CHAT, channel="all", ent=1, weapon="slam"), ["$: weapon on 'chat'"]),
+        (dict(DEATH, victim="bob", victim_steamid64=0), []),
+        (dict(DEATH, victim="bob"), ["$: victim without victim_steamid64"]),
+    ],
+)
+def test_the_schema_holds_each_type_to_its_own_fields(line, errors):
+    with open(SCHEMA, encoding="utf-8") as f:
+        assert check(line, json.load(f)) == errors
 
 
 if __name__ == "__main__":

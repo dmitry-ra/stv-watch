@@ -35,9 +35,20 @@ def disconnect_reason(packet):
 
 class FakeRelay:
     def __init__(
-        self, version="10889068", max_players=8, interval=0.02, cut_first_after=None, reject=None
+        self,
+        version="10889068",
+        max_players=8,
+        interval=0.02,
+        cut_first_after=None,
+        reject=None,
+        bodies=(),
+        early=False,
+        accept=True,
     ):
         self.version = version
+        self.bodies = list(bodies)  # reliable message streams for each connection
+        self.early = early  # its first packet goes out before the accept
+        self.accept = accept  # False: no 'B' at all, the stream alone
         self.reject = reject  # connect refused with this reason, as the engine does
         self.max_players = max_players
         self.interval = interval
@@ -130,15 +141,20 @@ class FakeRelay:
                 challenge = struct.unpack_from("<I", data, 13)[0]
                 with self.lock:
                     self.connections += 1
-                    self.clients[addr] = {
-                        "relay": simlink.Relay(challenge, []),
+                    c = self.clients[addr] = {
+                        "relay": simlink.Relay(challenge, self.bodies),
                         "sent": 0,
                         "gone": False,
                         "n": self.connections,
                     }
-                self.sock.sendto(
-                    b"\xff\xff\xff\xff" + bytes([wire.S2C_CONNECTION]) + b"\0" * 4, addr
-                )
+                    if self.early:
+                        c["sent"] += 1
+                        for d in c["relay"].packet():
+                            self.sock.sendto(d, addr)
+                if self.accept:
+                    self.sock.sendto(
+                        b"\xff\xff\xff\xff" + bytes([wire.S2C_CONNECTION]) + b"\0" * 4, addr
+                    )
             return
         c = self.clients.get(addr)
         if c is None:

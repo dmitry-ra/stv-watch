@@ -7,10 +7,10 @@ types exist. Both store the raw datagram before any parsing, so a recording is
 the complete input of everything after the socket.
 
 Session boundaries matter to reassembly state (a split group or a reliable
-transfer never spans a fresh handshake): `.tvd` marks them with SESSION_START /
-RECONNECT events; `.hcap` has no events, so there the inbound connectionless
-accept 'B' is taken as the boundary. One source per format, so one handshake
-counts once.
+transfer never spans a fresh handshake): in `.tvd` a connection starts at our
+connect request (see Boundaries); `.hcap` has no outbound records, so there the
+inbound connectionless accept 'B' is taken as the boundary. One source per
+format, so one handshake counts once.
 """
 
 import os
@@ -22,6 +22,7 @@ TVD_MAGIC = b"TVDUMP\n"
 HCAP_MAGIC = b"HLTVCAP\n"
 
 TVD_DATAGRAM_IN = 0x01
+TVD_DATAGRAM_OUT = 0x02
 TVD_SESSION_START = 0x10
 TVD_RECONNECT = 0x13
 HCAP_DIR_IN = 0x01
@@ -30,6 +31,7 @@ RECORD_HEAD = struct.Struct("<QBI")
 
 OOB = b"\xff\xff\xff\xff"
 S2C_CONNECTION = ord("B")
+C2S_CONNECT = OOB + b"k"
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,24 @@ class Datagram:
 
 class RecordingError(Exception):
     pass
+
+
+class Boundaries:
+    """Feed every non-inbound `.tvd` record in file order; true where a new
+    connection starts. Our connect request starts it: the relay sends nothing
+    of that connection before it, while SESSION_START / RECONNECT are written
+    when the handshake has returned, behind the relay's first in-band datagram
+    if it streamed before its accept. A recording without connect requests
+    (a synthetic one) has only the markers to go by."""
+
+    def __init__(self):
+        self.by_connect = False
+
+    def __call__(self, rtype, data):
+        if rtype == TVD_DATAGRAM_OUT and data[:5] == C2S_CONNECT:
+            self.by_connect = True
+            return True
+        return rtype in (TVD_SESSION_START, TVD_RECONNECT) and not self.by_connect
 
 
 def _open(path):
@@ -94,6 +114,7 @@ class Recording:
         session = 0
         boundary_pending = False
         is_tvd = self.kind == "tvd"
+        boundary = Boundaries()
         with open(self.path, "rb", buffering=1 << 20) as f:
             f.seek(self._data_offset)
             read = self._follow_read(f) if self.follow else f.read
@@ -113,9 +134,8 @@ class Recording:
                     return
                 if rtype != TVD_DATAGRAM_IN and self.on_event is not None:
                     self.on_event(t_ns, rtype, data)
-                if is_tvd and rtype in (TVD_SESSION_START, TVD_RECONNECT):
+                if is_tvd and rtype != TVD_DATAGRAM_IN and boundary(rtype, data):
                     boundary_pending = True
-                    continue
                 if rtype != TVD_DATAGRAM_IN:  # same value in both formats
                     continue
                 if not is_tvd and len(data) > 4 and data[:4] == OOB and data[4] == S2C_CONNECTION:

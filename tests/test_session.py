@@ -11,8 +11,11 @@ them.
 import os
 import struct
 
+import pytest
+
 from stvwatch.net import messages, netchan, supervisor, wire
 from stvwatch.net import session as sess
+from stvwatch.net import split as sp
 
 
 class FakeSock:
@@ -320,6 +323,30 @@ def test_split_parts_are_joined_and_parsed_in_any_order():
     s.feed(parts[1])
     assert s.in_seq == 9
     assert s.broke[0] == sess.BREAK_DISCONNECT
+
+
+@pytest.mark.parametrize("count, outcome", [(8, "joined"), (9, [sp.OVERSIZE] * 9)])
+def test_a_split_group_is_judged_by_its_declared_size_before_a_part_is_kept(count, outcome):
+    """Parts of an eighth of the cap: eight make the cap and are joined; nine
+    declare more, and no part of them is held or joined."""
+    r = sp.SplitReassembler()
+    size = sp.MAX_JOINED // 8
+    head = struct.Struct("<iiBBH")
+    got = [
+        r.feed(head.pack(wire.MARK_SPLIT, 1, count, n, size) + bytes(size), 0, n)
+        for n in range(count)
+    ]
+    held = sum(len(p) for g in r.open.values() for _i, p in g.parts.values())
+    done = "joined" if got[-1] is not None else [r.fates.get(n) for n in range(count)]
+    assert (done, held) == (outcome, 0)
+
+
+def test_open_split_groups_are_capped_and_the_oldest_gives_way():
+    r = sp.SplitReassembler()
+    head = struct.Struct("<iiBBH")
+    for gid in range(sp.MAX_OPEN + 1):
+        r.feed(head.pack(wire.MARK_SPLIT, gid, 2, 0, 100) + bytes(100), gid, gid)
+    assert (sorted(r.open), r.fates) == (list(range(1, sp.MAX_OPEN + 1)), {0: sp.EVICTED})
 
 
 def test_ones_padded_tail_after_unaligned_reliable_is_a_clean_end():

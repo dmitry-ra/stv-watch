@@ -18,6 +18,12 @@ classify path.
 Several groups may be open at once: the relay paces parts (~160 ms apart
 measured), so in-band datagrams and other groups can interleave. Every part's
 fate is recorded, which is what the loss analysis needs.
+
+What a group may hold is bounded by its header, before a byte is kept: a group
+whose declared size (count x split size) exceeds MAX_JOINED is refused part by
+part, and at most MAX_OPEN groups are open (the oldest gives way), so the parts
+held never exceed MAX_OPEN x MAX_JOINED whatever the relay declares or sends.
+Measured on 53 recordings: at most 2 groups open, 28704 bytes declared.
 """
 
 import struct
@@ -29,6 +35,7 @@ HEADER = struct.Struct("<iiBBH")
 HEADER_SIZE = HEADER.size
 MAX_PARTS = 128  # u8 count; anything near it is corrupt anyway
 MAX_JOINED = 1 << 18  # joined packet cap; a netchannel packet is ~1-30 KB
+MAX_OPEN = 8
 
 # Part fates.
 USED = "split_used"
@@ -39,6 +46,8 @@ SESSION_END = "split_orphan_session_end"
 EOF = "split_orphan_eof"
 SIZE_MISMATCH = "split_size_mismatch"
 SUPERSEDED = "split_superseded"
+OVERSIZE = "split_oversize"
+EVICTED = "split_evicted"
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,9 @@ class SplitReassembler:
             self._set_fate(index, BAD_HEADER)
             return None
         gid, count, number, split_size = hdr
+        if count * split_size > MAX_JOINED:
+            self._set_fate(index, OVERSIZE)
+            return None
         payload = data[HEADER_SIZE:]
         g = self.open.get(gid)
         if g is not None and (g.count != count or g.split_size != split_size):
@@ -129,6 +141,8 @@ class SplitReassembler:
             self._drop_group(gid, SUPERSEDED)
             g = None
         if g is None:
+            if len(self.open) >= MAX_OPEN:
+                self._drop_group(next(iter(self.open)), EVICTED)
             g = self.open[gid] = _Group(count, split_size, t_ns)
             self.counters["groups_started"] += 1
             self.max_open = max(self.max_open, len(self.open))
@@ -149,7 +163,4 @@ class SplitReassembler:
         self.counters[USED] += count
         self.counters["groups_completed"] += 1
         self.max_span_ns = max(self.max_span_ns, t_ns - g.first_t_ns)
-        if len(joined) > MAX_JOINED:
-            self.counters["groups_oversize"] += 1
-            return None
         return Joined(index, t_ns, joined, gid, indices, g.first_t_ns)

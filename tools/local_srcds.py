@@ -124,6 +124,10 @@ class LocalSrcds:
         self.proc.stdin.flush()
 
     def _descendants(self):
+        """pidfds of every process under ours. A pidfd names one process, so
+        a signal sent through it after that process is gone fails instead of
+        reaching whoever got the PID next. (A process group would not do:
+        `script` puts srcds in a session of its own.)"""
         out, todo = [], [self.proc.pid]
         while todo:
             pid = todo.pop()
@@ -132,9 +136,23 @@ class LocalSrcds:
                     kids = [int(x) for x in f.read().split()]
             except OSError:
                 kids = []
-            out += kids
-            todo += kids
+            for kid in kids:
+                try:
+                    out.append(os.pidfd_open(kid))
+                except ProcessLookupError:
+                    continue
+                todo.append(kid)
         return out
+
+    @staticmethod
+    def _kill_all(fds):
+        for fd in fds:
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                os.close(fd)
 
     def stop(self):
         if self.proc is None:
@@ -151,11 +169,7 @@ class LocalSrcds:
                 except subprocess.TimeoutExpired:
                     self.proc.kill()
                     self.proc.wait(10)
-        for pid in kids:
-            try:
-                os.kill(pid, 9)
-            except ProcessLookupError:
-                pass
+        self._kill_all(kids)
         self._log.close()
         self.proc = None
 
@@ -163,11 +177,8 @@ class LocalSrcds:
         """SIGKILL, as a crash would: no net_Disconnect reaches clients."""
         if self.proc is None:
             return
-        for pid in self._descendants() + [self.proc.pid]:
-            try:
-                os.kill(pid, 9)
-            except ProcessLookupError:
-                pass
+        self._kill_all(self._descendants())
+        self.proc.kill()
         self.proc.wait(10)
         self._log.close()
         self.proc = None

@@ -42,7 +42,7 @@ so everything before the stop was sized correctly.
 from dataclasses import dataclass
 
 from ..net import receiver, wire
-from .recording import TVD_RECONNECT, TVD_SESSION_START
+from .recording import Boundaries
 
 SVC_VOICEDATA = 15
 DATAGRAM_OUT = 0x02  # same record type in .tvd and .hcap
@@ -99,6 +99,7 @@ class Framer:
         self.fates = []
         self.counters = self.rx.counters
         self.session = None
+        self.boundary = Boundaries()
         self.cur_t_ns = self.cur_session = 0
         self.cur_packet = None
         self.cur_stream = None
@@ -121,14 +122,15 @@ class Framer:
 
     def observe(self, t_ns, rtype, data):
         """A non-inbound record of the recording, in file order."""
-        if rtype == DATAGRAM_OUT:
-            self.rx.observe_outbound(data)
-        elif rtype in (TVD_SESSION_START, TVD_RECONNECT) and self.session is not None:
+        if self.boundary(rtype, data):
             # Closed here, not at the next inbound datagram: our connected
-            # reply is written between the marker and the relay's first
-            # packet, and it is the new session's first ack.
-            self.rx.end_session()
-            self.session = None
+            # reply is written before the relay's first packet, and it is
+            # the new session's first ack.
+            if self.session is not None:
+                self.rx.end_session()
+                self.session = None
+        elif rtype == DATAGRAM_OUT:
+            self.rx.observe_outbound(data)
 
     def _fate(self, index, session, fate, via_split, parts=()):
         self.counters[fate] += 1

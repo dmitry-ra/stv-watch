@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dmitry-ra/stv-watch/docs/events.schema.json",
   "title": "stv-watch event line",
-  "description": "One line of `stv-watch --json` output and of a session's events.jsonl. Field order is as listed: t_utc, t_local (only with --tz), type, steamid64, nick, text, then the extra fields of the type. Which extra fields each type carries is listed in docs/session-files.md; a type never carries the extras of another.",
+  "description": "One line of `stv-watch --json` output and of a session's events.jsonl. Field order is as listed: t_utc, t_local (only with --tz), type, steamid64, nick, text, then the extra fields of the type. Which extra fields each type carries is listed in docs/session-files.md and enforced here: `allOf` names the fields a type always has, `dependentSchemas` the types a field may appear on, `dependentRequired` the fields that come together.",
   "type": "object",
   "required": ["t_utc", "type", "steamid64", "nick", "text"],
   "additionalProperties": false,
@@ -58,5 +58,44 @@
     "seq_from": {"description": "net, --debug only: highest sequence number before the gap.", "type": "integer"},
     "seq_to": {"description": "net, --debug only: sequence number after the gap.", "type": "integer"},
     "lost": {"description": "net, --debug only: sequence numbers lost in the gap (not declared choked).", "type": "integer"}
+  },
+  "allOf": [
+    {"if": {"properties": {"type": {"const": "chat"}}}, "then": {"required": ["channel", "ent"]}},
+    {"if": {"properties": {"type": {"const": "connect"}}}, "then": {"required": ["userid"]}},
+    {"if": {"properties": {"type": {"const": "leave"}}}, "then": {"required": ["userid", "networkid", "bot"]}},
+    {"if": {"properties": {"type": {"const": "death"}}}, "then": {"required": ["weapon", "userid", "attacker"]}},
+    {"if": {"properties": {"type": {"const": "team"}}}, "then": {"required": ["team", "oldteam", "userid"]}},
+    {"if": {"properties": {"type": {"const": "name"}}}, "then": {"required": ["old", "userid"]}},
+    {"if": {"properties": {"type": {"enum": ["server", "sourcemod"]}}}, "then": {"required": ["via"]}}
+  ],
+  "dependentSchemas": {
+    "channel": {"properties": {"type": {"const": "chat"}}},
+    "ent": {"properties": {"type": {"const": "chat"}}},
+    "userid": {"properties": {"type": {"enum": ["connect", "leave", "death", "team", "name"]}}},
+    "networkid": {"properties": {"type": {"const": "leave"}}},
+    "bot": {"properties": {"type": {"const": "leave"}}},
+    "weapon": {"properties": {"type": {"const": "death"}}},
+    "attacker": {"properties": {"type": {"const": "death"}}},
+    "victim": {"properties": {"type": {"const": "death"}}},
+    "victim_steamid64": {"properties": {"type": {"const": "death"}}},
+    "team": {"properties": {"type": {"const": "team"}}},
+    "oldteam": {"properties": {"type": {"const": "team"}}},
+    "old": {"properties": {"type": {"const": "name"}}},
+    "via": {"properties": {"type": {"enum": ["server", "sourcemod"]}}},
+    "dest": {"properties": {"type": {"const": "server"}}},
+    "cvar": {"properties": {"type": {"const": "server"}}},
+    "value": {"properties": {"type": {"const": "server"}}},
+    "seq_from": {"properties": {"type": {"const": "net"}}},
+    "seq_to": {"properties": {"type": {"const": "net"}}},
+    "lost": {"properties": {"type": {"const": "net"}}}
+  },
+  "dependentRequired": {
+    "victim": ["victim_steamid64"],
+    "victim_steamid64": ["victim"],
+    "cvar": ["value"],
+    "value": ["cvar"],
+    "seq_from": ["seq_to", "lost"],
+    "seq_to": ["seq_from", "lost"],
+    "lost": ["seq_from", "seq_to"]
   }
 }

@@ -17,11 +17,14 @@ from helpers import (
     CHALLENGE,
     T0,
     account,
+    body,
     chat,
+    chat_bytes,
     packet,
     reliable_packet,
     steamid64,
     table_update,
+    usermessage,
     voice_payload,
     write_recording,
 )
@@ -31,6 +34,7 @@ from stvwatch.app import App
 from stvwatch.cli import default_out, parse_args
 from stvwatch.net import dump, netchan, wire
 from stvwatch.source import Pacer
+from stvwatch.stream import streamevents as se
 from stvwatch.stream.userinfo import STEAMID64_BASE, scan_players
 
 CREATE, UPDATE = ge.STRING_TABLE_CREATE, ge.STRING_TABLE_UPDATE
@@ -467,6 +471,50 @@ def test_a_resent_first_packet_of_a_new_session_is_one_feed_line(tmp_path):
     resent_first_packet_of_session_2(rec)
     feed = replay_lines(rec, tmp_path / "out", "--events", "chat")
     assert [ln.split("\t", 2)[2] for ln in feed if "\tchat  " in ln] == ["chat  nick: hello"]
+
+
+def short_message(name, head, strings):
+    """A user message that ends exactly at its declared length but names
+    fewer parameters than its stock format uses."""
+
+    def fill(b):
+        for byte in head[:-1]:
+            b.write_byte(byte)
+        b.write_string(head[-1])
+        for p in strings:
+            b.write_string(p)
+
+    w = wire.BitWriter()
+    usermessage(w, se.USER_MESSAGES.index(name), body(fill))
+    return w.get_bytes() + b"\x00"
+
+
+@pytest.mark.parametrize(
+    "name, head, strings",
+    [
+        ("SayText2", (1, 1, "HL2MP_Chat_All"), []),
+        ("SayText2", (1, 1, "HL2MP_Chat_All"), ["nick"]),
+        ("TextMsg", (3, "#Game_connected"), []),
+    ],
+)
+def test_a_stock_message_short_of_parameters_is_a_misparse_and_the_feed_goes_on(
+    tmp_path, name, head, strings
+):
+    rec = str(tmp_path / "r.tvd")
+    write_recording(
+        rec,
+        [
+            (T0, reliable_packet(1, short_message(name, head, strings))),
+            (T0 + 10**9, reliable_packet(2, chat_bytes("nick", "after"), sub=1)),
+        ],
+    )
+    a = parse_args(["--replay", rec, "--speed", "0", "--monitor", "--out", str(tmp_path / "o")])
+    app = App(a)
+    assert (app.run(), app.game.collector.usermsg_misparse, app.game.counts) == (
+        0,
+        {name: 1},
+        {"chat": 1},
+    )
 
 
 @pytest.mark.parametrize("debug", [False, True])

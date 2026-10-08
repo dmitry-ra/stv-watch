@@ -75,6 +75,11 @@ def cmd_run(a):
     return 0
 
 
+def shown(gaps):
+    """(at, gap) seconds as printed; the comparisons use the raw values."""
+    return [(round(at, 1), round(gap, 3)) for at, gap in gaps]
+
+
 def cmd_read(a):
     r = dumpfmt.DumpReader(a.path)
     counts, sessions, breaks, signons = {}, 0, [], []
@@ -90,7 +95,7 @@ def cmd_read(a):
             if prev_in is not None:
                 gap = (t_ns - prev_in) / 1e9
                 if gap > a.gap_report:
-                    gaps.append((round((t_ns - first) / 1e9, 1), round(gap, 2)))
+                    gaps.append(((t_ns - first) / 1e9, gap))
             prev_in = t_ns
         elif rtype in dumpfmt.EVENT_TYPES:
             try:
@@ -120,7 +125,7 @@ def cmd_read(a):
     for rel, cause, detail in breaks:
         print(f"  break @{rel}s  {cause}: {detail}")
     if gaps:
-        print(f"inbound gaps > {a.gap_report}s: {gaps[:20]}")
+        print(f"inbound gaps > {a.gap_report}s: {shown(gaps[:20])}")
 
     rc = 0
     if a.assert_full and not any(s == wire.SIGNON_FULL for _, s in signons):
@@ -132,7 +137,7 @@ def cmd_read(a):
     if a.assert_no_gaps_over is not None:
         big = [g for g in gaps if g[1] > a.assert_no_gaps_over]
         if big:
-            print(f"ASSERT FAILED: gaps over {a.assert_no_gaps_over}s: {big[:10]}")
+            print(f"ASSERT FAILED: gaps over {a.assert_no_gaps_over}s: {shown(big[:10])}")
             rc = 1
     return rc
 

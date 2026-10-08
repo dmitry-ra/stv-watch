@@ -110,16 +110,30 @@ def _strings_to_end(b, limit):
     return out
 
 
+def _need(params, n, what):
+    if len(params) < n:
+        raise Misparse(f"{what} with {len(params)} of {n} parameters")
+    return params
+
+
 def decode_usermessage(name, b):
-    """-> dict of fields for the message types that carry text, else None."""
+    """-> dict of fields for the message types that carry text, else None.
+    The stock formats are checked for the parameters they name: a shorter
+    message that still ends at its length is a misparse, not a chat line."""
     if name == "SayText":
         return {"ent": b.ubit(8), "text": b.string(), "chat": b.ubit(8)}
     if name == "SayText2":
         ent, chat, fmt = b.ubit(8), b.ubit(8), b.string()
-        return {"ent": ent, "chat": chat, "fmt": fmt, "params": _strings_to_end(b, 4)}
+        params = _strings_to_end(b, 4)
+        if fmt.startswith("HL2MP_Chat"):
+            _need(params, 2, fmt)
+        return {"ent": ent, "chat": chat, "fmt": fmt, "params": params}
     if name == "TextMsg":
         dest, msg = b.ubit(8), b.string()
-        return {"dest": dest, "msg": msg, "params": _strings_to_end(b, 4)}
+        params = _strings_to_end(b, 4)
+        if msg == "#Game_connected":
+            _need(params, 1, msg)
+        return {"dest": dest, "msg": msg, "params": params}
     if name == "HudMsg":
         f = {"channel": b.ubit(8)}
         b.pos += 2 * 32 + 9 * 8 + 4 * 32  # x y, two colours, effect, times

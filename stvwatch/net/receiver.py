@@ -102,10 +102,12 @@ class _Delivered:
 
 
 class Receiver:
-    """Per connection. `infer_connections`: a header challenge change starts
-    a new connection (recordings without session markers); the live session
-    owns exactly one connection, leaves it off and sets `challenge`: a packet
-    whose header carries another one is not ours and touches no state."""
+    """Per connection. The live session owns exactly one connection, leaves
+    `infer_connections` off and sets `challenge`: a packet whose header
+    carries another one is not ours and touches no state. Offline the same
+    rule holds once our own packets of the connection are seen (the challenge
+    they carry); before that, with `infer_connections`, a header challenge
+    change starts a new connection (recordings without session markers)."""
 
     def __init__(
         self, split_timeout_ns=5_000_000_000, reassemble_splits=True, infer_connections=False
@@ -126,6 +128,7 @@ class Receiver:
         self.replay_bit = True
         self.reasm = reliable.Reassembler()
         self.out_bits = None  # our last sent in_reliable_state
+        self.out_challenge = None  # the challenge our sent packets carry
         self.out_ack = 0
         self.delivered = {}  # subchannel -> _Delivered
 
@@ -147,6 +150,8 @@ class Receiver:
             h = netchan.decode_header(packet)
         except netchan.BadPacket:
             return
+        if h.challenge is not None:
+            self.out_challenge = h.challenge
         bits = h.reliable_state
         for sub, d in self.delivered.items():
             if d.flipped is None and h.sequence_ack >= d.seq:
@@ -201,15 +206,15 @@ class Receiver:
             pkt.fate = "bad_header"
             return pkt
         pkt.header, pkt.payload = header, payload
-        if header.challenge is not None and header.challenge != self.challenge:
-            if self.infer_connections:
-                if self.challenge is not None:
-                    self.counters["challenge_change"] += 1
-                    self.reset()
-                self.challenge = header.challenge
-            elif self.challenge is not None:
-                pkt.fate = "challenge_mismatch"
-                return pkt
+        ours = self.out_challenge if self.infer_connections else self.challenge
+        if None not in (header.challenge, ours) and header.challenge != ours:
+            pkt.fate = "challenge_mismatch"
+            return pkt
+        if self.infer_connections and header.challenge not in (None, self.challenge):
+            if self.challenge is not None:
+                self.counters["challenge_change"] += 1
+                self.reset()
+            self.challenge = header.challenge
         pkt.prev_seq = self.in_seq
         if header.sequence <= self.in_seq:
             pkt.fate = "stale_sequence"

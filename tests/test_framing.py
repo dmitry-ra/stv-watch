@@ -261,14 +261,25 @@ def test_first_packet_of_a_new_session_is_judged_by_its_connected_reply(tmp_path
     assert got == ["hello"]
 
 
-def test_challenge_change_without_markers_also_resets():
+def test_challenge_change_without_markers_or_our_packets_also_resets():
+    """An .hcap holds the relay's datagrams only: a new challenge is the only
+    sign of a new connection, whose sequence starts over."""
+    fr = Framer()
+    fr.feed(Datagram(0, 0, 0, reliable_packet(10, X)))
+    fr.feed(Datagram(1, 1, 0, reliable_packet(2, X, challenge=0x55667788)))
+    assert [f.fate for f in fr.fates] == ["ok", "ok"]
+
+
+def test_a_packet_under_a_challenge_our_packets_do_not_carry_touches_no_state():
+    """As in the live session: once our own packets name the connection, a
+    datagram under another challenge is not the relay's, whatever its
+    sequence (the live client dropped it; the dump still holds it)."""
     fr = Framer()
     fr.observe(0, 2, ack(1, 0))
     fr.feed(Datagram(0, 0, 0, reliable_packet(10, X)))
-    fr.observe(0, 2, ack(2, 10))  # unflipped
-    fr.feed(Datagram(1, 1, 0, reliable_packet(11, X, challenge=0x55667788)))
-    assert [f.fate for f in fr.fates] == ["ok", "ok"]
-    assert fr.counters["challenge_change"] == 1
+    fr.feed(Datagram(1, 1, 0, packet(1_000_000, challenge=0x55667788)))
+    fr.feed(Datagram(2, 2, 0, reliable_packet(11, X, sub=1)))
+    assert [f.fate for f in fr.fates] == ["ok", "challenge_mismatch", "ok"]
 
 
 def test_resend_lost_in_split_then_resent_plain_is_still_skipped():
