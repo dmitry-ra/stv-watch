@@ -32,7 +32,8 @@ sent), `challenge_change` = new connections detected from the header when the
 recording has no marker, `resend_skipped` / `resend_mismatch`.
 
 Our own outbound packets are needed to recognize resends: feed the
-recording's non-inbound records to `observe` in file order (`frame()` does).
+recording's non-inbound records (the session markers too) to `observe` in
+file order (`frame()` does).
 
 Messages before a stop point are still handed over: the walk is sequential,
 so everything before the stop was sized correctly.
@@ -41,6 +42,7 @@ so everything before the stop was sized correctly.
 from dataclasses import dataclass
 
 from ..net import receiver, wire
+from .recording import TVD_RECONNECT, TVD_SESSION_START
 
 SVC_VOICEDATA = 15
 DATAGRAM_OUT = 0x02  # same record type in .tvd and .hcap
@@ -121,6 +123,12 @@ class Framer:
         """A non-inbound record of the recording, in file order."""
         if rtype == DATAGRAM_OUT:
             self.rx.observe_outbound(data)
+        elif rtype in (TVD_SESSION_START, TVD_RECONNECT) and self.session is not None:
+            # Closed here, not at the next inbound datagram: our connected
+            # reply is written between the marker and the relay's first
+            # packet, and it is the new session's first ack.
+            self.rx.end_session()
+            self.session = None
 
     def _fate(self, index, session, fate, via_split, parts=()):
         self.counters[fate] += 1

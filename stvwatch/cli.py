@@ -22,6 +22,17 @@ def default_out():
     return os.path.join(base, "stv-watch", "sessions")
 
 
+def relay_addr(text, ap):
+    """IP:PORT -> the same with the port in canonical form. IPv4 or a host name
+    only: the client's sockets are AF_INET."""
+    host, sep, port = text.rpartition(":")
+    if not sep or not host or ":" in host:
+        ap.error(f"--relay wants IP:PORT (IPv4 or a host name), not {text!r}")
+    if not (port.isascii() and port.isdigit() and 1 <= int(port) <= 65535):
+        ap.error(f"--relay: the port must be a number 1-65535, not {port!r}")
+    return f"{host}:{int(port)}"
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         prog="stv-watch",
@@ -132,8 +143,8 @@ def parse_args(argv=None):
             argv[i : i + 2] = ["--events=" + argv[i + 1]]
             break
     a = ap.parse_args(argv)
-    if a.relay and (":" not in a.relay):
-        ap.error("--relay wants IP:PORT")
+    if a.relay is not None:
+        a.relay = relay_addr(a.relay, ap)
     if a.follow:
         a.replay, a.speed, a.skip = a.follow, 1.0, ""
     try:

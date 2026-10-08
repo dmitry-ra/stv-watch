@@ -5,6 +5,7 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 
 import pytest
 
@@ -297,6 +298,62 @@ def test_unanswered_connect_is_followed_by_a_disconnect():
         srv.close()
     assert got[0][4:5] == b"k"
     assert disconnect_reasons(got[1:]) == ["Disconnect by user."] * 2
+
+
+@pytest.mark.parametrize(
+    "step_s, accept_after_s, outcome",
+    [(3600.0, 0.3, "connected"), (-3600.0, None, "no accept within timeout")],
+)
+def test_a_wall_clock_step_does_not_move_the_accept_deadline(
+    monkeypatch, step_s, accept_after_s, outcome
+):
+    """Forward: the accept arriving in time is still taken. Back: an
+    unanswered connect still gives up after `timeout`, not an hour later."""
+    srv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    srv.bind(("127.0.0.1", 0))
+    srv.settimeout(5)
+
+    def serve():
+        try:
+            data, addr = srv.recvfrom(1024)
+            srv.sendto(
+                b"\xff\xff\xff\xffA"
+                + struct.pack("<I", wire.S2C_MAGICVERSION)
+                + b"\x01\x00\x00\x00"
+                + data[5:9]
+                + struct.pack("<I", 2),
+                addr,
+            )
+            srv.recvfrom(1024)
+            if accept_after_s is not None:
+                time.sleep(accept_after_s)
+                srv.sendto(b"\xff\xff\xff\xffB\0\0\0\0", addr)
+        except OSError:
+            pass
+
+    real, calls = time.time, []
+
+    def stepped():
+        calls.append(1)
+        return real() + (step_s if len(calls) > 1 else 0.0)
+
+    got = []
+
+    def attempt():
+        try:
+            handshake.connect("127.0.0.1", srv.getsockname()[1], "t", "10889068", timeout=1.0)
+            got.append("connected")
+        except handshake.HandshakeError as e:
+            got.append(str(e))
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    monkeypatch.setattr(time, "time", stepped)
+    c = threading.Thread(target=attempt, daemon=True)
+    c.start()
+    c.join(5)
+    srv.close()
+    assert got == [outcome]
 
 
 def test_reject_reason_skips_the_client_challenge():

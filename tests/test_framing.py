@@ -230,6 +230,37 @@ def test_same_region_in_a_new_session_is_new_data(tmp_path):
     assert not fr.counters["resend_skipped"]
 
 
+def resent_first_packet_of_session_2(path):
+    """Session 2 opens with our connected reply (written after SESSION_START,
+    before any inbound datagram); its first reliable packet, a chat, is not
+    flipped by our ack and comes again."""
+    c2 = 0x55667788
+    hello = [reliable_packet(n, chat_bytes("nick", "hello"), challenge=c2) for n in (1, 2)]
+    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+        for t, rtype, data in [
+            (T, dump.SESSION_START, b'{"session": 1}'),
+            (T + 1, dump.DATAGRAM_OUT, ack(1, 0)),
+            (T + 2, dump.DATAGRAM_IN, reliable_packet(10, X)),
+            (T + 3, dump.DATAGRAM_OUT, ack(2, 10, bits=1)),
+            (T + 4, dump.SESSION_START, b'{"session": 2}'),
+            (T + 5, dump.DATAGRAM_OUT, ack(1, 0, challenge=c2)),
+            (T + 6, dump.DATAGRAM_IN, hello[0]),
+            (T + 7, dump.DATAGRAM_OUT, ack(2, 1, challenge=c2)),  # unflipped
+            (T + 8, dump.DATAGRAM_IN, hello[1]),
+            (T + 9, dump.DATAGRAM_OUT, ack(3, 2, bits=1, challenge=c2)),
+        ]:
+            w.write(rtype, data, t_ns=t)
+
+
+def test_first_packet_of_a_new_session_is_judged_by_its_connected_reply(tmp_path):
+    p = str(tmp_path / "two.tvd")
+    resent_first_packet_of_session_2(p)
+    fr, got = chats_of()
+    for _ in frame(Recording(p), fr):
+        pass
+    assert got == ["hello"]
+
+
 def test_challenge_change_without_markers_also_resets():
     fr = Framer()
     fr.observe(0, 2, ack(1, 0))

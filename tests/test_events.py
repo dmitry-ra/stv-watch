@@ -460,6 +460,15 @@ def test_chat_over_a_faulty_link_is_in_the_feed_exactly_once(tmp_path, legacy):
     assert got == [f"chat  nick: line {i:02d}" for i in range(n)]
 
 
+def test_a_resent_first_packet_of_a_new_session_is_one_feed_line(tmp_path):
+    from test_framing import resent_first_packet_of_session_2
+
+    rec = str(tmp_path / "r.tvd")
+    resent_first_packet_of_session_2(rec)
+    feed = replay_lines(rec, tmp_path / "out", "--events", "chat")
+    assert [ln.split("\t", 2)[2] for ln in feed if "\tchat  " in ln] == ["chat  nick: hello"]
+
+
 @pytest.mark.parametrize("debug", [False, True])
 def test_a_lost_sequence_gap_is_one_feed_line_only_with_debug(tmp_path, debug):
     """The down link loses the relay's packets 6 and 7 (steps 5 and 6): with
@@ -735,6 +744,39 @@ def test_unknown_tz_is_a_usage_error(capsys):
     with pytest.raises(SystemExit) as e:
         parse_args(["--replay", "x.tvd", "--tz", "Mars/Olympus"])
     assert e.value.code == 2 and "unknown time zone 'Mars/Olympus'" in capsys.readouterr().err
+
+
+BAD_PORT = "stv-watch: error: --relay: the port must be a number 1-65535, not "
+BAD_ADDR = "stv-watch: error: --relay wants IP:PORT (IPv4 or a host name), not "
+
+
+@pytest.mark.parametrize(
+    "relay, outcome",
+    [
+        ("127.0.0.1:27020", "127.0.0.1:27020"),
+        ("relay.example:027015", "relay.example:27015"),
+        ("127.0.0.1:65535", "127.0.0.1:65535"),
+        ("127.0.0.1:notaport", (2, BAD_PORT + "'notaport'")),
+        ("127.0.0.1:0", (2, BAD_PORT + "'0'")),
+        ("127.0.0.1:65536", (2, BAD_PORT + "'65536'")),
+        ("127.0.0.1:70000", (2, BAD_PORT + "'70000'")),
+        ("127.0.0.1:-1", (2, BAD_PORT + "'-1'")),
+        ("127.0.0.1:\u0661\u0662", (2, BAD_PORT + "'\u0661\u0662'")),
+        ("host:", (2, BAD_PORT + "''")),
+        (":", (2, BAD_ADDR + "':'")),
+        (":27020", (2, BAD_ADDR + "':27020'")),
+        ("127.0.0.1", (2, BAD_ADDR + "'127.0.0.1'")),
+        ("::1", (2, BAD_ADDR + "'::1'")),
+        ("[::1]:27020", (2, BAD_ADDR + "'[::1]:27020'")),
+    ],
+)
+def test_relay_address_is_checked_on_the_command_line(relay, outcome, capsys):
+    """-> the canonical address, or (exit code, last line on stderr)."""
+    try:
+        got = parse_args(["--relay", relay]).relay
+    except SystemExit as e:
+        got = (e.code, capsys.readouterr().err.splitlines()[-1])
+    assert got == outcome
 
 
 def test_session_directory_defaults_to_xdg_data_home(monkeypatch, tmp_path):

@@ -104,7 +104,8 @@ class _Delivered:
 class Receiver:
     """Per connection. `infer_connections`: a header challenge change starts
     a new connection (recordings without session markers); the live session
-    owns exactly one connection and leaves it off."""
+    owns exactly one connection, leaves it off and sets `challenge`: a packet
+    whose header carries another one is not ours and touches no state."""
 
     def __init__(
         self, split_timeout_ns=5_000_000_000, reassemble_splits=True, infer_connections=False
@@ -200,11 +201,15 @@ class Receiver:
             pkt.fate = "bad_header"
             return pkt
         pkt.header, pkt.payload = header, payload
-        if self.infer_connections and header.challenge is not None:
-            if self.challenge is not None and header.challenge != self.challenge:
-                self.counters["challenge_change"] += 1
-                self.reset()
-            self.challenge = header.challenge
+        if header.challenge is not None and header.challenge != self.challenge:
+            if self.infer_connections:
+                if self.challenge is not None:
+                    self.counters["challenge_change"] += 1
+                    self.reset()
+                self.challenge = header.challenge
+            elif self.challenge is not None:
+                pkt.fate = "challenge_mismatch"
+                return pkt
         pkt.prev_seq = self.in_seq
         if header.sequence <= self.in_seq:
             pkt.fate = "stale_sequence"

@@ -230,9 +230,9 @@ class App:
 
     # ---------------------------------------------------------------- input items
     def handle_event(self, t_ns, rtype, data):
+        self.framer.observe(t_ns, rtype, data)
         if rtype == dumpfmt.DATAGRAM_OUT:
             self.traffic.outbound(t_ns)
-            self.framer.observe(t_ns, rtype, data)
             return
         if rtype == dumpfmt.SPLIT_SEEN:
             return

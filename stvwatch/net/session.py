@@ -54,6 +54,7 @@ class Session:
         # One connection, so no challenge inference; the replay bit (until
         # svc_ServerInfo discriminates) lives in the receiver with the walk.
         self.rx = receiver.Receiver()
+        self.rx.challenge = conn.challenge
         self._replay_bit_seen = self.rx.replay_bit
         self.echoed = set()  # (spawncount, state) already echoed
         self.pending = None  # one reliable in flight

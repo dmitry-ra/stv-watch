@@ -129,6 +129,9 @@ def connect(ip, port, name, build, password="", timeout=6.0, on_packet=None):
             on_packet(direction, data)
 
     try:
+        # The checksum is unkeyed: bound to the relay, the kernel drops any
+        # datagram from another address before it can move our sequence.
+        sock.connect(server)
         gc = build_getchallenge(nonce)
         sock.sendto(gc, server)
         emit("out", gc)
@@ -149,9 +152,9 @@ def connect(ip, port, name, build, password="", timeout=6.0, on_packet=None):
         sock.sendto(ck, server)
         emit("out", ck)
 
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            sock.settimeout(max(0.1, deadline - time.time()))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            sock.settimeout(max(0.1, deadline - time.monotonic()))
             try:
                 data, _ = sock.recvfrom(65535)
             except socket.timeout:

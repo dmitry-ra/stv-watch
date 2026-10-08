@@ -1,11 +1,15 @@
-"""The client's precheck under a lost reply, and the receiver's reading of
-our own connectionless packets."""
+"""The client's precheck under a lost reply, the receiver's reading of our
+own connectionless packets, and datagrams that are not the relay's."""
 
 import socket
 import struct
 import threading
 
-from stvwatch.net import client, handshake, netchan, receiver, wire
+from fakerelay import FakeRelay
+from test_session import inbound, make_session
+
+from stvwatch.net import client, handshake, netchan, receiver, supervisor, wire
+from stvwatch.net import dump as dumpfmt
 
 CHALLENGE = 0x11223344
 
@@ -74,3 +78,35 @@ def test_auth_check_survives_one_lost_reply():
     finally:
         srv.close()
         t.join(5)
+
+
+def test_a_datagram_from_another_address_never_reaches_the_session(tmp_path):
+    """The checksum is unkeyed: a valid packet with a high sequence from any
+    local socket would make every later relay packet stale."""
+    path = str(tmp_path / "c.tvd")
+    with FakeRelay() as r:
+        opt = supervisor.Options(ip="127.0.0.1", port=r.port, build="10889068", crc=0xD9B6082D)
+        sup = supervisor.Supervisor(opt, path, log=lambda *_a: None)
+        th = threading.Thread(target=sup.run)
+        th.start()
+        try:
+            assert r.wait(lambda: r.connected() == 1)
+            ((addr, c),) = list(r.clients.items())
+            spoof = netchan.build_packet(1_000_000, 0, c["relay"].challenge, 0)
+            other = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            other.sendto(spoof, addr)
+            other.close()
+            sent = c["sent"]
+            assert r.wait(lambda: c["sent"] > sent + 10)
+        finally:
+            sup.stop = True
+            th.join(30)
+    got = [d for _t, t, d in dumpfmt.DumpReader(path) if t == dumpfmt.DATAGRAM_IN]
+    assert spoof not in got
+
+
+def test_a_packet_under_another_challenge_touches_no_state():
+    s = make_session()
+    s.feed(netchan.build_packet(1_000_000, 1, s.conn.challenge ^ 1, 0))
+    s.feed(inbound(s, 2))
+    assert (s.in_seq, s.counters.get("challenge_mismatch")) == (2, 1)

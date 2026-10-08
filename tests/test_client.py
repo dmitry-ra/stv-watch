@@ -101,8 +101,18 @@ def test_client_leaves_when_its_parent_is_killed(tmp_path):
         time.sleep(0.05)
     assert open(dump + ".term").read() == "sigterm"
     end = time.monotonic() + 5
-    while time.monotonic() < end and os.path.exists(f"/proc/{child}"):
+    while time.monotonic() < end and not exited(child):
         time.sleep(0.05)
+    assert exited(child)
+
+
+def exited(pid):
+    """Gone, or a zombie: reaping is up to whoever adopted the orphan."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] in ("Z", "X")
+    except FileNotFoundError:
+        return True
 
 
 def test_slot_freed_looks_again_while_a2s_still_counts_us():

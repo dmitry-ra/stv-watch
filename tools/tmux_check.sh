@@ -21,10 +21,12 @@ OUT=${CAPDIR:-$(mktemp -d -t stvwatch-check.XXXXXX)}
 mkdir -p "$OUT"
 echo "captures: $OUT"
 tmux kill-session -t $S 2>/dev/null
+# the pane runs this string through a shell: every argument goes in quoted
+ARGS=$(printf '%q ' "$@")
 # window-size manual: a detached session otherwise takes the size of the
 # most recent client of the server, not -x/-y
 tmux new-session -d -s $S -x 100 -y 30 \
-    "sleep 1; cd $HERE && timeout --foreground -s TERM $T uv run stv-watch $*; printf 'AFTER%s\n' \$(seq 1 60); sleep 600" \
+    "sleep 1; cd $(printf '%q' "$HERE") && timeout --foreground -s TERM $T uv run stv-watch $ARGS; printf 'AFTER%s\n' \$(seq 1 60); sleep 600" \
     \; set-option -t $S window-size manual \; resize-window -t $S -x 100 -y 30
 tmux set-option -t $S history-limit 20000 >/dev/null
 fail=0
