@@ -1,0 +1,25 @@
+{"type": "play", "steamid64": 0, "nick": "", "text": "replay SAMPLE at max speed"}
+{"t_utc": "2025-10-07T09:40:00.001Z", "t_local": "2025-10-07 11:40:00", "type": "conn", "steamid64": 0, "nick": "", "text": "session #1 open (127.0.0.1:27020)"}
+{"t_utc": "2025-10-07T09:40:00.100Z", "t_local": "2025-10-07 11:40:00", "type": "net", "steamid64": 0, "nick": "", "text": "traffic started"}
+{"t_utc": "2025-10-07T09:40:00.150Z", "t_local": "2025-10-07 11:40:00", "type": "conn", "steamid64": 0, "nick": "", "text": "FULL on dm_sample (0.1 s after open)"}
+{"t_utc": "2025-10-07T09:40:00.200Z", "t_local": "2025-10-07 11:40:00", "type": "chat", "steamid64": 76561201960265729, "nick": "alice", "text": "hello", "channel": "all", "ent": 1}
+{"t_utc": "2025-10-07T09:40:00.300Z", "t_local": "2025-10-07 11:40:00", "type": "connect", "steamid64": 76561201960265731, "nick": "carol", "text": "connecting", "userid": 14}
+{"t_utc": "2025-10-07T09:40:00.400Z", "t_local": "2025-10-07 11:40:00", "type": "join", "steamid64": 76561201960265731, "nick": "carol", "text": "entered the game"}
+{"t_utc": "2025-10-07T09:40:00.500Z", "t_local": "2025-10-07 11:40:00", "type": "console", "steamid64": 0, "nick": "Console", "text": "map vote in 5 minutes"}
+{"t_utc": "2025-10-07T09:40:00.600Z", "t_local": "2025-10-07 11:40:00", "type": "sourcemod", "steamid64": 0, "nick": "", "text": "[SM] Welcome!", "via": "TextMsg"}
+{"t_utc": "2025-10-07T09:40:00.700Z", "t_local": "2025-10-07 11:40:00", "type": "server", "steamid64": 0, "nick": "", "text": "Round 2 of 3", "via": "TextMsg", "dest": 4}
+{"t_utc": "2025-10-07T09:40:00.800Z", "t_local": "2025-10-07 11:40:00", "type": "server", "steamid64": 0, "nick": "", "text": "dm_sample by nobody", "via": "HudMsg"}
+{"t_utc": "2025-10-07T09:40:00.900Z", "t_local": "2025-10-07 11:40:00", "type": "server", "steamid64": 0, "nick": "", "text": "cvar sv_alltalk = 1", "via": "server_cvar", "cvar": "sv_alltalk", "value": "1"}
+{"t_utc": "2025-10-07T09:40:01.010Z", "t_local": "2025-10-07 11:40:01", "type": "death", "steamid64": 76561201960265729, "nick": "alice", "text": "killed bob (crossbow_bolt)", "weapon": "crossbow_bolt", "userid": 12, "attacker": 11, "victim": "bob", "victim_steamid64": 76561201960265730}
+{"t_utc": "2025-10-07T09:40:01.100Z", "t_local": "2025-10-07 11:40:01", "type": "death", "steamid64": 76561201960265729, "nick": "alice", "text": "killed self (slam)", "weapon": "slam", "userid": 11, "attacker": 11}
+{"t_utc": "2025-10-07T09:40:01.200Z", "t_local": "2025-10-07 11:40:01", "type": "death", "steamid64": 0, "nick": "Sniper", "text": "died (world)", "weapon": "world", "userid": 13, "attacker": 0}
+{"t_utc": "2025-10-07T09:40:01.300Z", "t_local": "2025-10-07 11:40:01", "type": "team", "steamid64": 76561201960265730, "nick": "bob", "text": "team rebels -> spectator", "team": 1, "oldteam": 3, "userid": 12}
+{"t_utc": "2025-10-07T09:40:01.400Z", "t_local": "2025-10-07 11:40:01", "type": "name", "steamid64": 76561201960265729, "nick": "alice2", "text": "alice -> alice2", "old": "alice", "userid": 11}
+{"t_utc": "2025-10-07T09:40:01.500Z", "t_local": "2025-10-07 11:40:01", "type": "net", "steamid64": 0, "nick": "", "text": "lost: seq 14 -> 17 (2)", "seq_from": 14, "seq_to": 17, "lost": 2}
+{"t_utc": "2025-10-07T09:40:01.500Z", "t_local": "2025-10-07 11:40:01", "type": "chat", "steamid64": 76561201960265730, "nick": "bob", "text": "gg", "channel": "allspec", "ent": 1}
+{"t_utc": "2025-10-07T09:40:01.600Z", "t_local": "2025-10-07 11:40:01", "type": "leave", "steamid64": 76561201960265731, "nick": "carol", "text": "Disconnect", "userid": 14, "networkid": "[U:1:4000000003]", "bot": false}
+{"t_utc": "2025-10-07T09:40:06.000Z", "t_local": "2025-10-07 11:40:06", "type": "conn", "steamid64": 0, "nick": "", "text": "map change -> dm_next"}
+{"t_utc": "2025-10-07T09:40:06.001Z", "t_local": "2025-10-07 11:40:06", "type": "conn", "steamid64": 0, "nick": "", "text": "break: changelevel: server signalled changelevel"}
+{"t_utc": "2025-10-07T09:40:06.002Z", "t_local": "2025-10-07 11:40:06", "type": "conn", "steamid64": 0, "nick": "", "text": "left: net_Disconnect x2 (changelevel)"}
+{"t_utc": "2025-10-07T09:40:06.100Z", "t_local": "2025-10-07 11:40:06", "type": "conn", "steamid64": 0, "nick": "", "text": "attempt 2 failed: timed out"}
+{"t_utc": "2025-10-07T09:40:06.100Z", "t_local": "2025-10-07 11:40:06", "type": "done", "steamid64": 0, "nick": "", "text": "end of recording"}

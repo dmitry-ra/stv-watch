@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dmitry-ra/stv-watch/docs/events.schema.json",
+  "title": "stv-watch event line",
+  "description": "One line of `stv-watch --json` output and of a session's events.jsonl. Field order is as listed: t_utc, t_local (only with --tz), type, steamid64, nick, text, then the extra fields of the type. Which extra fields each type carries is listed in docs/session-files.md; a type never carries the extras of another.",
+  "type": "object",
+  "required": ["t_utc", "type", "steamid64", "nick", "text"],
+  "additionalProperties": false,
+  "properties": {
+    "t_utc": {
+      "description": "UTC time of the event: receive time of the packet that carried it, millisecond precision. For the first `play` line and lines written before any traffic, the wall clock.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "t_local": {
+      "description": "The same moment in the --tz zone, to the second, without an offset. Present only when --tz was given.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$"
+    },
+    "type": {
+      "description": "Game events: chat, console, connect, join, leave, death, team, name, server, sourcemod (filtered by --events). The viewer's own lines: conn (connection), net (traffic), play (replay), tvd (network client log), done (exit).",
+      "type": "string",
+      "enum": ["chat", "console", "connect", "join", "leave", "death", "team", "name", "server",
+               "sourcemod", "conn", "net", "play", "tvd", "done"]
+    },
+    "steamid64": {
+      "description": "SteamID64 of the player the line is about (the killer for a death), 0 when unknown or not a player.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "nick": {
+      "description": "The player's nick as the stream names him; 'Console' for console lines; empty when none.",
+      "type": "string"
+    },
+    "text": {
+      "description": "What happened, as text. For chat: what was said.",
+      "type": "string"
+    },
+    "channel": {
+      "description": "chat: all, team, alldead, teamdead, allspec, plugin (a plugin formatted the line), saytext (SayText from a player).",
+      "type": "string"
+    },
+    "ent": {"description": "chat: entity index of the speaker.", "type": "integer"},
+    "userid": {"description": "connect, leave, death, team, name: server userid of the player (the victim for a death).", "type": "integer"},
+    "networkid": {"description": "leave: the network id as the server reports it (SteamID text or BOT).", "type": "string"},
+    "bot": {"description": "leave: the player was a bot.", "type": "boolean"},
+    "weapon": {"description": "death: weapon class name.", "type": "string"},
+    "attacker": {"description": "death: server userid of the attacker, 0 for the world.", "type": "integer"},
+    "victim": {"description": "death by another player: the victim's nick.", "type": "string"},
+    "victim_steamid64": {"description": "death by another player: the victim's SteamID64, 0 when unknown.", "type": "integer", "minimum": 0},
+    "team": {"description": "team: new team number (0 unassigned, 1 spectator, 2 combine, 3 rebels).", "type": "integer"},
+    "oldteam": {"description": "team: previous team number.", "type": "integer"},
+    "old": {"description": "name: the previous nick.", "type": "string"},
+    "via": {"description": "server, sourcemod: the message that carried the text (TextMsg, HudMsg, SayText2, server_cvar).", "type": "string"},
+    "dest": {"description": "server via TextMsg: HUD destination code.", "type": "integer"},
+    "cvar": {"description": "server via server_cvar: the console variable.", "type": "string"},
+    "value": {"description": "server via server_cvar: its new value.", "type": "string"},
+    "seq_from": {"description": "net, --debug only: highest sequence number before the gap.", "type": "integer"},
+    "seq_to": {"description": "net, --debug only: sequence number after the gap.", "type": "integer"},
+    "lost": {"description": "net, --debug only: sequence numbers lost in the gap (not declared choked).", "type": "integer"}
+  }
+}

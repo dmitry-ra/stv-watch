@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.10.8"
+          python-version: "3.12"
+      - run: uv run black --check .
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+        timeout-minutes: 8
