@@ -1283,6 +1283,36 @@ def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
     ]
 
 
+def test_a_rename_in_the_silence_before_the_close_names_the_utterance(tmp_path):
+    """--speed 0 drains many packets between ticks: the nick is read from the
+    table at the close, not from the last tick."""
+    acc = account(4242)
+    sid = STEAMID64_BASE + acc
+    plan = [
+        (
+            0,
+            netchan.build_packet(1, 1, CHALLENGE, 0, unreliable=table_update(("old", u(acc), acc))),
+        ),
+        (100, packet(2, [(1, steam_voice(sid, 0))])),
+        (
+            500,
+            netchan.build_packet(3, 1, CHALLENGE, 0, unreliable=table_update(("new", u(acc), acc))),
+        ),
+    ]
+    plan += [(ms, packet(4 + i, [])) for i, ms in enumerate(range(520, 3000, 20))]
+    rec = str(tmp_path / "r.tvd")
+    write_recording(rec, [(T0 + ms * 1_000_000, d) for ms, d in plan])
+    out = subprocess.run(
+        STV + ["--replay", rec, "--speed", "0", "--json", "--out", str(tmp_path / "o")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=60,
+        env=ENV,
+    ).stdout.decode()
+    recs = [json.loads(ln) for ln in out.splitlines()]
+    assert [r["nick"] for r in recs if r["type"] == "voice"] == ["new"]
+
+
 @pytest.mark.parametrize("debug", [False, True])
 def test_a_kill_names_both_steamids_in_feed_log_and_with_debug(tmp_path, debug):
     k, v = account(1001), account(2002)

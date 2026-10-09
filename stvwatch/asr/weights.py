@@ -128,7 +128,10 @@ def ensure(pin, models_dir, log=None, timeout=60.0):
         f"stv-watch: downloading {pin.engine} weights, {amount}, revision {rev} "
         f"({pin.title}, {pin.license}) into {path}"
     )
-    os.makedirs(path, exist_ok=True)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        raise WeightsError(f"cannot create {path}: {e.strerror}") from e
     for f in need:
         fetch(f"{pin.source}/{f.name}", os.path.join(path, f.name), f, timeout)
     log(f"stv-watch: {pin.engine} weights verified ({len(need)} files)")

@@ -8,6 +8,7 @@ import threading
 
 import pytest
 
+from stvwatch import cli
 from stvwatch.asr import weights
 
 FILES = {"config.json": b'{"model_type": "x"}', "model.onnx": os.urandom(3 << 20)}
@@ -104,3 +105,12 @@ def test_models_default_to_xdg_cache_home(monkeypatch, tmp_path):
     monkeypatch.delenv("XDG_CACHE_HOME")
     monkeypatch.setenv("HOME", str(tmp_path / "h"))
     assert weights.default_dir() == str(tmp_path / "h" / ".cache" / "stv-watch" / "models")
+
+
+def test_a_models_dir_that_cannot_be_made_is_a_weights_error_and_exit_2(tmp_path, capsys):
+    (tmp_path / "file").write_bytes(b"")
+    under = str(tmp_path / "file" / "m")
+    with pytest.raises(weights.WeightsError, match="Not a directory"):
+        weights.ensure(pin("http://127.0.0.1:9"), under, log=print)
+    assert cli.main(["--replay", "x.tvd", "--asr", "parakeet", "--models-dir", under]) == 2
+    assert "parakeet weights not available" in capsys.readouterr().err

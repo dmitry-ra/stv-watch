@@ -15,7 +15,8 @@ that recording gives the same lines the live run printed.
 
 - Linux. The network client is a child process that the kernel stops when the
   viewer dies (`PR_SET_PDEATHSIG`), and the screen uses `termios`.
-- Python 3.12 or newer, x86-64.
+- Python 3.12 to 3.14, x86-64. onnxruntime publishes wheels up to CPython
+  3.14; on a newer Python the install stops at it with no matching wheel.
 - [uv](https://docs.astral.sh/uv/). uv provides the interpreter and the
   environment with the dependencies, all wheels from PyPI (about 45 MB of
   downloads): numpy, opuslib-next-bundled (the Opus decoder, libopus inside),

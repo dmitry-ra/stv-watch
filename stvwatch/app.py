@@ -619,6 +619,7 @@ class App:
             utt.details = self.details(facts, t_ns, why, len(pcm) / SR)
             utt.audio_s = len(pcm) / SR
             utt.end_ns, utt.state = t_ns, "recognizing"
+            self.refresh_name(ch)
             utt.nick, utt.spectator = ch.nick, self.game.unheard(sid)
             utt.meta = meta
         if self.asr is None or not len(pcm):

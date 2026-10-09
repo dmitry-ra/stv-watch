@@ -5,7 +5,7 @@ How to run stv-watch from an agent and read what it says. Humans: see
 
 ## Run
 
-From the clone (Linux, Python 3.12+, uv):
+From the clone (Linux, Python 3.12 to 3.14, uv):
 
 ```sh
 uv run stv-watch --relay RELAY_IP:PORT --json --events all
