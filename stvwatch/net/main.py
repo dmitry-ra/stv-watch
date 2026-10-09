@@ -57,6 +57,7 @@ def cmd_run(a):
         fsync_ms=a.fsync_ms,
         silence_full_s=a.silence_full_s,
         rerate=a.rerate,
+        version=a.stv_version,
     )
     sup = supervisor.Supervisor(opt, a.dump)
     sup.stop = bool(stopping)
@@ -174,6 +175,11 @@ def main(argv=None):
     r.add_argument("--fsync-ms", type=int, default=1000)
     r.add_argument(
         "--parent-pid", type=int, default=0, help="leave when this process (the launcher) dies"
+    )
+    r.add_argument(
+        "--stv-version",
+        default=None,
+        help="version written into the dump (default: this package's own)",
     )
     r.set_defaults(fn=cmd_run)
 

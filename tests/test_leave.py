@@ -63,6 +63,10 @@ def test_a_signal_to_the_viewer_leaves_the_relay_and_frees_the_slot(tmp_path, si
     meta = meta_of(tmp_path)
     assert meta["quit"] == signal.Signals(sig).name
     assert meta["tvdump_rc"] == 0 and meta["slot_released"] is True
+    (session,) = list(tmp_path.iterdir())
+    starts = dumpfmt.DumpReader(str(session / "capture.tvd")).events()
+    named = [f.get("version") for _t, t, f in starts if t == dumpfmt.SESSION_START]
+    assert (recs[0]["version"], named) == (meta["version"], [meta["version"]])
 
 
 def test_a_killed_viewer_still_leaves_the_relay(tmp_path):

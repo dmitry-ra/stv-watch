@@ -89,6 +89,17 @@ Exit codes: 0 when the run ended (q, a signal, `--seconds`, end of a recording),
 when the network client stopped on its own (the relay refuses us for a reason
 retrying will not change).
 
+## Version
+
+`uv run stv-watch --version` prints the version: the release from
+`pyproject.toml`, and when run from a git checkout also the commit, as a PEP 440
+local label: `0.1.0+g976b9ae`, or `0.1.0+g976b9ae.dirty` when tracked files
+differ from that commit. Without git, or outside a checkout, it is the release
+alone (`0.1.0`). Every run names the same string in the status block, at the end
+of its first feed line (screen, `--plain`, `--monitor` and `feed.log`), as the
+`version` field of its first JSON line, in `meta.json` and in each session
+start record of `capture.tvd`.
+
 ## Session files
 
 Each run writes a directory under `$XDG_DATA_HOME/stv-watch/sessions`

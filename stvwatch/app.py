@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 
 from . import events as gamevents
-from . import source
+from . import source, version
 from .model import NS, Conn, Traffic
 from .net import a2s, wire
 from .net import dump as dumpfmt
@@ -134,6 +134,8 @@ class App:
         self.first_t = 0
         self.play_t0 = 0  # first datagram after the skip
         self.now = 0
+        self.build = version.build()
+        self.version_due = False  # run(): the session's first line names the build
         self.dir = self._session_dir()
         self.feed_fh = open(os.path.join(self.dir, "feed.log"), "a", encoding="utf-8")
         # what --json prints, in any screen mode; errors as on the --json stdout
@@ -194,24 +196,25 @@ class App:
         """One feed line; with --json the record instead (type and text if
         no record is given), events.jsonl always. feed.log gets `full` if given."""
         t_ns = t_ns or self.now or time.time_ns()
-        line = self.json_line(
-            (
-                rec
-                if rec is not None
-                else {
-                    "type": spans[0][0].strip() if len(spans) > 1 else "info",
-                    "text": "".join(t for t, _s in spans[1:] if len(spans) > 1)
-                    or "".join(t for t, _s in spans),
-                }
-            ),
-            t_ns,
-        )
+        if rec is None:
+            rec = {
+                "type": spans[0][0].strip() if len(spans) > 1 else "info",
+                "text": "".join(t for t, _s in spans[1:] if len(spans) > 1)
+                or "".join(t for t, _s in spans),
+            }
+        if self.version_due:
+            self.version_due = False
+            v = self.build["version"]
+            rec = dict(rec, extra=dict(rec.get("extra") or {}, version=v))
+            tail = [(f"  [stv-watch {v}]", "dim")]
+            spans, full = spans + tail, full and full + tail
+        line = self.json_line(rec, t_ns)
         self.jsonl(line)
         if self.a.json:
             self.screen.feed([(line, "")])
         else:
             self.screen.feed([(local(t_ns, self.tz) + " ", "dim")] + spans)
-        self.log(full or spans, t_ns, rec.get("steamid64", 0) if rec else 0)
+        self.log(full or spans, t_ns, rec.get("steamid64", 0))
 
     def json_line(self, rec, t_ns):
         out = {"t_utc": utc_iso(t_ns)}
@@ -370,7 +373,7 @@ class App:
         now = self.now or time.time_ns()
         dbg = self.a.debug
         c, tr = self.conn, self.traffic
-        L = [[(" stv-watch ", "bar")]]
+        L = [[(f" stv-watch {self.build['version']} ", "bar")]]
         if self.live:
             head = [("LIVE ", "bold"), (self.a.relay, "")]
         elif self.follow:
@@ -509,12 +512,15 @@ class App:
     def run(self):
         a = self.a
         meta = {
+            "version": self.build["version"],
+            "build": self.build,
             "args": vars(a),
             "dir": self.dir,
             "tz": tz_label(self.tz),
             "pid": os.getpid(),
             "start_utc": utc_iso(self.started_ns),
         }
+        self.version_due = True
         self.screen.start(os.path.join(self.dir, "stderr.log"))
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, self._on_signal)
@@ -543,6 +549,7 @@ class App:
                     os.path.join(self.dir, "tvdump.log"),
                     name=a.name,
                     seconds=a.seconds,
+                    extra=["--stv-version", self.build["version"]],
                 )
                 self.event(
                     "conn",

@@ -57,7 +57,8 @@
     "value": {"description": "server via server_cvar: its new value.", "type": "string"},
     "seq_from": {"description": "net, --debug only: highest sequence number before the gap.", "type": "integer"},
     "seq_to": {"description": "net, --debug only: sequence number after the gap.", "type": "integer"},
-    "lost": {"description": "net, --debug only: sequence numbers lost in the gap (not declared choked).", "type": "integer"}
+    "lost": {"description": "net, --debug only: sequence numbers lost in the gap (not declared choked).", "type": "integer"},
+    "version": {"description": "Only on the first line of a session (conn live, play replay and follow, done if the run ended before either): the stv-watch version that wrote it, as `stv-watch --version` names it: 0.1.0 or, run from a git checkout, 0.1.0+g976b9ae (.dirty when tracked files differ from the commit).", "type": "string"}
   },
   "allOf": [
     {"if": {"properties": {"type": {"const": "chat"}}}, "then": {"required": ["channel", "ent"]}},
@@ -87,7 +88,8 @@
     "value": {"properties": {"type": {"const": "server"}}},
     "seq_from": {"properties": {"type": {"const": "net"}}},
     "seq_to": {"properties": {"type": {"const": "net"}}},
-    "lost": {"properties": {"type": {"const": "net"}}}
+    "lost": {"properties": {"type": {"const": "net"}}},
+    "version": {"properties": {"type": {"enum": ["conn", "play", "done"]}}}
   },
   "dependentRequired": {
     "victim": ["victim_steamid64"],
