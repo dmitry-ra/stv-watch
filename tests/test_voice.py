@@ -6,6 +6,7 @@ import json
 import threading
 import time
 import wave
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -15,7 +16,7 @@ from voicegen import payload as voice_payload
 
 from stvwatch import cli
 from stvwatch.app import SR, TSV_HEAD, App, ChannelAudio, Utt
-from stvwatch.asr import recognizer, weights
+from stvwatch.asr import recognizer, vad, weights
 from stvwatch.cli import parse_args
 from stvwatch.model import Channel
 from stvwatch.render import rows_for
@@ -58,11 +59,21 @@ def bare_app(tmp_path, *extra):
     return app
 
 
+class LoudVad:
+    """Stand-in for Silero: speech wherever a window is loud."""
+
+    def probs(self, pcm):
+        n = len(pcm) // vad.VAD_WINDOW
+        w = pcm[: n * vad.VAD_WINDOW].reshape(n, vad.VAD_WINDOW)
+        return (np.abs(w).max(axis=1) > 0.02).astype(np.float32)
+
+
 class Engine:
     """Stand-in for an utterance engine: the text names the clip's length."""
 
     def __init__(self, delay=0.0, text=None):
         self.delay, self.text, self.seen = delay, text, []
+        self.vad = LoudVad()
 
     def open(self):
         eng, parts = self, []
@@ -77,7 +88,8 @@ class Engine:
                 eng.seen.append(len(pcm))
                 time.sleep(eng.delay)
                 text = eng.text if eng.text is not None else f"heard {len(pcm) / SR:.2f}s"
-                return [("final", text)] if text else []
+                speech = [("speech_ms", vad.speech_ms(eng.vad.probs(pcm)))]
+                return speech + ([("final", text)] if text else [])
 
         return Stream()
 
@@ -85,7 +97,7 @@ class Engine:
 @pytest.fixture
 def engine(monkeypatch):
     e = Engine()
-    monkeypatch.setattr(recognizer, "build", lambda name, threads, models_dir: e)
+    monkeypatch.setattr(recognizer, "build", lambda name, threads, models_dir, min_ms: e)
     return e
 
 
@@ -173,26 +185,23 @@ def test_voice_lines_and_block_are_practical_by_default_and_full_with_debug(tmp_
     assert logged == "voice Pensioner: a phrase as long as said in game  " + utt.details + "\n"
 
 
-@pytest.mark.parametrize(
-    "seconds,pauses,cuts",
-    [
-        # 26 s: the first pause past 25 s, not the later one at 28; 52 s likewise;
-        # 67 s: at the 30 s limit, the last pause past 10 s of the piece; then a
-        # hard cut, no pause in reach
-        (
-            100,
-            (15.0, 26.0, 28.0, 52.0, 67.0),
-            [(26.1, "pause"), (26.0, "pause"), (15.0, "pause"), (30.0, "max_len"), (2.9, None)],
-        ),
-        (70, (), [(30.0, "max_len"), (30.0, "max_len"), (10.0, None)]),
-    ],
-)
-def test_a_monologue_is_cut_at_a_pause_and_hard_only_without_one(tmp_path, seconds, pauses, cuts):
-    """--max-utt 30: from 25 s the first pause ends the piece; at 30 s the last
-    pause past 10 s does; with no pause the cut is hard at 30 s. Pieces after
-    the first are marked as continuations."""
+class Pieces:
+    """Stand-in recognizer: what reaches it, nothing comes back."""
+
+    def __init__(self, with_vad):
+        self.engine = SimpleNamespace(vad=LoudVad()) if with_vad else SimpleNamespace()
+        self.lengths = []
+
+    def utterance(self, sid, pcm, meta):
+        self.lengths.append(round(len(pcm) / SR, 2))
+
+
+def monologue(tmp_path, seconds, pauses, with_vad=True, *extra):
+    """A tone of `seconds` with silent (start, length) pauses, fed in 20 ms
+    chunks; -> (piece lengths s, why each piece ended, continued marks)."""
     sid = steamid64(1)
-    app = bare_app(tmp_path)
+    app = bare_app(tmp_path, *extra)
+    app.asr = Pieces(with_vad)
     ch = app.channels[sid] = Channel(sid, T0)
     ca = app.audio[sid] = ChannelAudio()
     ca.open, ca.start_ns, ca.index = True, T0, 1
@@ -201,21 +210,49 @@ def test_a_monologue_is_cut_at_a_pause_and_hard_only_without_one(tmp_path, secon
     sound = (0.3 * np.sin(np.arange(step) * 0.3)).astype(np.float32)
     for k in range(seconds * 50):
         t = k / 50
-        quiet = any(p <= t < p + 0.5 for p in pauses)
+        quiet = any(p <= t < p + n for p, n in pauses)
         app.add_pcm(sid, ca, np.zeros(step, np.float32) if quiet else sound, T0 + int(t * 1e9))
     app.finish_utterance(sid, T0 + seconds * 10**9, "end")
-    got = [text_of(c) for c in app.screen.closed]
-    secs = [float(g.rsplit("  ", 1)[1].rstrip("s")) for g in got]
-    assert secs == [c for c, _w in cuts]
-    assert [" (cont)" in g for g in got] == [False] + [True] * (len(cuts) - 1)
-    log = (next(tmp_path.iterdir()) / "feed.log").read_text()
-    assert [w for _c, w in cuts] == [ln.split(" ")[-2] for ln in log.splitlines()][:-1] + [None]
+    whys = [u.details.split(" ")[-2] for u in app.utts.values()]
+    conts = [u.cont for u in app.utts.values()]
+    return app.asr.lengths, whys, conts
+
+
+def test_a_monologue_is_cut_at_the_longest_pause_of_the_last_40_percent(tmp_path):
+    """--max-utt-ms 30000: once a piece passes 30 s it ends in the middle of
+    the longest pause whose middle lies in 18-30 s of it (pauses from the
+    smoothed VAD: each loses its first 4 windows to the hangover); the rest
+    starts the next piece. The longest pause, at 10 s, is too early; the short
+    one at 28 s loses to the longer one at 25 s."""
+    pauses = ((10.0, 1.5), (20.0, 0.4), (25.0, 1.0), (28.0, 0.4), (50.0, 0.6))
+    lengths, whys, conts = monologue(tmp_path, 70, pauses, True, "--max-utt-ms", "30000")
+    first = 25.0 + (4 * 512 / SR + 1.0) / 2
+    assert lengths[0] == pytest.approx(first, abs=0.04)
+    assert sum(lengths[:2]) == pytest.approx(50.0 + (4 * 512 / SR + 0.6) / 2, abs=0.04)
+    assert sum(lengths) == 70.0 and len(lengths) == 3
+    assert whys == ["pause", "pause", "end"] and conts == [False, True, True]
+
+
+@pytest.mark.parametrize("with_vad", [True, False])
+def test_with_no_pause_or_no_vad_the_cut_is_hard_at_the_limit(tmp_path, with_vad):
+    pauses = () if with_vad else ((25.0, 1.0),)
+    lengths, whys, _conts = monologue(tmp_path, 70, pauses, with_vad, "--max-utt-ms", "30000")
+    assert lengths == [30.0, 30.0, 10.0] and whys == ["max_len", "max_len", "end"]
+
+
+def test_by_default_a_monologue_runs_two_minutes_and_at_most_400_s(tmp_path, capsys):
+    assert parse_args(["--replay", "x"]).max_utt_ms == 120_000
+    lengths, _w, _c = monologue(tmp_path, 125, ((60.0, 1.0), (100.0, 1.0)))
+    assert lengths[0] == pytest.approx(100.0 + (4 * 512 / SR + 1.0) / 2, abs=0.04)
+    assert parse_args(["--replay", "x", "--max-utt-ms", "400000"]).max_utt_ms == 400_000
+    for bad in ("400001", "999", "30.5", "-1"):
+        with pytest.raises(SystemExit):
+            parse_args(["--replay", "x", "--max-utt-ms", bad])
+    assert "at most 400 s in one call" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("debug", [False, True])
 def test_recognition_lag_turns_yellow_past_2s_and_red_past_5s(tmp_path, debug):
-    from types import SimpleNamespace
-
     app = bare_app(tmp_path, "--asr", "parakeet", *(["--debug"] if debug else []))
     got = []
     for lag in (2.0, 2.1, 5.0, 5.1):
@@ -273,8 +310,13 @@ def test_recognized_replay_texts_transcript_and_wavs(tmp_path, engine):
         ("alice", "parakeet", "text", "heard 1.00s"),
     ]
     assert [r[0] for r in rows] == [r["t_utc"] for r in voice]
-    assert [r[10] for r in rows] == [r["t_local"] for r in voice]
-    assert rows[0][10] == "2025-10-07 18:40:01"
+    assert [r[11] for r in rows] == [r["t_local"] for r in voice]
+    assert rows[0][11] == "2025-10-07 18:40:01"
+    # Silero speech of each utterance (the stand-in's: loud windows), in the
+    # JSON line and the transcript alike, in whole milliseconds
+    assert [r["speech_ms"] for r in voice] == [3360, 1472, 992]
+    assert [int(r[8]) for r in rows] == [r["speech_ms"] for r in voice]
+    assert all(r[9].isdigit() and r[10].isdigit() for r in rows)
     alice = steamid64(1)
     assert rows[0][7] == f"audio/184001_{alice}_1.wav"
     with wave.open(str(session / rows[0][7])) as w:
@@ -283,6 +325,12 @@ def test_recognized_replay_texts_transcript_and_wavs(tmp_path, engine):
     meta = json.loads((session / "meta.json").read_text())
     assert meta["asr"]["state"] == "ready" and meta["asr"]["jobs"] == 3
     assert meta["counters"]["phrases"] == 3 and meta["model"] == "parakeet"
+    assert {k for k in meta["asr"] if k.endswith(("_s", "_ms"))} == {
+        "load_ms",
+        "audio_ms",
+        "compute_ms",
+    }
+    assert meta["asr"]["audio_ms"] == 6500 and meta["speakers"][str(alice)]["audio_ms"] == 5000
 
 
 def test_a_long_monologue_reaches_the_engine_in_pieces_marked_continued(tmp_path, engine):
@@ -292,12 +340,14 @@ def test_a_long_monologue_reaches_the_engine_in_pieces_marked_continued(tmp_path
     timed.append((42.0, packet(len(timed) + 1)))
     rec = str(tmp_path / "r.tvd")
     write_recording(rec, [(T0 + int(t * 1e9), d) for t, d in timed])
-    rc, _session, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet", "--no-audio")
+    rc, _session, lines, rows = replay(
+        rec, tmp_path / "o", "--asr", "parakeet", "--no-audio", "--max-utt-ms", "30000"
+    )
     assert rc == 0
     voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["t_utc"])
     assert [(r["text"], r["continued"]) for r in voice] == [
-        ("heard 27.16s", False),
-        ("heard 8.84s", True),
+        ("heard 27.38s", False),
+        ("heard 8.62s", True),
         ("heard 0.50s", False),
     ]
     assert max(engine.seen) <= 30 * SR
@@ -309,7 +359,7 @@ def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine):
     engine.delay = 0.5
     rec = str(tmp_path / "demo.tvd")
     demo(rec)
-    rc, _s, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet", "--drain", "0")
+    rc, _s, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet", "--drain-ms", "0")
     assert rc == 0
     results = sorted(r["result"] for r in lines if r["type"] == "voice")
     assert "not recognized before exit" in results and len(results) == 3
@@ -318,7 +368,7 @@ def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine):
 
 
 def test_an_engine_that_fails_to_load_ends_the_run_before_reading(tmp_path, monkeypatch):
-    def broken(name, threads, models_dir):
+    def broken(name, threads, models_dir, min_ms):
         raise RuntimeError("no such model")
 
     monkeypatch.setattr(recognizer, "build", broken)
@@ -356,7 +406,7 @@ def test_the_recognizer_loads_while_nothing_is_read(tmp_path, monkeypatch):
     started = threading.Event()
     e = Engine()
 
-    def slow(name, threads, models_dir):
+    def slow(name, threads, models_dir, min_ms):
         started.set()
         time.sleep(0.5)
         return e

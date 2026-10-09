@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import asr
 from . import events as gamevents
-from .app import App
+from .app import MAX_UTT_MS, App
 from .asr import weights
 
 
@@ -22,6 +22,17 @@ def default_out():
         os.path.expanduser("~"), ".local", "share"
     )
     return os.path.join(base, "stv-watch", "sessions")
+
+
+def ms(text):
+    """A duration option: whole milliseconds, 0 or more."""
+    try:
+        v = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"wants whole milliseconds, not {text!r}") from None
+    if v < 0:
+        raise argparse.ArgumentTypeError(f"wants 0 or more milliseconds, not {v}")
+    return v
 
 
 def relay_addr(text, ap):
@@ -36,8 +47,10 @@ def relay_addr(text, ap):
 
 
 def parse_args(argv=None):
+    # no abbreviations: an old seconds option would pass for its _ms successor
     ap = argparse.ArgumentParser(
         prog="stv-watch",
+        allow_abbrev=False,
         description="Watch a SourceTV relay of Half-Life 2: Deathmatch: voice chat with an "
         "optional transcript, game chat and events, connection and traffic, live or from a "
         "recording.",
@@ -58,17 +71,19 @@ def parse_args(argv=None):
         help="replay pace: 1 = as recorded, 4 = four times faster, 0 = max",
     )
     ap.add_argument(
-        "--skip",
-        default="",
-        metavar="SECONDS",
-        help="replay: fast-forward this many seconds into the recording",
+        "--skip-ms",
+        type=ms,
+        default=0,
+        metavar="MS",
+        help="replay: fast-forward this many milliseconds into the recording",
     )
     ap.add_argument(
-        "--seconds",
-        type=float,
-        default=0.0,
-        help="stop after this long; live: wall seconds (the client leaves the relay), "
-        "replay: seconds of the recording after --skip, whatever --speed; 0 = until q",
+        "--duration-ms",
+        type=ms,
+        default=0,
+        metavar="MS",
+        help="stop after this long; live: wall time (the client leaves the relay), replay: "
+        "time of the recording after --skip-ms, whatever --speed; 0 = until q",
     )
     ap.add_argument(
         "--out",
@@ -92,18 +107,28 @@ def parse_args(argv=None):
     )
     ap.add_argument("--threads", type=int, default=2, help="recognizer CPU threads")
     ap.add_argument(
-        "--max-utt",
-        type=float,
-        default=30.0,
-        help="a monologue is recognized in pieces of about this many seconds, cut at a pause "
-        "(from 5 s before it; at it, the last pause past a third of it); hard only with no "
-        "pause; later pieces are marked (cont)",
+        "--min-speech-ms",
+        type=ms,
+        default=250,
+        metavar="MS",
+        help="with --asr: an utterance with less speech than this (Silero VAD) gets no text "
+        "and is not recognized; 0 = no gate",
     )
     ap.add_argument(
-        "--drain",
-        type=float,
-        default=20.0,
-        help="on exit, wait this many seconds for queued recognition",
+        "--max-utt-ms",
+        type=ms,
+        default=120_000,
+        metavar="MS",
+        help="a monologue is recognized in pieces of at most this long, each cut at the "
+        "longest pause in the last 40%% of it (with --asr: pauses of the Silero VAD); hard "
+        f"at the limit with no pause; later pieces are marked (cont); at most {MAX_UTT_MS}",
+    )
+    ap.add_argument(
+        "--drain-ms",
+        type=ms,
+        default=20_000,
+        metavar="MS",
+        help="on exit, wait this long for queued recognition",
     )
     ap.add_argument("--no-audio", action="store_true", help="do not write utterance WAV files")
     ap.add_argument(
@@ -120,21 +145,23 @@ def parse_args(argv=None):
         "(default UTC); with it each JSON line also gets t_local",
     )
     ap.add_argument(
-        "--quiet",
-        type=float,
-        default=3.0,
-        help="traffic counts as stopped after this many seconds without datagrams",
+        "--quiet-ms",
+        type=ms,
+        default=3000,
+        metavar="MS",
+        help="traffic counts as stopped after this long without datagrams",
     )
     ap.add_argument(
-        "--status-every",
-        type=float,
-        default=10.0,
-        help="plain output: status lines every N seconds",
+        "--status-every-ms",
+        type=ms,
+        default=10_000,
+        metavar="MS",
+        help="plain output: status lines this often",
     )
     ap.add_argument(
         "--plain",
         action="store_true",
-        help="no pinned block: feed lines plus status lines every --status-every s",
+        help="no pinned block: feed lines plus status lines every --status-every-ms",
     )
     ap.add_argument(
         "--monitor",
@@ -180,11 +207,7 @@ def parse_args(argv=None):
     if a.relay is not None:
         a.relay = relay_addr(a.relay, ap)
     if a.follow:
-        a.replay, a.speed, a.skip = a.follow, 1.0, ""
-    try:
-        a.skip_s = float(a.skip) if a.skip else 0.0
-    except ValueError:
-        ap.error(f"--skip wants seconds, not {a.skip!r}")
+        a.replay, a.speed, a.skip_ms = a.follow, 1.0, 0
     try:
         a.event_types = gamevents.parse_types(a.events)
     except ValueError as e:
@@ -206,8 +229,11 @@ def parse_args(argv=None):
         a.models_dir = weights.default_dir()
     if a.threads < 1:
         ap.error("--threads wants 1 or more")
-    if a.max_utt < 6:
-        ap.error("--max-utt wants 6 seconds or more")
+    if not 1000 <= a.max_utt_ms <= MAX_UTT_MS:
+        ap.error(
+            f"--max-utt-ms wants 1000 to {MAX_UTT_MS}: the Parakeet model takes at most "
+            f"{MAX_UTT_MS // 1000} s in one call (5000 encoder frames)"
+        )
     a.monitor = a.monitor or a.json
     a.plain = a.plain or a.monitor
     if a.monitor:

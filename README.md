@@ -65,8 +65,11 @@ uv run stv-watch --relay RELAY_IP:27020 --events chat,death
 
 Every utterance is a line: who talks, `talking N s` while the key is held, then
 the final line when the speaker has been silent for a second. A monologue is cut
-into pieces of about 30 s at a pause (`--max-utt`); later pieces are marked
-`(cont)`. Each utterance is also saved as a WAV file and a row of
+into pieces of at most two minutes (`--max-utt-ms`, default 120000, at most
+400000: Parakeet takes at most 400 s in one call); later pieces are marked
+`(cont)`. A piece ends in the middle of the longest pause in its last 40 %, the
+pauses found by Silero VAD (with `--asr`); with no pause there, or without
+`--asr`, the cut is hard at the limit. Each utterance is also saved as a WAV file and a row of
 `transcript.tsv` (`--no-audio` turns the WAV files off).
 
 To see what is said, add a recognizer:
@@ -81,16 +84,21 @@ into `$XDG_CACHE_HOME/stv-watch/models` (`~/.cache/stv-watch/models` when it is
 unset; `--models-dir` chooses another place). For each it prints one line with
 the size and the revision first, fetches every file from its source at a pinned
 revision (Hugging Face, GitHub) and checks its size and SHA-256 before using it;
-a file that fails the check is deleted and the run stops. Later runs start from the files on disk.
+a file that fails the check is deleted and the run stops. Later runs start from
+the files on disk.
 Recognition runs on the CPU (`--threads`, default 2) after an utterance ends,
 so its text follows the speech by about a second. On exit, queued utterances
-get `--drain` seconds (default 20); the rest are marked `not recognized before
+get `--drain-ms` (default 20000); the rest are marked `not recognized before
 exit`.
 
-Silero VAD stands in front of the model as a gate: an utterance with less than
-0.25 s of speech in it gets no text (`no speech`), because on noise Parakeet
-tends to make up an interjection. The VAD never cuts an utterance; a monologue
-is cut only at its pauses, as above.
+Silero VAD stands in front of the model as a gate: an utterance with less
+speech in it than `--min-speech-ms` (default 250) gets no text (`no speech`)
+and is not recognized, because on noise Parakeet tends to make up an
+interjection; `--min-speech-ms 0` turns the gate off. Each voice line carries
+the speech the VAD found, `speech_ms`.
+
+Durations in options and in the files are whole milliseconds, their names end
+in `_ms` / `-ms`; moments are ISO times. The screen speaks seconds.
 
 Without a recording at hand, `tests/voicegen.py` writes a synthetic one with
 voice made of tones and noise (no speech):
@@ -132,7 +140,7 @@ The fields are `t_utc`, `t_local` (only with `--tz`), `type`, `steamid64`, `nick
 [docs/session-files.md](docs/session-files.md). `--monitor` gives the same events
 as plain text lines. [AGENTS.md](AGENTS.md) is a guide for agents that run it.
 
-Exit codes: 0 when the run ended (q, a signal, `--seconds`, end of a recording),
+Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording),
 2 when the relay was refused before connecting, the command line is wrong or the
 recognizer could not start (its weights could not be fetched or checked, or the
 model failed to load), 3 when the network client stopped on its own (the relay

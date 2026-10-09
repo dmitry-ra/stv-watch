@@ -2,7 +2,7 @@
 utterance.
 
 The channel's audio is collected until the utterance closes (no frames for
-the close time, or a monologue piece cut at --max-utt), then recognized in
+the close time, or a monologue piece cut at --max-utt-ms), then recognized in
 one call; one final line per utterance. One worker thread, FIFO. Results go
 to `out` as tuples; the main loop owns all display state.
 """
@@ -58,10 +58,11 @@ class Stats:
 
 
 class Recognizer:
-    def __init__(self, model, threads, models_dir, media_now, out):
+    def __init__(self, model, threads, models_dir, min_speech_ms, media_now, out):
         self.model_name = model
         self.threads = threads
         self.models_dir = models_dir
+        self.min_speech_ms = min_speech_ms
         self.media_now = media_now
         self.out = out  # queue of result tuples
         self.engine = None
@@ -79,7 +80,7 @@ class Recognizer:
     def _load(self):
         t0 = time.monotonic()
         try:
-            self.engine = build(self.model_name, self.threads, self.models_dir)
+            self.engine = build(self.model_name, self.threads, self.models_dir, self.min_speech_ms)
             self.state = "ready"
         except Exception as e:  # noqa: BLE001
             self.state = "failed"
@@ -148,7 +149,9 @@ class Recognizer:
             with self.plock:
                 self.busy -= 1
             texts = [t.strip() for kind, t in events if kind == "final" and t.strip()]
-            self.out.put(("final", jkey, " ".join(texts), dict(meta, asr_s=compute)))
+            done = dict(meta, asr_ms=round(compute * 1000))
+            done.update((kind, v) for kind, v in events if kind == "speech_ms")
+            self.out.put(("final", jkey, " ".join(texts), done))
 
 
 def np_concat(parts):

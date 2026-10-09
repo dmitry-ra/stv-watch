@@ -40,14 +40,16 @@ Voice (always shown, not filtered by `--events`):
 
 | type | extra fields | what |
 |---|---|---|
-| `voice` | `result`, `continued`, `spectator`, `details`, `t_end_utc` | one utterance, or one piece of a monologue; `text` is what was recognized |
+| `voice` | `result`, `continued`, `spectator`, `details`, `t_end_utc`, `speech_ms` | one utterance, or one piece of a monologue; `text` is what was recognized |
 
 - `result`: `text` (`text` holds what was said), `no speech` (the voice
-  activity detector found less than 0.25 s of speech, or the model heard
-  nothing), `asr off` (run without `--asr`), `not recognized before exit`
-  (still queued when `--drain` ran out).
-- `continued`: a piece of a monologue after the first; pieces are cut at a
-  pause, at most `--max-utt` seconds long.
+  activity detector found less speech than `--min-speech-ms`, or the model
+  heard nothing), `asr off` (run without `--asr`), `not recognized before exit`
+  (still queued when `--drain-ms` ran out).
+- `continued`: a piece of a monologue after the first; pieces are cut at the
+  longest pause in their last 40 %, at most `--max-utt-ms` long.
+- `speech_ms`: milliseconds of speech Silero VAD found in the utterance
+  (32 ms windows above 0.5); only when the recognizer looked at it.
 - `spectator`: the speaker is a spectator and `sv_alltalk` is off, so the
   players in game did not hear him.
 - `details`: audio seconds / seconds from first to last frame, Opus frames
@@ -104,8 +106,9 @@ they were finished (tabs and line breaks inside a field become spaces):
 | `result` | as in the `voice` line: `text`, `no speech`, `asr off`, `not recognized before exit` |
 | `text` | what was recognized, empty unless `result` is `text` |
 | `audio` | the WAV file, relative to the session directory; empty with `--no-audio` |
-| `asr_s` | seconds the recognizer spent on it |
-| `lag_s` | seconds from the close of the utterance to its line |
+| `speech_ms` | speech found by the VAD, as in the `voice` line; empty when not measured |
+| `asr_ms` | milliseconds the recognizer spent on it |
+| `lag_ms` | milliseconds from the close of the utterance to its line |
 | `t_local` | only with `--tz`: the start in that zone, `YYYY-MM-DD HH:MM:SS` |
 
 ## audio/
@@ -142,17 +145,19 @@ datagrams only).
 
 Written at exit: `args` (the command line), `model` (the `--asr` engine or
 null), `dir`, `tz`, `pid`, `start_utc`, `end_utc`, `quit` (`end of recording`,
-`seconds`, `key q`, `SIGINT`, `SIGTERM`, `SIGHUP`, `alarm`, `client exited`,
+`duration`, `key q`, `SIGINT`, `SIGTERM`, `SIGHUP`, `alarm`, `client exited`,
 `precheck`, `asr failed`), `tvdump_rc` (exit code of the network client; null
 when it had to be killed), `traffic`, `framer` (receive path counters:
 `seq_lost`, `seq_choked`, `resend_skipped`, `voice_msgs`, `voice_crc_bad`,
 packet fates, ...), `segments` (speech segmenter counters), `counters`
 (`utterances`, `phrases` with text, `nospeech`, `wav` files, `payload_bad` voice
-messages that failed the Steam voice check), `conn` (last connection state),
+messages that failed the Steam voice check), `conn` (last connection state;
+`state_utc` and `full_utc` are when it was entered and when it reached FULL),
 `game_events` (counts per type, shown or not), `speakers` (per SteamID64:
-`nick`, `audio_s`, Opus `frames`, `utterances`, `phrases`). With `--asr` also
-`asr`: `state`, `error`, `load_s`, `audio_s` and `compute_s` recognized,
-`jobs`.
+`nick`, `audio_ms`, Opus `frames`, `utterances`, `phrases`). With `--asr` also
+`asr`: `state`, `error`, `load_ms`, `audio_ms` and `compute_ms` recognized,
+`jobs`. Every duration is whole milliseconds named `*_ms`; `args` holds the
+options under their names (`duration_ms`, `skip_ms`, ...).
 Live runs also have `slot_released`, `relay_before`, `relay_with_us` and
 `relay_after`: the relay's spectator counts used to check that our slot was
 freed.

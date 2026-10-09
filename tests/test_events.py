@@ -628,7 +628,7 @@ def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     cmd[cmd.index("--json")] = "--monitor"
     cmd[cmd.index("--speed") + 1] = "0"
     out = subprocess.run(
-        cmd + ["--status-every", "0"],
+        cmd + ["--status-every-ms", "0"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         timeout=60,
@@ -646,7 +646,7 @@ def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     ]
     # --debug: the transport numbers on screen too
     out = subprocess.run(
-        cmd + ["--status-every", "0", "--debug"],
+        cmd + ["--status-every-ms", "0", "--debug"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         timeout=60,
@@ -753,7 +753,10 @@ def test_events_jsonl_holds_what_json_prints_in_every_screen_mode(tmp_path):
         "voice",
         "done",
     ]
-    for name, mode in (("plain", ["--plain", "--status-every", "0"]), ("monitor", ["--monitor"])):
+    for name, mode in (
+        ("plain", ["--plain", "--status-every-ms", "0"]),
+        ("monitor", ["--monitor"]),
+    ):
         assert (
             subprocess.run(
                 cmd(name, *mode),
@@ -892,8 +895,12 @@ def test_session_files_of_a_replay(tmp_path):
     assert meta["traffic"]["in"] == 4 + len(range(3020, 6000, 20))
     sid = str(steamid64(1))
     assert meta["speakers"] == {
-        sid: {"nick": "", "audio_s": 0.18, "frames": 9, "utterances": 2, "phrases": 0}
+        sid: {"nick": "", "audio_ms": 180, "frames": 9, "utterances": 2, "phrases": 0}
     }
+    # durations are whole milliseconds named _ms, moments ISO strings
+    assert meta["args"]["quiet_ms"] == 3000 and meta["args"]["duration_ms"] == 0
+    assert not [k for k in meta["args"] if k.endswith("_s")]
+    assert meta["conn"]["state_utc"] is None and "state_ns" not in meta["conn"]
     assert meta["counters"]["payload_bad"] == 0 and "asr" not in meta
     rows = [ln.split("\t") for ln in (session / "transcript.tsv").read_text().splitlines()]
     assert rows[0] == list(TSV_HEAD)
@@ -903,6 +910,30 @@ def test_session_files_of_a_replay(tmp_path):
         (sid, "asr off", "", "audio/" + wavs[1]),
     ]
     assert wavs == [f"014640_{sid}_1.wav", f"014643_{sid}_2.wav"]
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ("--skip", "--skip-ms"),
+        ("--seconds", "--duration-ms"),
+        ("--quiet", "--quiet-ms"),
+        ("--status-every", "--status-every-ms"),
+        ("--drain", "--drain-ms"),
+        ("--max-utt", "--max-utt-ms"),
+    ],
+)
+def test_duration_options_are_whole_milliseconds(old, new, capsys):
+    """The old seconds names are gone, not taken for abbreviations of the new
+    ones (`--drain 20` would be 20 ms)."""
+    dest = new[2:].replace("-", "_")
+    assert getattr(parse_args(["--replay", "x", new, "2500"]), dest) == 2500
+    with pytest.raises(SystemExit):
+        parse_args(["--replay", "x", old, "2500"])
+    assert f"unrecognized arguments: {old}" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        parse_args(["--replay", "x", new, "2.5"])
+    assert "whole milliseconds" in capsys.readouterr().err
 
 
 def test_crc_failing_voice_is_counted_and_makes_no_speaker(tmp_path):
@@ -988,7 +1019,7 @@ def test_follow_a_growing_journal_equals_replaying_it(tmp_path):
     th.start()
     follow = App(
         parse_args(
-            ["--follow", path, "--seconds", "2.4", "--monitor", "--out", str(tmp_path / "f")]
+            ["--follow", path, "--duration-ms", "2400", "--monitor", "--out", str(tmp_path / "f")]
         )
     )
     assert follow.run() == 0

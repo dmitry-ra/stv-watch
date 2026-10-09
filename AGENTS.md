@@ -16,8 +16,8 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
 - Use `--json` (one JSON object per line on stdout, flushed per event) or
   `--monitor` (the same as text). Both turn off colour, the pinned status block
   and status lines. Never parse the normal screen.
-- Give long runs a bound: `--seconds N` (live: the client leaves after N wall
-  seconds; replay: N seconds of the recording). Otherwise stop with SIGINT or
+- Give long runs a bound: `--duration-ms N` (live: the client leaves after N
+  ms of wall time; replay: N ms of the recording). Otherwise stop with SIGINT or
   SIGTERM: the client leaves the relay cleanly on both. Avoid SIGKILL: the
   kernel still stops the client, but the viewer cannot write `meta.json` or
   check that the slot was freed.
@@ -25,11 +25,13 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
 - Add `--tz ZONE` only if you need local time; `t_utc` is always there.
 - stdin is not read in `--json`/`--monitor` mode; no key needs to be pressed.
 - `--asr parakeet` downloads 2.55 GB of weights on its first run (Parakeet and
-  Silero VAD; a line on stderr for each; the files are checked by SHA-256) and then needs about 2.6 GB
-  of memory. Ask your user before the first download. Replaying at `--speed 0`
-  with `--asr` reads far ahead of the recognizer: give it a `--drain` long
-  enough for the queue (0.15 s per second of voice on 2 threads of an i7-8700), or
-  the rest ends as `not recognized before exit`.
+  Silero VAD; a line on stderr for each; the files are checked by SHA-256) and
+  then needs about 2.6 GB of memory. Ask your user before the first download.
+  Replaying at `--speed 0` with `--asr` reads far ahead of the recognizer: give
+  it a `--drain-ms` long enough for the queue (150 ms per second of voice on 2
+  threads of an i7-8700), or the rest ends as `not recognized before exit`.
+- Every duration in options, JSON lines, `transcript.tsv` and `meta.json` is a
+  whole number of milliseconds named `*_ms`; moments are ISO strings.
 
 ## Read
 
@@ -62,7 +64,7 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
 
 | Code | Meaning | What to do |
 |---|---|---|
-| 0 | ended: end of recording, `--seconds`, a signal, `q` | read the output |
+| 0 | ended: end of recording, `--duration-ms`, a signal, `q` | read the output |
 | 2 | refused before connecting (the `conn` line `refused: ...` says why), a usage error or recognition weights that could not be fetched or checked (message on stderr), or a model that failed to load (`asr` line) | do not retry the same relay in a loop; report the reason |
 | 3 | the network client gave up: the relay refuses us for a reason retrying will not change (`tvd` line `[alarm] ...`) | stop; report it |
 

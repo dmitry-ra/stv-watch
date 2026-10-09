@@ -69,14 +69,14 @@ def test_replay_of_the_sample_gives_the_expected_events(tmp_path):
     assert (session / "events.jsonl").read_text(encoding="utf-8").splitlines() == lines
 
 
-def test_replay_seconds_bound_what_is_shown_even_at_max_speed(tmp_path):
+def test_replay_duration_bounds_what_is_shown_even_at_max_speed(tmp_path):
     """The sample's first datagram is at 0.100 s and its last line at 6.100 s:
-    with --seconds 1 nothing after 1.100 s is shown, and the run says why it
+    with --duration-ms 1000 nothing after 1.100 s is shown, and the run says why it
     ended."""
-    args = ("--speed", "0", "--seconds", "1", "--json", "--events", "all")
+    args = ("--speed", "0", "--duration-ms", "1000", "--json", "--events", "all")
     lines = [json.loads(ln) for ln in replay(tmp_path, *args)]
     shown = max(r["t_utc"] for r in lines if r["type"] not in ("play", "done"))
-    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "seconds")
+    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "duration")
 
 
 def check(value, schema, where="$"):
@@ -162,7 +162,8 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
                     return []
 
                 def finish(self):
-                    return [("final", "a phrase")] if sum(n) > 20000 else []
+                    text = [("final", "a phrase")] if sum(n) > 20000 else []
+                    return [("speech_ms", sum(n) // 16)] + text
 
             return Stream()
 
@@ -180,9 +181,17 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
         for ln in (session / "events.jsonl").read_text(encoding="utf-8").splitlines():
             r = json.loads(ln)
             assert check(r, schema) == [], ln
-            seen.add((r["type"], r.get("result")))
-    assert {("voice", "asr off"), ("voice", "text"), ("voice", "no speech"), ("asr", None)} <= seen
+            seen.add((r["type"], r.get("result"), "speech_ms" in r))
+    assert {
+        ("voice", "asr off", False),
+        ("voice", "text", True),
+        ("voice", "no speech", True),
+        ("asr", None, False),
+    } <= seen
     assert check(dict(CHAT, channel="all", ent=1, result="text"), schema) == ["$: result on 'chat'"]
+    assert check(dict(CHAT, channel="all", ent=1, speech_ms=1), schema) == [
+        "$: speech_ms on 'chat'"
+    ]
     voice = dict(CHAT, type="voice", result="text", continued=False, spectator=False, details="")
     assert check(voice, schema) == ["$: t_end_utc missing"]
 

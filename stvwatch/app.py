@@ -21,6 +21,8 @@ import numpy as np
 from . import events as gamevents
 from . import source
 from .asr import recognizer as asrmod
+from .asr import vad as vadmod
+from .asr.parakeet import level_peak
 from .model import NS, Channel, Conn, Traffic
 from .net import a2s, wire
 from .net import dump as dumpfmt
@@ -33,8 +35,9 @@ from .voice.segments import ChannelFrame, Segmenter
 SIGNON = {3: "NEW", 4: "PRESPAWN", 5: "SPAWN", 6: "FULL", 7: "CHANGELEVEL"}
 SR = 16000
 CLOSE_S = 1.0  # end of speech: this long without frames from the channel
-LEVEL_FRAME = int(0.02 * SR)
-PAUSE_FRAMES = 15  # 0.3 s below the level threshold is a pause
+# the ONNX export of Parakeet holds positions for 5000 encoder frames: 400 s
+MAX_UTT_MS = 400_000
+CUT_FROM = 0.6  # a monologue piece ends at a pause in the last 40 % of --max-utt-ms
 TSV_HEAD = (
     "t_start_utc",
     "t_end_utc",
@@ -44,8 +47,9 @@ TSV_HEAD = (
     "result",
     "text",
     "audio",
-    "asr_s",
-    "lag_s",
+    "speech_ms",
+    "asr_ms",
+    "lag_ms",
 )
 
 
@@ -116,35 +120,7 @@ class ChannelAudio:
         self.open = False
         self.index = 0
         self.key = None  # (sid, index) of the open utterance
-        self.levels = []  # RMS per 20 ms of the utterance's audio
-        self.lev_buf = np.zeros(0, np.float32)
         self.reset_stats()
-
-    def add_levels(self, pcm):
-        buf = np.concatenate([self.lev_buf, pcm]) if len(self.lev_buf) else pcm
-        n = len(buf) // LEVEL_FRAME
-        if n:
-            fr = buf[: n * LEVEL_FRAME].reshape(n, LEVEL_FRAME)
-            self.levels.extend(np.sqrt((fr * fr).mean(axis=1)).tolist())
-        self.lev_buf = buf[n * LEVEL_FRAME :]
-
-    def pauses(self):
-        """-> [(first frame, frames)] of quiet runs of PAUSE_FRAMES or more;
-        quiet = under a tenth of the utterance's loud level (its 90th
-        percentile), so a quiet speaker's breath counts as well as silence."""
-        if not self.levels:
-            return []
-        lv = np.asarray(self.levels)
-        thr = max(1e-3, 0.1 * float(np.percentile(lv, 90)))
-        out, start = [], None
-        for i, q in enumerate(np.append(lv < thr, False)):
-            if q and start is None:
-                start = i
-            elif not q and start is not None:
-                if i - start >= PAUSE_FRAMES:
-                    out.append((start, i - start))
-                start = None
-        return out
 
     def reset_stats(self):
         """Per-utterance transport facts for the speaking event in the feed."""
@@ -179,7 +155,7 @@ class App:
         self.quit = False
         self.quit_why = ""
         self.conn = Conn()
-        self.traffic = Traffic(quiet_s=a.quiet)
+        self.traffic = Traffic(quiet_s=a.quiet_ms / 1000)
         self.nicks = NickBook()
         self.channels = {}
         self.utts = {}  # key -> Utt with a live line
@@ -552,29 +528,27 @@ class App:
     def add_pcm(self, sid, ca, pcm, t_ns):
         ca.parts.append(pcm)
         ca.nsamp += len(pcm)
-        ca.add_levels(pcm)
         cut = self.cut_point(ca)
         if cut is not None:
             self.finish_utterance(sid, t_ns, cut[1], keep_open=True, cut=cut[0])
 
     def cut_point(self, ca):
-        """Where to end a piece of a monologue, in samples:
-        from 5 s before --max-utt, at the first pause; at --max-utt, at the
-        last pause past a third of it; with no pause, there (a hard cut).
-        -> (sample, why) or None."""
-        limit = int(self.a.max_utt * SR)
-        soft = max(0, limit - 5 * SR)
-        if ca.nsamp < soft:
+        """Where to end a piece of a monologue once it is longer than
+        --max-utt-ms, in samples: the middle of the longest pause in the last
+        40 % of the limit, pauses read from smoothed Silero decisions on the
+        leveled piece; with no pause there, or no recognizer to read them, the
+        limit itself (a hard cut). -> (sample, why) or None."""
+        limit = self.a.max_utt_ms * SR // 1000
+        if ca.nsamp <= limit:
             return None
-        runs = ca.pauses()
-        mid = [(s + PAUSE_FRAMES // 2) * LEVEL_FRAME for s, _n in runs]
-        late = [m for m in mid if m >= soft]
-        if late:
-            return late[0], "pause"
-        if ca.nsamp < limit:
-            return None
-        back = [m for m in mid if m >= limit // 3]
-        return (back[-1], "pause") if back else (ca.nsamp, "max_len")
+        vad = getattr(self.asr.engine, "vad", None) if self.asr is not None else None
+        if vad is not None:
+            pcm = level_peak(asrmod.np_concat(ca.parts))
+            dec = vadmod.smooth(vad.probs(pcm) > vadmod.THRESHOLD)
+            cut = vadmod.longest_pause(dec, int(CUT_FROM * limit), limit)
+            if cut is not None:
+                return cut, "pause"
+        return limit, "max_len"
 
     def process_closed(self):
         if not self.seg.closed:
@@ -614,7 +588,6 @@ class App:
         else:
             self.asr.utterance(sid, pcm, meta)
         ca.parts, ca.nsamp = [], 0
-        ca.levels, ca.lev_buf = [], np.zeros(0, np.float32)
         ca.reset_stats()
         if keep_open:
             carried = 0 if rest is None else len(rest)
@@ -624,7 +597,6 @@ class App:
             self.utts[ca.key].cont = True
             if carried:
                 ca.parts, ca.nsamp = [rest], carried
-                ca.add_levels(rest)
             return
         ca.open = False
         ca.seg_id = -1
@@ -736,19 +708,20 @@ class App:
         lag = max(0.0, (self.now - t_end) / NS)
         head = [(local(utt.start_ns, self.tz) + " ", "dim")]
         tail = utt.details + (
-            "" if self.asr is None else f" asr {meta.get('asr_s', 0):.2f}s +{lag:.1f}s"
+            "" if self.asr is None else f" asr {meta.get('asr_ms', 0) / 1000:.2f}s +{lag:.1f}s"
         )
+        speech = meta.get("speech_ms")
         label = ""
         if not text:
             label = meta.get("unfinished") or ("no speech" if self.asr is not None else "asr off")
             if label == "no speech":
                 ch.nospeech += 1
                 self.counters["nospeech"] += 1
-            self.voice_close(utt, ch, head, [(": " + label, "dim")], "", label, tail)
+            self.voice_close(utt, ch, head, [(": " + label, "dim")], "", label, tail, speech)
         else:
             ch.finals += 1
             self.counters["phrases"] += 1
-            self.voice_close(utt, ch, head, [(": ", ""), (text, "bold")], text, "", tail)
+            self.voice_close(utt, ch, head, [(": ", ""), (text, "bold")], text, "", tail, speech)
         row = [
             utc_iso(utt.start_ns),
             utc_iso(t_end),
@@ -758,15 +731,16 @@ class App:
             label or "text",
             text,
             meta.get("wav", ""),
-            "%.3f" % meta.get("asr_s", 0.0),
-            "%.2f" % lag,
+            "" if speech is None else str(speech),
+            str(meta.get("asr_ms", 0)),
+            str(round(lag * 1000)),
         ]
         if self.a.tz_given:
             row.append(local(utt.start_ns, self.tz, "%Y-%m-%d %H:%M:%S"))
         self.tsv_fh.write("\t".join(f.replace("\t", " ").replace("\n", " ") for f in row) + "\n")
         self.tsv_fh.flush()
 
-    def voice_close(self, utt, ch, head, said, text, label, tail):
+    def voice_close(self, utt, ch, head, said, text, label, tail, speech=None):
         """Final line of an utterance. On screen: who, what and how long, the
         transport and recognition numbers only with --debug; feed.log and
         --json always get them all."""
@@ -779,20 +753,17 @@ class App:
         )
         full = who + [("  " + tail, "dim")]
         spans = full if self.a.debug else who + [(f"  {utt.audio_s:.1f}s", "dim")]
+        extra = {
+            "result": label or "text",
+            "continued": utt.cont,
+            "spectator": self.game.unheard(ch.sid64),
+            "details": tail.strip(),
+            "t_end_utc": utc_iso(utt.end_ns or self.now),
+        }
+        if speech is not None:
+            extra["speech_ms"] = speech
         line = self.json_line(
-            {
-                "type": "voice",
-                "steamid64": ch.sid64,
-                "nick": ch.nick,
-                "text": text,
-                "extra": {
-                    "result": label or "text",
-                    "continued": utt.cont,
-                    "spectator": self.game.unheard(ch.sid64),
-                    "details": tail.strip(),
-                    "t_end_utc": utc_iso(utt.end_ns or self.now),
-                },
-            },
+            {"type": "voice", "steamid64": ch.sid64, "nick": ch.nick, "text": text, "extra": extra},
             utt.start_ns,
         )
         self.jsonl(line)
@@ -1025,7 +996,7 @@ class App:
             self.pacer = source.Pacer(
                 self.live or self.follow,
                 a.speed,
-                a.skip_s,
+                a.skip_ms / 1000,
                 time.time_ns() - NS if self.follow else 0,
             )
             if self.live:
@@ -1038,7 +1009,12 @@ class App:
                 self.conn.state = "replay"
             if self.model:
                 self.asr = asrmod.Recognizer(
-                    self.model, a.threads, a.models_dir, self.pacer.media_now, self.q_out
+                    self.model,
+                    a.threads,
+                    a.models_dir,
+                    a.min_speech_ms,
+                    self.pacer.media_now,
+                    self.q_out,
                 )
                 # Load before reading or connecting: the load holds the GIL for
                 # seconds, which would stall the reader (a fake traffic stop in
@@ -1062,7 +1038,7 @@ class App:
                     cap,
                     os.path.join(self.dir, "tvdump.log"),
                     name=a.name,
-                    seconds=a.seconds,
+                    duration_ms=a.duration_ms,
                 )
                 self.event(
                     "conn",
@@ -1088,7 +1064,7 @@ class App:
                     "play",
                     f"replay {a.replay} at "
                     f"{'max speed' if a.speed <= 0 else 'x%g' % a.speed}"
-                    + (f", skip {a.skip}" if a.skip else ""),
+                    + (f", skip {a.skip_ms / 1000:g} s" if a.skip_ms else ""),
                 )
             self.rec.start()
             self.loop()
@@ -1121,7 +1097,7 @@ class App:
             t = item[1].t_ns if item[0] == "dg" else item[1]
             if self.past_end(t):
                 self.held = None
-                self.quit, self.quit_why = True, "seconds"
+                self.quit, self.quit_why = True, "duration"
                 return False
             wait = self.pacer.due(t)
             if wait > 0:
@@ -1138,11 +1114,11 @@ class App:
                 self.handle_event(*item[1:])
 
     def past_end(self, t_ns):
-        """Replay with --seconds: the recording time `t_ns` is beyond the bound."""
+        """Replay with --duration-ms: the recording time `t_ns` is beyond the bound."""
         a = self.a
-        if self.live or not a.seconds or not self.play_t0:
+        if self.live or not a.duration_ms or not self.play_t0:
             return False
-        return t_ns - self.play_t0 > a.seconds * NS
+        return t_ns - self.play_t0 > a.duration_ms * 1_000_000
 
     def tick(self, dry):
         """Clock-driven work, done when the input queue is drained."""
@@ -1209,7 +1185,7 @@ class App:
                 self.screen.live_update(utt.key, self.progress(utt))
             self.screen.draw(self.block())
         else:
-            if not self.a.monitor and t - self.last_status_line >= self.a.status_every:
+            if not self.a.monitor and t - self.last_status_line >= self.a.status_every_ms / 1000:
                 self.last_status_line = t
                 for spans in self.block()[1:-1]:
                     self.screen.feed([("status ", "dim")] + spans)
@@ -1222,12 +1198,12 @@ class App:
             self.tick(dry)
             self.render()
             if (
-                a.seconds
+                a.duration_ms
                 and not self.live
                 and self.play_t0
-                and (self.now - self.play_t0) / NS >= a.seconds
+                and self.now - self.play_t0 >= a.duration_ms * 1_000_000
             ):
-                self.quit, self.quit_why = True, "seconds"
+                self.quit, self.quit_why = True, "duration"
             if self.live and not self.client.alive():
                 self.quit, self.quit_why = True, "client exited"
             if (
@@ -1266,7 +1242,7 @@ class App:
             self.seg.flush(self.now)
             self.process_closed()
             if self.asr is not None:
-                end = time.monotonic() + self.a.drain
+                end = time.monotonic() + self.a.drain_ms / 1000
                 while time.monotonic() < end and self.asr.state != "failed":
                     jobs, _p = self.asr.queue_depth()
                     if self.asr.state == "ready" and not jobs and not self.asr.busy:
@@ -1300,12 +1276,17 @@ class App:
                     "framer": dict(self.framer.counters),
                     "segments": dict(self.seg.counters),
                     "counters": self.counters,
-                    "conn": vars(self.conn),
+                    "conn": {
+                        k.removesuffix("_ns") + "_utc" if k.endswith("_ns") else k: (
+                            (utc_iso(v) if v else None) if k.endswith("_ns") else v
+                        )
+                        for k, v in vars(self.conn).items()
+                    },
                     "game_events": dict(self.game.counts),
                     "speakers": {
                         str(s): {
                             "nick": ch.nick,
-                            "audio_s": ch.audio_s,
+                            "audio_ms": ch.frames * 20,
                             "frames": ch.frames,
                             "utterances": ch.utterances,
                             "phrases": ch.finals,
@@ -1318,9 +1299,9 @@ class App:
                 meta["asr"] = {
                     "state": self.asr.state,
                     "error": self.asr.error,
-                    "load_s": self.asr.load_s,
-                    "audio_s": self.asr.stats.total_audio,
-                    "compute_s": self.asr.stats.total_compute,
+                    "load_ms": round(self.asr.load_s * 1000),
+                    "audio_ms": round(self.asr.stats.total_audio * 1000),
+                    "compute_ms": round(self.asr.stats.total_compute * 1000),
                     "jobs": self.asr.stats.jobs,
                 }
             self.event("done", f"{self.quit_why or 'stopped'} -> {self.dir}")

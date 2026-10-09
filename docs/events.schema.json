@@ -58,10 +58,11 @@
     "seq_from": {"description": "net, --debug only: highest sequence number before the gap.", "type": "integer"},
     "seq_to": {"description": "net, --debug only: sequence number after the gap.", "type": "integer"},
     "lost": {"description": "net, --debug only: sequence numbers lost in the gap (not declared choked).", "type": "integer"},
-    "result": {"description": "voice: text (text holds what was recognized), no speech (the voice activity gate found under 0.25 s of speech, or the model heard none), asr off (no --asr), not recognized before exit (still queued when --drain ran out).", "type": "string", "enum": ["text", "no speech", "asr off", "not recognized before exit"]},
-    "continued": {"description": "voice: a piece of a monologue after the first (cut at --max-utt).", "type": "boolean"},
+    "result": {"description": "voice: text (text holds what was recognized), no speech (the voice activity gate found less speech than --min-speech-ms, or the model heard none), asr off (no --asr), not recognized before exit (still queued when --drain ran out).", "type": "string", "enum": ["text", "no speech", "asr off", "not recognized before exit"]},
+    "continued": {"description": "voice: a piece of a monologue after the first (cut at --max-utt-ms).", "type": "boolean"},
     "spectator": {"description": "voice: the speaker is a spectator and sv_alltalk is off, so the players in game did not hear him.", "type": "boolean"},
     "details": {"description": "voice: transport numbers of the utterance (audio and arrival seconds, Opus frames, concealed and silence-filled frames, bit rate, key presses, voice messages, share in split packets, arrivals, how long after the last frame it closed) and, with --asr, recognition seconds and the lag behind the speech.", "type": "string"},
+    "speech_ms": {"description": "voice: milliseconds of speech Silero VAD found in the utterance (32 ms windows above 0.5); only when the recognizer looked at it.", "type": "integer", "minimum": 0},
     "t_end_utc": {"description": "voice: when the utterance closed, the format of t_utc.", "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"}
   },
   "allOf": [
@@ -98,7 +99,8 @@
     "continued": {"properties": {"type": {"const": "voice"}}},
     "spectator": {"properties": {"type": {"const": "voice"}}},
     "details": {"properties": {"type": {"const": "voice"}}},
-    "t_end_utc": {"properties": {"type": {"const": "voice"}}}
+    "t_end_utc": {"properties": {"type": {"const": "voice"}}},
+    "speech_ms": {"properties": {"type": {"const": "voice"}}}
   },
   "dependentRequired": {
     "victim": ["victim_steamid64"],
