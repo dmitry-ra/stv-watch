@@ -26,3 +26,23 @@ jobs:
       - run: uv run ruff check .
       - run: uv run pytest -q
         timeout-minutes: 8
+
+  version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: A change to the program bumps the version
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --quiet "$BASE" HEAD -- stvwatch && exit 0
+          old=$(git show "$BASE:pyproject.toml" | sed -n 's/^version = "\(.*\)"$/\1/p')
+          new=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml)
+          if [ "$old" = "$new" ]; then
+            echo "stvwatch/ changed, but the version in pyproject.toml is still $new"
+            exit 1
+          fi

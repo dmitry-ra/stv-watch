@@ -241,6 +241,10 @@ place, or the directory in `STV_WATCH_MODELS`).
 manual checks, `tools/tmux_check.sh` checks the screen in a real terminal.
 How the protocol works: [docs/protocol.md](docs/protocol.md).
 
+Every pull request that changes `stvwatch/` raises `version` in `pyproject.toml`
+(the patch number for a fix, the minor one for a feature) and refreshes `uv.lock`;
+CI fails a pull request that does not.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
