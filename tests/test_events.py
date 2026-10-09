@@ -751,9 +751,9 @@ def test_events_jsonl_is_flushed_line_by_line(tmp_path):
     """A reader tailing events.jsonl sees each line as it is made."""
     app = make_app(tmp_path, "--plain")
     path = os.path.join(app.dir, "events.jsonl")
-    app.event("conn", "first", t_ns=T0)
+    app.event("conn", "first", "info", t_ns=T0)
     assert [json.loads(ln)["text"] for ln in open(path)] == ["first"]
-    app.event("conn", "second", t_ns=T0)
+    app.event("conn", "second", "info", t_ns=T0)
     assert [json.loads(ln)["text"] for ln in open(path)] == ["first", "second"]
     app.jsonl_fh.close()
 
@@ -763,7 +763,7 @@ def test_time_is_utc_unless_tz_names_a_zone_and_only_then_t_local(tmp_path):
     in that zone (2025-10-07 09:40 UTC is 12:40 in Moscow, 05:40 in New York)."""
     utc = make_app(tmp_path / "u", "--no-color")
     utc.screen = Lines()
-    utc.event("conn", "x", t_ns=T0)
+    utc.event("conn", "x", "info", t_ns=T0)
     assert json.loads(open(os.path.join(utc.dir, "events.jsonl")).read()) == {
         "t_utc": "2025-10-07T09:40:00.000Z",
         "type": "conn",
@@ -777,7 +777,7 @@ def test_time_is_utc_unless_tz_names_a_zone_and_only_then_t_local(tmp_path):
         app.screen = Lines()
         app.pacer = Pacer(False)
         app.now = T0
-        app.event("conn", "x", t_ns=T0)
+        app.event("conn", "x", "info", t_ns=T0)
         rec = json.loads(open(os.path.join(app.dir, "events.jsonl")).read())
         assert rec["t_local"] == f"2025-10-07 {clock}:00" and rec["t_utc"].endswith("09:40:00.000Z")
         assert list(rec)[:3] == ["t_utc", "t_local", "type"]
@@ -1065,6 +1065,43 @@ def test_chat_leads_the_feed_the_rest_steps_back(tmp_path, color):
         T + "\x1b[38;5;167mleave " + R + "\x1b[38;5;167mbob" + R + "\x1b[38;5;167m left: x" + R,
         T + "\x1b[2;90mdeath " + R + "\x1b[2;90mbob" + R + "\x1b[2;90m died (slam)" + R,
     ]
+
+
+def test_server_text_read_in_chat_is_dim_other_notices_and_kills_gray(app):
+    f = Feed()
+    f.msg("TextMsg", dest=3, msg="Timeleft: %s1", params=["5:00"])
+    f.msg("TextMsg", dest=4, msg="Round over", params=[])
+    f.msg("HudMsg", text="Welcome")
+    death = {"type": "death", "steamid64": 0, "nick": "bob", "text": "died", "extra": {}}
+    got = [{s for _t, s in app.game_spans(r)} for r in f.take() + [death]]
+    assert got == [{"dim"}, {"gray"}, {"gray"}, {"gray"}]
+
+
+def test_every_line_type_has_its_style_in_one_table():
+    """A type added to the schema without a style fails here, not as an
+    unstyled line on screen; so does a state a call site names that the table
+    lacks, or a colour passed where a state belongs."""
+    import ast
+
+    from stvwatch import app as appmod
+    from stvwatch.render import STYLES
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    schema = os.path.join(root, "docs", "events.schema.json")
+    enum = json.load(open(schema))["properties"]["type"]["enum"]
+    assert sorted(appmod.LINE_STYLE) == sorted(enum)
+    for s in appmod.LINE_STYLE.values():
+        assert set(s.values() if isinstance(s, dict) else [s]) <= set(STYLES)
+    calls = 0
+    for node in ast.walk(ast.parse(open(appmod.__file__).read())):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "event":
+            arg = node.args[2] if len(node.args) > 2 else ast.Constant(None)
+            for st in [arg.body, arg.orelse] if isinstance(arg, ast.IfExp) else [arg]:
+                appmod.line_style(node.args[0].value, st.value)
+            calls += 1
+    assert calls > 15
+    with pytest.raises(KeyError):
+        appmod.line_style("play", "red")
 
 
 def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
