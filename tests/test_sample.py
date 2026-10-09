@@ -15,6 +15,7 @@ import pytest
 from make_sample import build
 
 from stvwatch import events as ge
+from stvwatch import version
 from stvwatch.net import dump
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,7 +40,8 @@ def replay(out, *extra):
 
 def normal(lines):
     """Run-dependent parts out: the replay's first line is written on the wall
-    clock and names the recording's path; the last one names the session."""
+    clock and names the recording's path and the build; the last one names the
+    session."""
     out = []
     for ln in lines:
         r = json.loads(ln)
@@ -47,6 +49,8 @@ def normal(lines):
             r.pop("t_utc")
             r.pop("t_local", None)
             r["text"] = re.sub(r"^replay \S+", "replay SAMPLE", r["text"])
+            if r.get("version") == version.version():
+                r["version"] = "VERSION"
         if r["type"] == "done":
             r["text"] = r["text"].split(" -> ")[0]
         out.append(json.dumps(r, ensure_ascii=False))
@@ -77,6 +81,22 @@ def test_replay_seconds_bound_what_is_shown_even_at_max_speed(tmp_path):
     lines = [json.loads(ln) for ln in replay(tmp_path, *args)]
     shown = max(r["t_utc"] for r in lines if r["type"] not in ("play", "done"))
     assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "seconds")
+
+
+def test_the_build_is_named_once_at_the_start_and_in_meta(tmp_path):
+    """A reader of only events.jsonl, of only feed.log or of meta.json learns
+    which build wrote the session."""
+    v = version.version()
+    lines = [json.loads(ln) for ln in replay(tmp_path / "j", "--speed", "0", "--json")]
+    assert [r.get("version") for r in lines] == [v] + [None] * (len(lines) - 1)
+    (session,) = list((tmp_path / "j").iterdir())
+    meta = json.loads((session / "meta.json").read_text())
+    assert (meta["version"], meta["build"]) == (v, version.build())
+    log = (session / "feed.log").read_text().splitlines()
+    shown = replay(tmp_path / "m", "--speed", "0", "--monitor")
+    tag = f"  [stv-watch {v}]"
+    assert [ln.endswith(tag) for ln in log] == [True] + [False] * (len(log) - 1)
+    assert [ln.endswith(tag) for ln in shown] == [True] + [False] * (len(shown) - 1)
 
 
 def check(value, schema, where="$"):

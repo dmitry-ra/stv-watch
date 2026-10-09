@@ -2,6 +2,7 @@
 
 import io
 
+from stvwatch import version
 from stvwatch.model import NS, Traffic
 from stvwatch.render import Screen, clean, fit, width
 from stvwatch.source import Pacer
@@ -197,6 +198,7 @@ def test_block_height_is_fixed_whatever_the_state(tmp_path):
     app.conn.hostname, app.conn.map = "host", "dm_test"
     app.traffic.inbound(10, 100, True)
     assert len(app.block()) == empty == app.BLOCK_LINES == 4
+    assert app.block()[0] == [(f" stv-watch {version.version()} ", "bar")]
 
 
 def test_traffic_reports_each_transition_once_and_learns_an_idle_pace():

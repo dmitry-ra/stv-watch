@@ -16,6 +16,11 @@ Every run of stv-watch writes one directory:
 | `tvdump.log` | yes | - | the network client's own log |
 | `stderr.log` | yes | yes | anything printed to stdout or stderr other than the screen |
 
+`events.jsonl`, `feed.log`, `meta.json` and `capture.tvd` name the stv-watch
+version that wrote them, as `stv-watch --version` prints it:
+`0.1.0` for a plain release, `0.1.0+g976b9ae` when run from a git checkout at
+that commit, `0.1.0+g976b9ae.dirty` when tracked files differ from it.
+
 ## events.jsonl
 
 Written and flushed line by line in every screen mode, so a reader can tail it.
@@ -29,6 +34,10 @@ The schema is [events.schema.json](events.schema.json). Every line has:
 | `steamid64` | integer | the player the line is about, 0 when none or unknown |
 | `nick` | string | the player's nick as the stream names him |
 | `text` | string | what happened |
+
+The first line of a session (`conn` live, `play` in a replay or `--follow`;
+`done` if the run ended before either) also has `version`, the stv-watch
+version that wrote it. No other line has it.
 
 Players are named by the stream itself: the nick is the current entry of the
 `userinfo` string table, the SteamID64 comes from the same entry or from the
@@ -59,7 +68,7 @@ with `--debug` also `lost: seq A -> B (N)` with `seq_from`, `seq_to`, `lost`),
 
 `<t_utc>\t<steamid64 or empty>\t<line>`, one line per event, UTF-8. The line is
 what the screen shows with `--debug`: a kill names both SteamIDs, the time is
-not repeated.
+not repeated. The first line ends with `  [stv-watch VERSION]`.
 
 ## capture.tvd
 
@@ -71,13 +80,17 @@ epoch ns), `u16` length and the relay's address. Then records:
 |---|---|
 | `0x01` | datagram received, raw bytes |
 | `0x02` | datagram sent, raw bytes |
-| `0x10` | session started (JSON: `session`, `attempt`, `endpoint`) |
+| `0x10` | session started (JSON: `session`, `attempt`, `endpoint`, `version`) |
 | `0x11` | signon state reached (JSON: `state`, `name`) |
 | `0x12` | session broken (JSON: `cause`, `detail`) |
 | `0x13` | connection attempt (JSON: `attempt`, `ok`, `error`) |
 | `0x14` | map change (JSON: `map`) |
 | `0x15` | a `-2` split part was seen (JSON: `length`) |
 | `0x16` | we left (JSON: `why`, `sent` = net_Disconnect copies) |
+
+`version` in a session start is the stv-watch version that wrote the record;
+the event records are JSON, so it needed no change of the format, and files
+written before it simply lack the field.
 
 Voice messages stay in the recorded datagrams: a later version can replay old
 recordings with voice. A file cut by a crash is readable up to the cut.
@@ -86,7 +99,9 @@ datagrams only).
 
 ## meta.json
 
-Written at exit: `args` (the command line), `dir`, `tz`, `pid`, `start_utc`,
+Written at exit: `version`, `build` (`version`, `release`, `commit` = the full
+hash, `dirty`; the last two null outside a git checkout), `args` (the command
+line), `dir`, `tz`, `pid`, `start_utc`,
 `end_utc`, `quit` (`end of recording`, `seconds`, `key q`, `SIGINT`, `SIGTERM`,
 `SIGHUP`, `alarm`, `client exited`, `precheck`), `tvdump_rc` (exit code of the
 network client; null when it had to be killed), `traffic`, `framer` (receive
