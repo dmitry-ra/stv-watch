@@ -78,7 +78,10 @@ class Recognizer:
         self.audio_s = 0.0
         self.room = threading.Condition()
         self.shared_q = queue.Queue()
-        threading.Thread(target=self._load, daemon=True, name="asr-load").start()
+        self.loader = threading.Thread(target=self._load, daemon=True, name="asr-load")
+        self.worker = threading.Thread(target=self._worker, daemon=True, name="asr")
+        self.loader.start()
+        self.worker.start()
 
     # ---- engine
     def _load(self):
@@ -91,9 +94,6 @@ class Recognizer:
             self.error = f"{type(e).__name__}: {e}"
         self.load_s = time.monotonic() - t0
         self.out.put(("loaded", self.state, self.error, self.load_s))
-        threading.Thread(
-            target=self._worker, args=(self.shared_q,), daemon=True, name="asr"
-        ).start()
 
     # ---- submission (main loop)
     def _done(self, audio_s):
@@ -122,7 +122,8 @@ class Recognizer:
 
     def close(self):
         """Stop the worker: queued jobs are dropped for the caller to name, the
-        one being recognized ends unread."""
+        one being recognized is finished. A thread left inside onnxruntime at
+        interpreter exit aborts the process (std::terminate, exit code 134)."""
         while True:
             try:
                 _key, pcm, _meta = self.shared_q.get_nowait()
@@ -130,11 +131,13 @@ class Recognizer:
                 break
             self._done(len(pcm) / SR)
         self.shared_q.put(None)
+        self.worker.join()
 
     # ---- worker
-    def _worker(self, q):
+    def _worker(self):
+        self.loader.join()
         while True:
-            job = q.get()
+            job = self.shared_q.get()
             if job is None:
                 return
             jkey, pcm, meta = job

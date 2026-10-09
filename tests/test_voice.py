@@ -3,11 +3,13 @@ live and final lines, the recognizer behind them, transcript.tsv and WAVs.
 The recognizer runs a stand-in engine here; the real one is in test_parakeet."""
 
 import json
+import signal
 import subprocess
 import sys
 import threading
 import time
 import wave
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -436,7 +438,8 @@ def test_a_long_monologue_reaches_the_engine_in_pieces_marked_continued(tmp_path
 
 def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine, monkeypatch):
     """The engine holds every job until the exit starts, then takes 0.3 s:
-    --drain-ms 0 waits for none of them, and each keeps its WAV."""
+    --drain-ms 0 waits for the queue no longer, the job in the engine is
+    finished, and the queued two keep their WAV."""
     gate = threading.Event()
     stream = engine.open
 
@@ -451,13 +454,218 @@ def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine, mo
     demo(rec)
     rc, session, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet", "--drain-ms", "0")
     assert rc == 0
-    assert [r["result"] for r in lines if r["type"] == "voice"] == [
+    assert sorted(r["result"] for r in lines if r["type"] == "voice") == [
+        "not recognized before exit"
+    ] * 2 + ["text"]
+    assert sorted((r[5], (session / r[7]).is_file()) for r in rows[1:]) == [
+        ("not recognized before exit", True)
+    ] * 2 + [("text", True)]
+    assert lines[-1]["type"] == "done"
+
+
+class StubScreen(Lines):
+    tty, pending = False, []
+
+    def draw(self, block):
+        pass
+
+    def stop(self, final=()):
+        pass
+
+    def key(self):
+        return None
+
+
+def held_until_exit(engine, monkeypatch, delay):
+    """The engine holds every job until the exit starts, then takes `delay` s each."""
+    gate = threading.Event()
+    stream = engine.open
+
+    def held():
+        gate.wait()
+        return stream()
+
+    engine.open, engine.delay = held, delay
+    shutdown = App.shutdown
+    monkeypatch.setattr(App, "shutdown", lambda app, meta: (gate.set(), shutdown(app, meta)))
+
+
+def voice_rows(session):
+    rows = (session / "transcript.tsv").read_text().splitlines()[1:]
+    return sorted((r.split("\t")[0], r.split("\t")[5]) for r in rows)
+
+
+def test_a_replay_that_ends_by_itself_recognizes_every_utterance(tmp_path, engine, monkeypatch):
+    """No --drain-ms: the exit waits for the whole queue, however short the
+    live bound, and returns 0 with the worker stopped."""
+    monkeypatch.setattr("stvwatch.app.LIVE_DRAIN_MS", 0)
+    held_until_exit(engine, monkeypatch, 0.3)
+    rec = str(tmp_path / "demo.tvd")
+    demo(rec)
+    app = App(
+        parse_args(
+            ["--replay", rec, "--speed", "0", "--json", "--out", str(tmp_path / "o")]
+            + ["--asr", "parakeet"]
+        )
+    )
+    assert app.run() == 0
+    assert [r for _t, r in voice_rows(session_of(tmp_path / "o"))] == ["text"] * 3
+    assert not app.asr.worker.is_alive()
+
+
+def test_a_stop_during_the_drain_ends_it_and_finishes_the_utterance_in_the_engine(
+    tmp_path, engine, monkeypatch
+):
+    """A replay waits for its queue until a signal comes: then the job in the
+    engine is finished and the rest are named, quit stays the end of recording."""
+    held_until_exit(engine, monkeypatch, 0.5)
+    rec = str(tmp_path / "demo.tvd")
+    demo(rec)
+    app = App(
+        parse_args(
+            ["--replay", rec, "--speed", "0", "--json", "--out", str(tmp_path / "o")]
+            + ["--asr", "parakeet"]
+        )
+    )
+    drain = App.shutdown
+    monkeypatch.setattr(
+        App,
+        "shutdown",
+        lambda app, meta: (
+            threading.Timer(0.2, app._on_signal, (signal.SIGTERM, None)).start(),
+            drain(app, meta),
+        ),
+    )
+    t0 = time.monotonic()
+    assert app.run() == 0
+    assert time.monotonic() - t0 < 1.4
+    session = session_of(tmp_path / "o")
+    assert sorted(r for _t, r in voice_rows(session)) == ["not recognized before exit"] * 2 + [
+        "text"
+    ]
+    assert json.loads((session / "meta.json").read_text())["quit"] == "end of recording"
+    assert not app.asr.worker.is_alive()
+
+
+def test_sigterm_twice_as_systemd_sends_it_through_uv_exits_0_with_every_line(tmp_path):
+    """systemd signals the whole cgroup and `uv run` forwards its own copy: the
+    second SIGTERM must end the wait like the first, never raise out of it."""
+    driver = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(Path(__file__).parent)!r})\n"
+        "from test_voice import Engine\n"
+        "from stvwatch import cli\n"
+        "from stvwatch.asr import recognizer, weights\n"
+        "e = Engine(delay=1.0)\n"
+        "recognizer.build = lambda *a: e\n"
+        "weights.ensure = lambda *a: None\n"
+        "sys.exit(cli.main(sys.argv[1:]))\n"
+    )
+    rec = str(tmp_path / "demo.tvd")
+    demo(rec)
+    argv = [
+        "--replay",
+        rec,
+        "--speed",
+        "0",
+        "--json",
+        "--asr",
+        "parakeet",
+        "--out",
+        str(tmp_path / "o"),
+    ]
+    p = subprocess.Popen(
+        [sys.executable, "-B", "-c", driver, *argv],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert json.loads(p.stdout.readline())["type"] == "asr"
+        assert json.loads(p.stdout.readline())["type"] == "play"
+        time.sleep(0.5)
+        t0 = time.monotonic()
+        p.send_signal(signal.SIGTERM)
+        time.sleep(0.2)
+        p.send_signal(signal.SIGTERM)
+        out, err = p.communicate(timeout=30)
+    finally:
+        if p.poll() is None:
+            p.kill()
+    assert (p.returncode, err) == (0, "")
+    assert time.monotonic() - t0 < 2.5
+    voice = [json.loads(ln)["result"] for ln in out.splitlines() if '"voice"' in ln]
+    assert sorted(voice) == ["not recognized before exit"] * 2 + ["text"]
+    assert json.loads(out.splitlines()[-1])["type"] == "done"
+
+
+def test_live_a_signal_waits_the_live_bound_then_the_utterance_in_the_engine(
+    tmp_path, engine, monkeypatch
+):
+    """SIGTERM live with a backlog: the exit waits LIVE_DRAIN_MS for the
+    queue, finishes the job in the engine and names the rest."""
+    monkeypatch.setattr("stvwatch.app.LIVE_DRAIN_MS", 300)
+    engine.delay = 1.0
+    app = App(
+        parse_args(
+            ["--relay", "127.0.0.1:9", "--json", "--out", str(tmp_path)] + ["--asr", "parakeet"]
+        )
+    )
+    app.pacer, app.screen = Pacer(False), StubScreen()
+    app.asr = recognizer.Recognizer("parakeet", 2, "", 0, lambda: 0, app.q_out, wait=False)
+    sid = steamid64(1)
+    ch = app.channels[sid] = Channel(sid, T0)
+    ca = app.audio[sid] = ChannelAudio()
+    for k in range(4):
+        ca.open, ca.start_ns, ca.index = True, T0 + k * 10 * 10**9, k + 1
+        app.speech_start(ch, ca, ca.start_ns)
+        app.add_pcm(sid, ca, np.full(SR, 0.3, np.float32), ca.start_ns)
+        app.finish_utterance(sid, ca.start_ns + 10**9, "clock")
+    app._on_signal(signal.SIGTERM, None)
+    t0 = time.monotonic()
+    app.shutdown({})
+    assert time.monotonic() - t0 < 1.8
+    assert [r for _t, r in voice_rows(next(tmp_path.iterdir()))] == ["text"] + [
         "not recognized before exit"
     ] * 3
-    assert [(r[5], (session / r[7]).is_file()) for r in rows[1:]] == [
-        ("not recognized before exit", True)
-    ] * 3
-    assert lines[-1]["type"] == "done"
+    assert len(engine.seen) == 1 and not app.asr.worker.is_alive()
+
+
+def test_the_exit_waits_for_the_recognizer_by_how_the_run_ends(tmp_path):
+    """Unbounded only for a replay that ended by itself; --drain-ms bounds all."""
+
+    def end(*argv, stops=0):
+        app = App(parse_args([*argv, "--out", str(tmp_path / str(len(list(tmp_path.iterdir()))))]))
+        app.stops = stops
+        return app.drain_end(100.0)
+
+    assert end("--replay", "x.tvd") is None
+    assert end("--replay", "x.tvd", stops=1) == 120.0
+    assert end("--relay", "127.0.0.1:9") == 120.0
+    assert end("--replay", "x.tvd", "--drain-ms", "5000") == 105.0
+    assert end("--relay", "127.0.0.1:9", "--drain-ms", "0") == 100.0
+
+
+def test_a_stop_while_the_model_loads_waits_for_the_load(tmp_path, monkeypatch):
+    """An exit leaves no thread inside the engine, the loading one included."""
+    e = Engine()
+
+    def slow(name, threads, models_dir, min_ms):
+        time.sleep(0.5)
+        return e
+
+    monkeypatch.setattr(recognizer, "build", slow)
+    rec = str(tmp_path / "demo.tvd")
+    demo(rec)
+    app = App(
+        parse_args(
+            ["--replay", rec, "--speed", "0", "--json", "--out", str(tmp_path / "o")]
+            + ["--asr", "parakeet", "--drain-ms", "0"]
+        )
+    )
+    threading.Timer(0.1, app._on_signal, (signal.SIGTERM, None)).start()
+    assert app.run() == 0
+    assert not app.asr.loader.is_alive() and not app.asr.worker.is_alive()
 
 
 def test_a_replay_waits_for_the_recognizer_once_its_queue_is_full(tmp_path, engine, monkeypatch):
