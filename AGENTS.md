@@ -24,8 +24,8 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
 - `--speed 0` replays as fast as possible; the default 1 keeps the recorded pace.
 - Add `--tz ZONE` only if you need local time; `t_utc` is always there.
 - stdin is not read in `--json`/`--monitor` mode; no key needs to be pressed.
-- `--asr parakeet` downloads 2.55 GB of weights on its first run (one line on
-  stderr says so; the files are checked by SHA-256) and then needs about 2.6 GB
+- `--asr parakeet` downloads 2.55 GB of weights on its first run (Parakeet and
+  Silero VAD; a line on stderr for each; the files are checked by SHA-256) and then needs about 2.6 GB
   of memory. Ask your user before the first download. Replaying at `--speed 0`
   with `--asr` reads far ahead of the recognizer: give it a `--drain` long
   enough for the queue (0.15 s per second of voice on 2 threads of an i7-8700), or

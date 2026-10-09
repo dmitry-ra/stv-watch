@@ -20,8 +20,8 @@ that recording gives the same lines the live run printed.
   environment with the dependencies, all wheels from PyPI (about 45 MB of
   downloads): numpy, opuslib-next-bundled (the Opus decoder, libopus inside),
   onnxruntime and onnx-asr (speech recognition).
-- For `--asr parakeet`: 2.55 GB of disk for the model weights and about 2.6 GB
-  of memory while it runs.
+- For `--asr parakeet`: 2.55 GB of disk for the model weights (Parakeet and
+  Silero VAD) and about 2.6 GB of memory while it runs.
 
 ## Install and run
 
@@ -76,19 +76,21 @@ uv run stv-watch --relay RELAY_IP:27020 --asr parakeet
 ```
 
 The first run downloads the weights of Parakeet TDT 0.6B v3 (2.55 GB, about 25
-European languages, Russian and English among them) into
-`$XDG_CACHE_HOME/stv-watch/models` (`~/.cache/stv-watch/models` when it is
-unset; `--models-dir` chooses another place). It prints one line with the size
-and the revision first, fetches every file from Hugging Face at a pinned
-revision and checks its size and SHA-256 before using it; a file that fails the
-check is deleted and the run stops. Later runs start from the files on disk.
+European languages, Russian and English among them) and of Silero VAD (0.64 MB)
+into `$XDG_CACHE_HOME/stv-watch/models` (`~/.cache/stv-watch/models` when it is
+unset; `--models-dir` chooses another place). For each it prints one line with
+the size and the revision first, fetches every file from its source at a pinned
+revision (Hugging Face, GitHub) and checks its size and SHA-256 before using it;
+a file that fails the check is deleted and the run stops. Later runs start from the files on disk.
 Recognition runs on the CPU (`--threads`, default 2) after an utterance ends,
 so its text follows the speech by about a second. On exit, queued utterances
 get `--drain` seconds (default 20); the rest are marked `not recognized before
 exit`.
 
-The model hears no silence but may make up a word or two on noise or music:
-there is no voice activity detection in front of it.
+Silero VAD stands in front of the model as a gate: an utterance with less than
+0.25 s of speech in it gets no text (`no speech`), because on noise Parakeet
+tends to make up an interjection. The VAD never cuts an utterance; a monologue
+is cut only at its pauses, as above.
 
 Without a recording at hand, `tests/voicegen.py` writes a synthetic one with
 voice made of tones and noise (no speech):
@@ -195,4 +197,7 @@ from its source. Parakeet TDT 0.6B v3 is by NVIDIA
 ([nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)),
 the ONNX export it uses is
 [istupakov/parakeet-tdt-0.6b-v3-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx);
-both are under CC-BY-4.0.
+both are under CC-BY-4.0. Silero VAD is by the Silero team
+([snakers4/silero-vad](https://github.com/snakers4/silero-vad), MIT); the file
+it uses, `silero_vad.onnx` (v4), is the ONNX export published by k2-fsa in the
+`asr-models` release of [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).

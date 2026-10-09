@@ -87,8 +87,8 @@ def parse_args(argv=None):
         choices=asr.ENGINES,
         default=None,
         help="recognize what players say with this engine; its weights are downloaded on "
-        "the first use (parakeet: 2.55 GB). Without it voice is still shown: who talks and "
-        "how long, WAV files, transcript.tsv rows without text",
+        "the first use (parakeet: 2.55 GB with the Silero VAD). Without it voice is still "
+        "shown: who talks and how long, WAV files, transcript.tsv rows without text",
     )
     ap.add_argument("--threads", type=int, default=2, help="recognizer CPU threads")
     ap.add_argument(
@@ -219,7 +219,8 @@ def main(argv=None):
     a = parse_args(argv)
     if a.asr:
         try:
-            weights.ensure(weights.PINS[a.asr], a.models_dir)
+            for name in asr.WEIGHTS[a.asr]:
+                weights.ensure(weights.PINS[name], a.models_dir)
         except (weights.WeightsError, KeyboardInterrupt) as e:
             print(f"stv-watch: {a.asr} weights not available: {e}", file=sys.stderr)
             return 2

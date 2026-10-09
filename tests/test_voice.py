@@ -338,15 +338,16 @@ def test_weights_are_fetched_before_the_run_and_a_failure_exits_2(tmp_path, monk
 
     def ensure(pin, models_dir):
         calls.append((pin.engine, models_dir))
-        raise weights.WeightsError("encoder-model.onnx: sha256 x, want y")
+        if pin.engine == "silero-vad":
+            raise weights.WeightsError("silero_vad.onnx: sha256 x, want y")
 
     monkeypatch.setattr(weights, "ensure", ensure)
     rec = str(tmp_path / "demo.tvd")
     demo(rec)
     argv = ["--replay", rec, "--out", str(tmp_path / "o"), "--asr", "parakeet"]
     assert cli.main(argv + ["--models-dir", str(tmp_path / "m")]) == 2
-    assert calls == [("parakeet", str(tmp_path / "m"))]
-    assert "parakeet weights not available: encoder-model.onnx: sha256" in capsys.readouterr().err
+    assert calls == [("parakeet", str(tmp_path / "m")), ("silero-vad", str(tmp_path / "m"))]
+    assert "parakeet weights not available: silero_vad.onnx: sha256" in capsys.readouterr().err
     assert not (tmp_path / "o").exists()
 
 

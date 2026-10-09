@@ -42,8 +42,9 @@ Voice (always shown, not filtered by `--events`):
 |---|---|---|
 | `voice` | `result`, `continued`, `spectator`, `details`, `t_end_utc` | one utterance, or one piece of a monologue; `text` is what was recognized |
 
-- `result`: `text` (`text` holds what was said), `no speech` (the recognizer
-  heard nothing), `asr off` (run without `--asr`), `not recognized before exit`
+- `result`: `text` (`text` holds what was said), `no speech` (the voice
+  activity detector found less than 0.25 s of speech, or the model heard
+  nothing), `asr off` (run without `--asr`), `not recognized before exit`
   (still queued when `--drain` ran out).
 - `continued`: a piece of a monologue after the first; pieces are cut at a
   pause, at most `--max-utt` seconds long.

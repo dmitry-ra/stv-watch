@@ -58,7 +58,7 @@
     "seq_from": {"description": "net, --debug only: highest sequence number before the gap.", "type": "integer"},
     "seq_to": {"description": "net, --debug only: sequence number after the gap.", "type": "integer"},
     "lost": {"description": "net, --debug only: sequence numbers lost in the gap (not declared choked).", "type": "integer"},
-    "result": {"description": "voice: text (text holds what was recognized), no speech (the recognizer heard none), asr off (no --asr), not recognized before exit (still queued when --drain ran out).", "type": "string", "enum": ["text", "no speech", "asr off", "not recognized before exit"]},
+    "result": {"description": "voice: text (text holds what was recognized), no speech (the voice activity gate found under 0.25 s of speech, or the model heard none), asr off (no --asr), not recognized before exit (still queued when --drain ran out).", "type": "string", "enum": ["text", "no speech", "asr off", "not recognized before exit"]},
     "continued": {"description": "voice: a piece of a monologue after the first (cut at --max-utt).", "type": "boolean"},
     "spectator": {"description": "voice: the speaker is a spectator and sv_alltalk is off, so the players in game did not hear him.", "type": "boolean"},
     "details": {"description": "voice: transport numbers of the utterance (audio and arrival seconds, Opus frames, concealed and silence-filled frames, bit rate, key presses, voice messages, share in split packets, arrivals, how long after the last frame it closed) and, with --asr, recognition seconds and the lag behind the speech.", "type": "string"},

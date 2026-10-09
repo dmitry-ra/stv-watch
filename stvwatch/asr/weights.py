@@ -28,6 +28,7 @@ class Pin:
     revision: str
     license: str
     files: tuple
+    dirname: str = ""  # under the models directory; ENGINE-REVISION[:7] if empty
 
     @property
     def size(self):
@@ -71,6 +72,21 @@ PINS = {
             ),
         ),
     ),
+    "silero-vad": Pin(
+        engine="silero-vad",
+        title="Silero VAD v4 (snakers4/silero-vad, ONNX export by k2-fsa)",
+        source="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models",
+        revision="asr-models",
+        license="MIT",
+        files=(
+            WeightFile(
+                "silero_vad.onnx",
+                643854,
+                "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+            ),
+        ),
+        dirname="silero-vad-v4",
+    ),
 }
 
 
@@ -85,7 +101,7 @@ def default_dir():
 
 
 def model_dir(pin, models_dir):
-    return os.path.join(models_dir, f"{pin.engine}-{pin.revision[:7]}")
+    return os.path.join(models_dir, pin.dirname or f"{pin.engine}-{pin.revision[:7]}")
 
 
 def missing(pin, path):
@@ -106,9 +122,11 @@ def ensure(pin, models_dir, log=None, timeout=60.0):
     if not need:
         return path
     size = sum(f.size for f in need)
+    amount = f"{size / 1e9:.2f} GB" if size >= 1e8 else f"{size / 1e6:.2f} MB"
+    rev = pin.revision[:7] if len(pin.revision) == 40 else pin.revision
     log(
-        f"stv-watch: downloading {pin.engine} weights, {size / 1e9:.2f} GB, revision "
-        f"{pin.revision[:7]} ({pin.title}, {pin.license}) into {path}"
+        f"stv-watch: downloading {pin.engine} weights, {amount}, revision {rev} "
+        f"({pin.title}, {pin.license}) into {path}"
     )
     os.makedirs(path, exist_ok=True)
     for f in need:

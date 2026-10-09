@@ -39,7 +39,7 @@ def pin(base, **wrong):
         weights.WeightFile(n, len(d), hashlib.sha256(d).hexdigest()) for n, d in FILES.items()
     )
     files = tuple(weights.WeightFile(**{**vars(f), **wrong.get(f.name, {})}) for f in files)
-    return weights.Pin("t", "test", base, "0123456789abcdef", "CC0", files)
+    return weights.Pin("t", "test", base, "0123456" + "0" * 33, "CC0", files)
 
 
 def test_files_are_fetched_checked_and_named_once(server, tmp_path):
@@ -50,7 +50,7 @@ def test_files_are_fetched_checked_and_named_once(server, tmp_path):
     assert path == str(tmp_path / "m" / "t-0123456")
     assert {n: open(os.path.join(path, n), "rb").read() for n in FILES} == FILES
     assert sorted(os.listdir(path)) == sorted(FILES)
-    assert len(said) == 2 and "0.00 GB, revision 0123456" in said[0]
+    assert len(said) == 2 and "3.15 MB, revision 0123456 " in said[0]
     n = len(seen)
     assert weights.ensure(p, str(tmp_path / "m"), log=said.append) == path
     assert len(seen) == n and len(said) == 2  # present: no request, no line
@@ -90,6 +90,12 @@ def test_the_parakeet_pin_is_the_measured_revision():
     )
     assert p.size == 2_549_805_955
     assert weights.model_dir(p, "/m") == "/m/parakeet-8f23f0c"
+    v = weights.PINS["silero-vad"]
+    assert [(f.name, f.size, f.sha256[:12]) for f in v.files] == [
+        ("silero_vad.onnx", 643854, "9e2449e10874")
+    ]
+    assert v.source.startswith("https://github.com/k2-fsa/sherpa-onnx/releases/download/")
+    assert weights.model_dir(v, "/m") == "/m/silero-vad-v4"
 
 
 def test_models_default_to_xdg_cache_home(monkeypatch, tmp_path):
