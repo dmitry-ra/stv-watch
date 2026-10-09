@@ -29,7 +29,7 @@ from .net import dump as dumpfmt
 from .render import Screen, clean
 from .serve import ServedScreen
 from .stream.framing import Framer
-from .stream.userinfo import NickBook
+from .stream.userinfo import STEAMID64_BASE, NickBook, StringTables
 from .voice import audio, steamvoice
 from .voice.segments import ChannelFrame, Segmenter
 
@@ -52,6 +52,8 @@ TSV_HEAD = (
     "asr_ms",
     "lag_ms",
 )
+# after t_local, so that a reader of the columns before keeps its positions
+SLOT_HEAD = ("slot", "verified", "slot_steamid64")
 
 
 # Every feed line type (docs/events.schema.json), or state -> style for a type
@@ -63,7 +65,13 @@ TSV_HEAD = (
 # kills and other server notices dimmest. Game lines are painted whole, except
 # chat and voice, which keep their cyan nick; our own lines keep the blue tag.
 LINE_STYLE = {
-    "voice": {"talking": "green", "recognizing": "yellow", "text": "bold", "no text": "dim"},
+    "voice": {
+        "talking": "green",
+        "recognizing": "yellow",
+        "text": "bold",
+        "no text": "dim",
+        "slot mismatch": "red",
+    },
     "chat": "boldyellow",
     "console": "magenta",
     "connect": "dim",
@@ -128,13 +136,17 @@ def steam2(sid64):
     return f"STEAM_0:{a & 1}:{a >> 1}"
 
 
+def owner_sid(player):
+    return STEAMID64_BASE + player.friends_id if player.friends_id else 0
+
+
 def lag_style(seconds):
     """Recognition lag: text over 2 s behind the speech is late, over 5 s the
     recognizer does not keep up."""
     return "red" if seconds > 5.0 else "yellow" if seconds > 2.0 else ""
 
 
-STATS = ("frames", "plc", "gap", "opus_bytes", "presses", "via_split")
+STATS = ("frames", "plc", "gap", "opus_bytes", "presses", "via_split", "slot_ok", "slot_bad")
 
 
 class ChannelAudio:
@@ -158,6 +170,9 @@ class ChannelAudio:
         self.presses = 0
         self.arrivals = []  # receive time of each voice message
         self.via_split = 0
+        # voice messages whose slot holds / does not hold the payload's player
+        self.slot_ok = self.slot_bad = 0
+        self.slot, self.slot_owner = None, None  # the last slot; the first mismatch freezes both
         self.marks = []  # (nsamp, t_ns, msgs, STATS) after each voice message
 
     def mark(self, t_ns):
@@ -171,6 +186,7 @@ class ChannelAudio:
         _s, last, msgs, head = self.marks[n - 1] if n else (0, self.start_ns, 0, [0] * len(STATS))
         piece = ChannelAudio()
         piece.start_ns, piece.last_ns = self.start_ns, last
+        piece.slot, piece.slot_owner = self.slot, self.slot_owner
         piece.arrivals, self.arrivals = self.arrivals[:msgs], self.arrivals[msgs:]
         for k, v in zip(STATS, head, strict=True):
             setattr(piece, k, v)
@@ -180,6 +196,19 @@ class ChannelAudio:
             for s, t, m, c in self.marks[n:]
         ]
         return piece
+
+    def check_slot(self, m, steamid64):
+        """Count one voice message against its slot's userinfo entry."""
+        bad = m.owner is not None and m.owner.friends_id != steamid64 - STEAMID64_BASE
+        if not self.slot_bad:
+            self.slot, self.slot_owner = m.from_client, m.owner if bad else None
+        self.slot_bad += bad
+        self.slot_ok += m.owner is not None and not bad
+
+    def verified(self):
+        """False if any message's slot belonged to someone else, None if no
+        message could be checked, else True."""
+        return False if self.slot_bad else True if self.slot_ok else None
 
 
 class Utt:
@@ -194,6 +223,7 @@ class Utt:
         self.audio_s = 0.0
         self.cont = False  # a piece of a monologue after the first
         self.nick, self.spectator = "", None  # as of the end, see App.speaker
+        self.slot, self.verified, self.slot_owner = None, None, None  # as of the end
         self.meta = {}  # the recognizer job, once closed
 
 
@@ -210,6 +240,7 @@ class App:
         self.quit_why = ""
         self.conn = Conn()
         self.traffic = Traffic(quiet_s=a.quiet_ms / 1000)
+        self.tables = StringTables()
         self.nicks = NickBook()
         self.channels = {}
         self.utts = {}  # key -> Utt with a live line
@@ -223,6 +254,7 @@ class App:
             on_info=self._on_info,
             on_packet=self._on_packet if a.debug else None,
             on_msg=self.game.on_msg,
+            slot_owner=self.tables.owner,
         )
         self.game.attach(self.framer)
         self.rec = None
@@ -253,7 +285,7 @@ class App:
         )
         self.tsv_fh = open(os.path.join(self.dir, "transcript.tsv"), "a", encoding="utf-8")
         if self.tsv_fh.tell() == 0:
-            head = TSV_HEAD + (("t_local",) if a.tz_given else ())
+            head = TSV_HEAD + (("t_local",) if a.tz_given else ()) + SLOT_HEAD
             self.tsv_fh.write("\t".join(head) + "\n")
 
     # ---------------------------------------------------------------- setup
@@ -278,12 +310,12 @@ class App:
         return d
 
     def _on_table(self, payload, start, end):
-        self.nicks(payload, start, end)
-        br = wire.BitReader(payload)
-        br.pos = start - wire.NETMSG_TYPE_BITS
-        self.game.on_table(payload, start, end, br.read_ubit(wire.NETMSG_TYPE_BITS))
+        mid, entries = self.tables.feed(payload, start, end, self.framer.cur_session)
+        self.nicks.update(entries)
+        self.game.on_table(mid, entries)
 
     def _on_info(self, info):
+        self.tables.reset()
         if info.get("map") and info["map"] != self.conn.map:
             self.conn.map = info["map"]
         self.conn.hostname = info.get("hostname") or self.conn.hostname
@@ -445,6 +477,7 @@ class App:
                 )
             ca = self.audio.get(p.steamid64)
             if ca is not None and ca.open:
+                ca.check_slot(m, p.steamid64)
                 ca.arrivals.append(m.t_ns)
                 ca.via_split += m.via_split
                 ca.mark(m.t_ns)
@@ -534,6 +567,23 @@ class App:
     def spec_mark(self, spectator):
         """A spectator's voice reaches only spectators unless sv_alltalk."""
         return [(" [spec]", "dim")] if spectator else []
+
+    def slot_state(self, utt):
+        """(slot, verified, owner) of an utterance: the open piece's so far
+        while talking, as of its end once closed."""
+        if utt.state == "talking":
+            ca = self.audio[utt.sid]
+            return ca.slot, ca.verified(), ca.slot_owner
+        return utt.slot, utt.verified, utt.slot_owner
+
+    def slot_mark(self, utt):
+        """The server put someone else in the slot this voice came from: the
+        SteamID in the payload is the sender's claim, the slot the server's."""
+        slot, verified, owner = self.slot_state(utt)
+        if verified is not False:
+            return []
+        who = clean(owner.name) or steam2(owner_sid(owner))
+        return [(f" [slot {slot}: {who}]", line_style("voice", "slot mismatch"))]
 
     def on_frame(self, cf):
         f = cf.frame
@@ -640,6 +690,7 @@ class App:
             utt.end_ns, utt.state = t_ns, "recognizing"
             self.refresh_name(ch)
             utt.nick, utt.spectator = ch.nick, self.game.unheard(sid)
+            utt.slot, utt.verified, utt.slot_owner = facts.slot, facts.verified(), facts.slot_owner
             utt.meta = meta
         if self.asr is None or not len(pcm):
             self.finalize(utt, "", meta)
@@ -701,6 +752,7 @@ class App:
         out = (
             [(local(utt.start_ns, self.tz) + " ", "dim"), self.VOICE_TAG]
             + self.name_spans(nick, utt.sid)
+            + self.slot_mark(utt)
             + self.spec_mark(spectator)
             + ([(" (cont)", "dim")] if utt.cont else [])
         )
@@ -800,6 +852,11 @@ class App:
         ]
         if self.a.tz_given:
             row.append(local(utt.start_ns, self.tz, "%Y-%m-%d %H:%M:%S"))
+        row += [
+            "" if utt.slot is None else str(utt.slot),
+            {True: "true", False: "false", None: ""}[utt.verified],
+            str(owner_sid(utt.slot_owner)) if utt.verified is False else "",
+        ]
         self.tsv_fh.write("\t".join(f.replace("\t", " ").replace("\n", " ") for f in row) + "\n")
         self.tsv_fh.flush()
 
@@ -811,11 +868,12 @@ class App:
         who = (
             [self.VOICE_TAG]
             + self.name_spans(nick, ch.sid64)
+            + self.slot_mark(utt)
             + self.spec_mark(spectator)
             + ([(" (cont)", "dim")] if utt.cont else [])
             + said
         )
-        full = who + [("  " + tail, "dim")]
+        full = who + [("  " + tail + ("" if utt.slot is None else f" slot {utt.slot}"), "dim")]
         spans = full if self.a.debug else who + [(f"  {utt.audio_s:.1f}s", "dim")]
         extra = {
             "result": label or "text",
@@ -826,6 +884,9 @@ class App:
         }
         if speech is not None:
             extra["speech_ms"] = speech
+        extra["slot"], extra["verified"] = utt.slot, utt.verified
+        if utt.verified is False:
+            extra["slot_steamid64"] = owner_sid(utt.slot_owner)
         line = self.json_line(
             {"type": "voice", "steamid64": ch.sid64, "nick": nick, "text": text, "extra": extra},
             utt.start_ns,

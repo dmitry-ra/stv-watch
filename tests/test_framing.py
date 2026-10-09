@@ -14,7 +14,6 @@ from helpers import (
     chat_bytes,
     ones_pad,
     packet,
-    player_info,
     reliable_packet,
     split,
     steamid64,
@@ -29,7 +28,7 @@ from stvwatch.net import dump, messages, netchan, wire
 from stvwatch.stream import streamevents as se
 from stvwatch.stream.framing import Framer, frame
 from stvwatch.stream.recording import Datagram, Recording
-from stvwatch.stream.userinfo import STEAMID64_BASE, NickBook
+from stvwatch.stream.userinfo import STEAMID64_BASE, NickBook, StringTables
 
 A, B = steamid64(1), steamid64(2)
 X = messages.signonstate_body(wire.SIGNON_SPAWN, 3)
@@ -385,9 +384,9 @@ def test_unparseable_reliable_region_leaves_the_tail_unread():
 # --- hooks ---------------------------------------------------------------------
 
 
-def test_framer_hands_string_tables_to_the_nick_hook():
-    book = NickBook()
-    fr = Framer(on_table=book)
+def test_framer_hands_string_tables_to_the_table_hook():
+    tables, book = StringTables(), NickBook()
+    fr = Framer(on_table=lambda *m: book.update(tables.feed(*m)[1]))
     acc = A - STEAMID64_BASE
     fr.feed(
         Datagram(
@@ -395,24 +394,16 @@ def test_framer_hands_string_tables_to_the_nick_hook():
             0,
             0,
             netchan.build_packet(
-                3, 1, CHALLENGE, 0, unreliable=table_update(("nick", f"[U:1:{acc}]", acc))
+                3,
+                1,
+                CHALLENGE,
+                0,
+                unreliable=table_update(("nick", f"[U:1:{acc}]", acc), create=True),
             ),
         )
     )
     assert [f.fate for f in fr.fates] == ["ok"]
     assert book.nick(A) == "nick"
-
-
-def test_nick_is_found_at_any_bit_offset_and_keyed_by_friends_id():
-    book = NickBook()
-    acc = A - STEAMID64_BASE
-    for shift, guid in ((3, "STEAM_H:1:12345"), (6, f"[U:1:{acc}]")):
-        blob = b"\x07" + player_info("caf\u00e9", guid, acc + shift)
-        payload = (int.from_bytes(blob, "little") << shift).to_bytes(len(blob) + 1, "little")
-        book(payload, 0, len(payload) * 8)  # struct starts mid-byte
-    assert book.nick(A + 3) == "caf\u00e9"
-    assert book.nick(A + 6) == "caf\u00e9"
-    assert book.nick(A) is None
 
 
 def test_chain_decodes_text_events_and_flags_bad_length():

@@ -102,14 +102,17 @@ def test_the_build_is_named_once_at_the_start_and_in_meta(tmp_path):
 def check(value, schema, where="$"):
     """The subset of JSON Schema the event schema uses."""
     errors = []
-    kinds = {"string": str, "object": dict, "boolean": bool}
+    kinds = {"string": str, "object": dict, "boolean": bool, "null": type(None)}
     t = schema.get("type")
-    if t == "integer":
-        ok = isinstance(value, int) and not isinstance(value, bool)
-    elif t is not None:
-        ok = isinstance(value, kinds[t])
-    else:
-        ok = True
+    types = t if isinstance(t, list) else [] if t is None else [t]
+    ok = not types or any(
+        (
+            isinstance(value, int) and not isinstance(value, bool)
+            if k == "integer"
+            else isinstance(value, kinds[k])
+        )
+        for k in types
+    )
     if not ok:
         return [f"{where}: {value!r} is not {t}"]
     if "const" in schema and value != schema["const"]:
@@ -118,7 +121,7 @@ def check(value, schema, where="$"):
         errors.append(f"{where}: {value!r} not in enum")
     if "pattern" in schema and not re.search(schema["pattern"], value):
         errors.append(f"{where}: {value!r} does not match {schema['pattern']}")
-    if "minimum" in schema and value < schema["minimum"]:
+    if "minimum" in schema and value is not None and value < schema["minimum"]:
         errors.append(f"{where}: {value!r} below {schema['minimum']}")
     if isinstance(value, dict):
         props = schema.get("properties", {})
@@ -216,7 +219,18 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
         "$: speech_ms on 'chat'"
     ]
     voice = dict(CHAT, type="voice", result="text", continued=False, spectator=False, details="")
-    assert check(voice, schema) == ["$: t_end_utc missing"]
+    assert check(voice, schema) == [
+        "$: t_end_utc missing",
+        "$: slot missing",
+        "$: verified missing",
+    ]
+    voice = dict(voice, t_end_utc=CHAT["t_utc"], slot=3, verified=False, slot_steamid64=1)
+    assert check(voice, schema) == []
+    assert check(dict(voice, verified=None), schema) == ["$: slot_steamid64 on 'voice'"]
+    assert check(dict(voice, slot=None, verified=None, slot_steamid64=None), schema) == [
+        "$.slot_steamid64: None is not integer",
+        "$: slot_steamid64 on 'voice'",
+    ]
 
 
 CHAT = {

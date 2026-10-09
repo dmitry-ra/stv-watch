@@ -3,6 +3,8 @@ live and final lines, the recognizer behind them, transcript.tsv and WAVs.
 The recognizer runs a stand-in engine here; the real one is in test_parakeet."""
 
 import json
+import subprocess
+import sys
 import threading
 import time
 import wave
@@ -10,17 +12,29 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from helpers import T0, account, packet, steamid64, write_recording
+from helpers import (
+    T0,
+    account,
+    packet,
+    steamid64,
+    table_update,
+    userinfo_entries,
+    write_create,
+    write_recording,
+)
+from make_sample import server_info
 from voicegen import demo, noise, tone, voice_plan
 from voicegen import payload as voice_payload
 
 from stvwatch import cli
-from stvwatch.app import SR, TSV_HEAD, App, ChannelAudio, Utt
+from stvwatch.app import SLOT_HEAD, SR, TSV_HEAD, App, ChannelAudio, Utt
 from stvwatch.asr import recognizer, vad, weights
 from stvwatch.cli import parse_args
 from stvwatch.model import Channel
+from stvwatch.net import netchan, wire
 from stvwatch.render import rows_for
 from stvwatch.source import Pacer
+from stvwatch.stream.userinfo import Player
 
 
 def steam2(acc):
@@ -353,7 +367,7 @@ def test_recognized_replay_texts_transcript_and_wavs(tmp_path, engine):
         ("alice", "heard 1.00s", "text", False),
     ]
     assert all(" asr " in r["details"] for r in voice)
-    assert rows[0] == list(TSV_HEAD) + ["t_local"]
+    assert rows[0] == list(TSV_HEAD) + ["t_local", *SLOT_HEAD]
     rows = sorted(rows[1:])
     assert [(r[3], r[4], r[5], r[6]) for r in rows] == [
         ("alice", "parakeet", "text", "heard 4.00s"),
@@ -363,6 +377,13 @@ def test_recognized_replay_texts_transcript_and_wavs(tmp_path, engine):
     assert [r[0] for r in rows] == [r["t_utc"] for r in voice]
     assert [r[11] for r in rows] == [r["t_local"] for r in voice]
     assert rows[0][11] == "2025-10-07 18:40:01"
+    # every voice message came from its speaker's own slot
+    assert [(r["slot"], r["verified"], "slot_steamid64" in r) for r in voice] == [
+        (1, True, False),
+        (2, True, False),
+        (1, True, False),
+    ]
+    assert [r[12:] for r in rows] == [["1", "true", ""], ["2", "true", ""], ["1", "true", ""]]
     # Silero speech of each utterance (the stand-in's: loud windows), in the
     # JSON line and the transcript alike, in whole milliseconds
     assert [r["speech_ms"] for r in voice] == [3360, 1472, 992]
@@ -575,3 +596,103 @@ def test_the_recognizer_loads_while_nothing_is_read(tmp_path, monkeypatch):
     _rc, _s, lines, _rows = replay(rec, tmp_path / "o", "--asr", "parakeet")
     assert started.is_set()
     assert [r["type"] for r in lines[:2]] == ["asr", "play"]
+
+
+def forged_recording(path):
+    """alice and bob in slots 1 and 2. alice talks from her slot; alice's
+    SteamID comes from her slot, then from bob's (a forged payload); carol
+    talks from slot 5 before and after the server puts her there; dave
+    talks from slot 6, empty all along. Then the map changes: new tables,
+    bob alone in slot 1, and he talks."""
+    names = ("alice", "bob", "carol", "dave")
+    sid = {k: steamid64(n) for n, k in enumerate(names, 1)}
+
+    def who(name, slot, userid):
+        acc = account(names.index(name) + 1)
+        return (name, f"[U:1:{acc}]", acc, userid, slot)
+
+    def table(seq, *players, create=False):
+        return netchan.build_packet(
+            seq, 1, 0x11223344, 0, unreliable=table_update(*players, create=create)
+        )
+
+    plan = [(0, lambda s: table(s, who("alice", 1, 11), who("bob", 2, 12), create=True))]
+    talks = [
+        (100, "alice", [1] * 6),
+        (2000, "alice", [1, 1, 1, 2, 2, 2]),
+        (4000, "carol", [5] * 6),
+        (6000, "dave", [6] * 4),
+    ]
+    for t0, name, slots in talks:
+        for k, slot in enumerate(slots):
+            p = voice_payload(sid[name], 3 * k)
+            plan.append((t0 + 60 * k, lambda s, slot=slot, p=p: packet(s, [(slot, p)])))
+    plan.append((4150, lambda s: table(s, who("carol", 5, 13))))
+
+    def new_map(seq):
+        slots = [(i, str(i).encode(), None) for i in range(16)]
+        slots[1] = userinfo_entries([who("bob", 1, 12)])[0]
+        w = wire.BitWriter()
+        server_info(w)
+        write_create(w, [(0, b"x", None)], name="downloadables")
+        write_create(w, slots)
+        return netchan.build_packet(seq, 1, 0x11223344, 0, unreliable=w.get_bytes())
+
+    plan.append((8000, new_map))
+    for k in range(6):
+        p = voice_payload(sid["bob"], 3 * k)
+        plan.append((8100 + 60 * k, lambda s, p=p: packet(s, [(1, p)])))
+    plan += [(ms, lambda s: packet(s)) for ms in range(10, 10000, 20)]
+    plan.sort(key=lambda e: e[0])
+    write_recording(path, [(T0 + ms * 1_000_000, f(n + 1)) for n, (ms, f) in enumerate(plan)])
+    return sid
+
+
+def test_voice_lines_say_whether_the_slot_is_the_speakers(tmp_path):
+    """The SteamID in a voice payload is what the sending client wrote; the
+    slot it came from is the server's. verified: true when the server had
+    that player in the slot, false when any message came from someone
+    else's slot (slot_steamid64 names him, the screen marks it in red), null
+    when no message could be checked."""
+    rec = str(tmp_path / "r.tvd")
+    sid = forged_recording(rec)
+    rc, _session, lines, rows = replay(rec, tmp_path / "o")
+    assert rc == 0
+    voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["t_utc"])
+    assert [(r["steamid64"], r["slot"], r["verified"], r.get("slot_steamid64")) for r in voice] == [
+        (sid["alice"], 1, True, None),
+        (sid["alice"], 2, False, sid["bob"]),
+        (sid["carol"], 5, True, None),
+        (sid["dave"], 6, None, None),
+        (sid["bob"], 1, True, None),
+    ]
+    rows = sorted(rows[1:])
+    assert [r[11:] for r in rows] == [
+        ["1", "true", ""],
+        ["2", "false", str(sid["bob"])],
+        ["5", "true", ""],
+        ["6", "", ""],
+        ["1", "true", ""],
+    ]
+    cmd = [sys.executable, "-B", "-m", "stvwatch.cli", "--replay", rec, "--speed", "0"]
+    cmd += ["--monitor", "--status-every-ms", "0", "--out", str(tmp_path / "m")]
+    for debug in ([], ["--debug"]):
+        out = subprocess.run(
+            cmd + debug, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=60, check=True
+        ).stdout.decode()
+        shown = [ln[13:] for ln in out.splitlines() if " voice " in ln]
+        assert [ln.split(": asr off")[0] for ln in shown] == [
+            "voice alice",
+            "voice alice [slot 2: bob]",
+            "voice carol",
+            f"voice {steam2(account(4))}",
+            "voice bob",
+        ]
+        assert [
+            ln.endswith(f" slot {n}") for ln, n in zip(shown, (1, 2, 5, 6, 1), strict=True)
+        ] == [bool(debug)] * 5
+    painted = App(parse_args(["--replay", rec, "--out", str(tmp_path / "p")]))
+    utt = Utt(("k", 1), sid["alice"], 0)
+    utt.state, utt.slot, utt.verified = "recognizing", 2, False
+    utt.slot_owner = Player(account(2), "bob", 12)
+    assert painted.slot_mark(utt) == [(" [slot 2: bob]", "red")]

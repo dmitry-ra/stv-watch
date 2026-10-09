@@ -2,7 +2,7 @@
 leaves, kills, team and nick changes, server and SourceMod texts.
 
 Decoding is stream.streamevents (the Collector hangs on Framer.on_msg) and
-stream.userinfo (the string table hook); this module only turns their
+stream.userinfo (the decoded string table); this module only turns their
 output into one self-contained record per event. Facts the rules rest on,
 observed on live relays:
 - a connect is a new entry of the `userinfo` table (player_connect never
@@ -18,7 +18,7 @@ import re
 from collections import Counter, deque
 
 from .stream import streamevents as se
-from .stream.userinfo import STEAMID64_BASE, scan_players
+from .stream.userinfo import STEAMID64_BASE
 
 TYPES = (
     "chat",
@@ -173,10 +173,11 @@ class GameEvents:
         return rec
 
     # ------------------------------------------------------------ userinfo table
-    def on_table(self, payload, start, end, mid):
+    def on_table(self, mid, entries):
+        """entries: StringTables.feed's [(slot, Player | None)]."""
         fr = self.framer
         self._session(fr.cur_session)
-        players = scan_players(payload, start, end)
+        players = [p for _slot, p in entries if p is not None]
         if mid == STRING_TABLE_CREATE and any(fid for fid, _n, _u in players):
             # not in the table we join with: left during the map change while
             # we were reconnecting, so his next greeting is a first entry

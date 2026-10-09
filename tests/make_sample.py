@@ -20,12 +20,14 @@ from helpers import (
     body,
     chat,
     ones_pad,
-    player_info,
     reliable_packet,
     split,
     steamid64,
+    userinfo_entries,
     usermessage,
     voice_payload,
+    write_create,
+    write_update,
     write_voice,
 )
 
@@ -139,28 +141,11 @@ def server_info(w):
 
 def userinfo_create(*players):
     """svc_CreateStringTable 'userinfo' carrying player_info_t entries."""
-    blob = b"".join(player_info(*p) for p in players)
-    w = wire.BitWriter()
-    w.write_ubit(12, wire.NETMSG_TYPE_BITS)
-    w.write_string("userinfo")
-    w.write_ubit(64, 16)  # max entries
-    w.write_ubit(len(players), 7)  # entries: Q_log2(64) + 1 bits
-    w.write_varint32(len(blob) * 8)
-    w.write_one_bit(0)  # user data not fixed size
-    w.write_one_bit(0)  # not compressed
-    w.write_bytes(blob)
-    return w
+    return write_create(wire.BitWriter(), userinfo_entries(players))
 
 
 def userinfo_update(*players):
-    blob = b"\x07" + b"".join(player_info(*p) for p in players)
-    w = wire.BitWriter()
-    w.write_ubit(13, wire.NETMSG_TYPE_BITS)
-    w.write_ubit(7, 5)
-    w.write_one_bit(0)
-    w.write_ubit(len(blob) * 8, 20)
-    w.write_bytes(blob)
-    return w
+    return write_update(wire.BitWriter(), userinfo_entries(players))
 
 
 def stream(*parts):
@@ -206,7 +191,9 @@ def build(path):
     dg(200, unreliable(nxt(), lambda w: chat(w, "alice", "hello"), voice))
     dg(
         300,
-        unreliable(nxt(), lambda w: bits_into(w, userinfo_update(("carol", u(CAROL), CAROL, 14)))),
+        unreliable(
+            nxt(), lambda w: bits_into(w, userinfo_update(("carol", u(CAROL), CAROL, 14, 4)))
+        ),
     )
     dg(400, unreliable(nxt(), lambda w: text_msg(w, 1, "#Game_connected", "carol", "", "", "")))
     dg(500, unreliable(nxt(), lambda w: say_text(w, 0, "Console: map vote in 5 minutes\n")))

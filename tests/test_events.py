@@ -31,12 +31,12 @@ from helpers import (
 from voicegen import payload as steam_voice
 
 from stvwatch import events as ge
-from stvwatch.app import TSV_HEAD, App
+from stvwatch.app import SLOT_HEAD, TSV_HEAD, App
 from stvwatch.cli import default_out, parse_args
 from stvwatch.net import dump, netchan, wire
 from stvwatch.source import Pacer
 from stvwatch.stream import streamevents as se
-from stvwatch.stream.userinfo import STEAMID64_BASE, scan_players
+from stvwatch.stream.userinfo import STEAMID64_BASE, Player
 
 CREATE, UPDATE = ge.STRING_TABLE_CREATE, ge.STRING_TABLE_UPDATE
 STV = [sys.executable, "-B", "-m", "stvwatch.cli"]
@@ -45,18 +45,6 @@ ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
 
 def steam2(acc):
     return f"STEAM_0:{acc & 1}:{acc >> 1}"
-
-
-def player_info(name, guid, friends_id, userid):
-    s = name.encode().ljust(32, b"\0") + struct.pack("<i", userid)
-    s += guid.encode().ljust(33, b"\0") + b"\0" * 3 + struct.pack("<I", friends_id)
-    return s + b"\0" * 40
-
-
-def table(*players, shift=0):
-    blob = b"\x07" + b"".join(player_info(*p) for p in players)
-    payload = (int.from_bytes(blob, "little") << shift).to_bytes(len(blob) + 1, "little")
-    return payload, 0, len(payload) * 8
 
 
 def u(acc):
@@ -77,7 +65,8 @@ class Feed:
             self.fr.cur_session = session
 
     def tab(self, mid, *players):
-        self.g.on_table(*table(*players), mid)
+        """players: (nick, guid, friends_id, userid); the guid is not read."""
+        self.g.on_table(mid, [(i, Player(f, n, uid)) for i, (n, _g, f, uid) in enumerate(players)])
 
     def msg(self, _name, **f):
         self.g.record(
@@ -119,17 +108,6 @@ def app(tmp_path):
 
 def line(app, rec):
     return "".join(t for t, _s in app.game_spans(rec))
-
-
-def test_userinfo_players_carry_userid_and_bots_at_any_bit_offset():
-    acc = account(4242)
-    for shift in (0, 5):
-        got = scan_players(
-            *table(("caf\u00e9", "STEAM_H:1:12345", acc, 7), ("Sniper", "BOT", 0, 303), shift=shift)
-        )
-        assert sorted(got) == [(0, "Sniper", 303), (acc, "caf\u00e9", 7)]
-    # a bot guid with a friends id, or a userid out of range, is a false match
-    assert scan_players(*table(("x", "BOT", 5, 9), ("y", "[U:1:5]", 5, 0))) == []
 
 
 def test_every_event_type_becomes_one_self_contained_line(app):
@@ -656,9 +634,9 @@ def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     shown = [re.sub(r" \d+kb/s ", " KBPS ", ln[13:]) for ln in out.splitlines() if " voice " in ln]
     assert shown == [
         f"voice {steam2(account(1))}: asr off  0.1s/0.1s fr 6 plc 0 gap 0 KBPS press 1 msg 2"
-        " -2 0% arr 2 p50 60 max 60ms +1.4s",
+        " -2 0% arr 2 p50 60 max 60ms +1.4s slot 1",
         f"voice {steam2(account(1))}: asr off  0.1s/0.0s fr 3 plc 0 gap 0 KBPS press 1 msg 1"
-        " -2 0% arr 1 p50 0 max 0ms +1.0s",
+        " -2 0% arr 1 p50 0 max 0ms +1.0s slot 1",
     ]
 
 
@@ -903,7 +881,7 @@ def test_session_files_of_a_replay(tmp_path):
     assert meta["conn"]["state_utc"] is None and "state_ns" not in meta["conn"]
     assert meta["counters"]["payload_bad"] == 0 and "asr" not in meta
     rows = [ln.split("\t") for ln in (session / "transcript.tsv").read_text().splitlines()]
-    assert rows[0] == list(TSV_HEAD)
+    assert rows[0] == list(TSV_HEAD + SLOT_HEAD)
     wavs = sorted(p.name for p in (session / "audio").iterdir())
     assert [(r[2], r[5], r[6], r[7]) for r in rows[1:]] == [
         (sid, "asr off", "", "audio/" + wavs[0]),
@@ -1262,7 +1240,9 @@ def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
     plan = [
         (
             0,
-            netchan.build_packet(1, 1, CHALLENGE, 0, unreliable=table_update(("old", u(acc), acc))),
+            netchan.build_packet(
+                1, 1, CHALLENGE, 0, unreliable=table_update(("old", u(acc), acc), create=True)
+            ),
         ),
         (100, packet(2, [(1, steam_voice(sid, 0))])),
         (1500, reliable_packet(4, w.get_bytes() + b"\x00")),
@@ -1329,7 +1309,9 @@ def test_a_rename_in_the_silence_before_the_close_names_the_utterance(tmp_path):
     plan = [
         (
             0,
-            netchan.build_packet(1, 1, CHALLENGE, 0, unreliable=table_update(("old", u(acc), acc))),
+            netchan.build_packet(
+                1, 1, CHALLENGE, 0, unreliable=table_update(("old", u(acc), acc), create=True)
+            ),
         ),
         (100, packet(2, [(1, steam_voice(sid, 0))])),
         (
