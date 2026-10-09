@@ -190,10 +190,11 @@ class Pieces:
 
     def __init__(self, with_vad):
         self.engine = SimpleNamespace(vad=LoudVad()) if with_vad else SimpleNamespace()
-        self.lengths = []
+        self.lengths, self.metas = [], []
 
     def utterance(self, sid, pcm, meta):
         self.lengths.append(round(len(pcm) / SR, 2))
+        self.metas.append(meta)
 
 
 def monologue(tmp_path, seconds, pauses, with_vad=True, *extra):
@@ -283,6 +284,31 @@ def test_a_spectators_voice_is_marked_on_screen_and_in_json(tmp_path):
     assert [" [spec]" in text_of(c) for c in app.screen.closed] == [True, False]
     lines = (next(tmp_path.iterdir()) / "events.jsonl").read_text().splitlines()
     assert [json.loads(ln)["spectator"] for ln in lines] == [True, False]
+
+
+def test_the_speaker_is_as_of_the_utterance_end_not_the_recognizer_result(tmp_path):
+    """The result comes seconds of stream after the end; a team change or a
+    rename in between belongs to the game, not to what was said."""
+    sid = steamid64(1)
+    app = bare_app(tmp_path)
+    app.asr = Pieces(False)
+    ch = app.channels[sid] = Channel(sid, T0)
+    ch.nick = "Pensioner"
+    ca = app.audio[sid] = ChannelAudio()
+    ca.open, ca.start_ns, ca.index = True, T0, 1
+    app.game.team[account(1)] = 3
+    app.speech_start(ch, ca, T0)
+    app.add_pcm(sid, ca, np.full(SR, 0.3, np.float32), T0)
+    app.finish_utterance(sid, T0 + 10**9, "clock")
+    app.game.team[account(1)] = 1
+    ch.nick = "Spectating"
+    app.handle_result(("final", sid, "hi", app.asr.metas[0]))
+    (line,) = (next(tmp_path.iterdir()) / "events.jsonl").read_text().splitlines()
+    rec = json.loads(line)
+    assert (rec["nick"], rec["spectator"]) == ("Pensioner", False)
+    assert text_of(app.screen.closed[0]).startswith("09:40:00.000 voice Pensioner: hi ")
+    row = (next(tmp_path.iterdir()) / "transcript.tsv").read_text().splitlines()[-1]
+    assert row.split("\t")[3] == "Pensioner"
 
 
 def test_recognized_replay_texts_transcript_and_wavs(tmp_path, engine):

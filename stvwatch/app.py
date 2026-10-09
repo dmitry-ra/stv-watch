@@ -141,6 +141,7 @@ class Utt:
         self.details = ""  # transport summary, set when it closes
         self.audio_s = 0.0
         self.cont = False  # a piece of a monologue after the first
+        self.nick, self.spectator = "", None  # as of the end, see App.speaker
 
 
 class App:
@@ -473,15 +474,20 @@ class App:
         if nick:
             ch.nick = clean(nick)
 
-    def display_name(self, ch):
-        return ch.nick or steam2(ch.sid64)
+    def speaker(self, utt, ch):
+        """(nick, spectator) of an utterance: live while it is open, as of its
+        end once closed - the recognizer answers seconds of stream later, and
+        by then the player may have changed team or name."""
+        if utt.spectator is None:
+            return ch.nick, self.game.unheard(ch.sid64)
+        return utt.nick, utt.spectator
 
-    def name_spans(self, ch):
-        return [(self.display_name(ch), "cyan")]
+    def name_spans(self, nick, sid):
+        return [(nick or steam2(sid), "cyan")]
 
-    def spec_mark(self, ch):
+    def spec_mark(self, spectator):
         """A spectator's voice reaches only spectators unless sv_alltalk."""
-        return [(" [spec]", "dim")] if self.game.unheard(ch.sid64) else []
+        return [(" [spec]", "dim")] if spectator else []
 
     def on_frame(self, cf):
         f = cf.frame
@@ -583,6 +589,7 @@ class App:
             utt.details = self.details(ca, t_ns, why, len(pcm) / SR)
             utt.audio_s = len(pcm) / SR
             utt.end_ns, utt.state = t_ns, "recognizing"
+            utt.nick, utt.spectator = ch.nick, self.game.unheard(sid)
         if self.asr is None or not len(pcm):
             self.finalize(utt, "", meta)
         else:
@@ -639,10 +646,11 @@ class App:
         """Live line of an utterance: who, state, seconds so far (transport
         numbers with --debug)."""
         ch = self.channels[utt.sid]
+        nick, spectator = self.speaker(utt, ch)
         out = (
             [(local(utt.start_ns, self.tz) + " ", "dim"), self.VOICE_TAG]
-            + self.name_spans(ch)
-            + self.spec_mark(ch)
+            + self.name_spans(nick, utt.sid)
+            + self.spec_mark(spectator)
             + ([(" (cont)", "dim")] if utt.cont else [])
         )
         if utt.state == "talking":
@@ -726,7 +734,7 @@ class App:
             utc_iso(utt.start_ns),
             utc_iso(t_end),
             str(ch.sid64),
-            ch.nick,
+            self.speaker(utt, ch)[0],
             self.model or "",
             label or "text",
             text,
@@ -744,10 +752,11 @@ class App:
         """Final line of an utterance. On screen: who, what and how long, the
         transport and recognition numbers only with --debug; feed.log and
         --json always get them all."""
+        nick, spectator = self.speaker(utt, ch)
         who = (
             [self.VOICE_TAG]
-            + self.name_spans(ch)
-            + self.spec_mark(ch)
+            + self.name_spans(nick, ch.sid64)
+            + self.spec_mark(spectator)
             + ([(" (cont)", "dim")] if utt.cont else [])
             + said
         )
@@ -756,14 +765,14 @@ class App:
         extra = {
             "result": label or "text",
             "continued": utt.cont,
-            "spectator": self.game.unheard(ch.sid64),
+            "spectator": spectator,
             "details": tail.strip(),
             "t_end_utc": utc_iso(utt.end_ns or self.now),
         }
         if speech is not None:
             extra["speech_ms"] = speech
         line = self.json_line(
-            {"type": "voice", "steamid64": ch.sid64, "nick": ch.nick, "text": text, "extra": extra},
+            {"type": "voice", "steamid64": ch.sid64, "nick": nick, "text": text, "extra": extra},
             utt.start_ns,
         )
         self.jsonl(line)
