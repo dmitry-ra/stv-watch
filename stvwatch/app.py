@@ -721,7 +721,7 @@ class App:
         speech = meta.get("speech_ms")
         label = ""
         if not text:
-            label = meta.get("unfinished") or ("no speech" if self.asr is not None else "asr off")
+            label = meta.get("result") or ("no speech" if self.asr is not None else "asr off")
             if label == "no speech":
                 ch.nospeech += 1
                 self.counters["nospeech"] += 1
@@ -863,7 +863,7 @@ class App:
                     ("voice", "blue"),
                     (f" msgs {vm}", ""),
                     (f" (via -2 {100 * via / vm:.0f}%)" if vm else "", "dim"),
-                    (f"  bad {fc.get('voice_crc_bad', 0) + self.counters['payload_bad']}", ""),
+                    (f"  bad {self.counters['payload_bad']}", ""),
                 ]
                 + speakers
                 + [
@@ -1262,7 +1262,7 @@ class App:
                 self.asr.close(timeout=0.5)
                 self.tick(False)
             for utt in list(self.utts.values()):
-                self.finalize(utt, "", {"unfinished": "not recognized before exit"})
+                self.finalize(utt, "", {"result": "not recognized before exit"})
             if self.client is not None and self.a2s_before is not None:
                 ok, after, text = self.slot_check()
                 self.event("conn", text, "green" if ok else "red")

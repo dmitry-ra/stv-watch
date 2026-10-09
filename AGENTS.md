@@ -42,7 +42,7 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
 
 - `voice`: one utterance (always on). `text` is what was recognized; `result`
   says why it may be empty (`no speech`, `asr off`, `not recognized before
-  exit`); `continued` marks a later piece of a monologue; `t_end_utc` is when
+  exit`, `recognition failed`); `continued` marks a later piece of a monologue; `t_end_utc` is when
   it closed. It is written when recognition returns, so it may come after
   lines of later events: order by `t_utc`.
 - Game events: `chat`, `console`, `connect`, `join`, `leave`, `death`, `team`,

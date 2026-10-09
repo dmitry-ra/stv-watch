@@ -45,7 +45,8 @@ Voice (always shown, not filtered by `--events`):
 - `result`: `text` (`text` holds what was said), `no speech` (the voice
   activity detector found less speech than `--min-speech-ms`, or the model
   heard nothing), `asr off` (run without `--asr`), `not recognized before exit`
-  (still queued when `--drain-ms` ran out).
+  (still queued when `--drain-ms` ran out), `recognition failed` (the engine
+  raised an error on it; the `asr` line before it says which).
 - `continued`: a piece of a monologue after the first; pieces are cut at the
   longest pause in their last 40 %, at most `--max-utt-ms` long.
 - `speech_ms`: milliseconds of speech Silero VAD found in the utterance
@@ -103,7 +104,7 @@ they were finished (tabs and line breaks inside a field become spaces):
 | `t_start_utc`, `t_end_utc` | first frame and close of the utterance, the format of `t_utc` |
 | `steamid64`, `nick` | the speaker |
 | `model` | the recognizer (`parakeet`), empty without `--asr` |
-| `result` | as in the `voice` line: `text`, `no speech`, `asr off`, `not recognized before exit` |
+| `result` | as in the `voice` line: `text`, `no speech`, `asr off`, `not recognized before exit`, `recognition failed` |
 | `text` | what was recognized, empty unless `result` is `text` |
 | `audio` | the WAV file, relative to the session directory; empty with `--no-audio` |
 | `speech_ms` | speech found by the VAD, as in the `voice` line; empty when not measured |

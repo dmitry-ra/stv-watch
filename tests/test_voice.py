@@ -73,6 +73,7 @@ class Engine:
 
     def __init__(self, delay=0.0, text=None):
         self.delay, self.text, self.seen = delay, text, []
+        self.fail = None
         self.vad = LoudVad()
 
     def open(self):
@@ -87,6 +88,8 @@ class Engine:
                 pcm = np.concatenate(parts)
                 eng.seen.append(len(pcm))
                 time.sleep(eng.delay)
+                if eng.fail is not None and eng.fail(len(pcm)):
+                    raise RuntimeError("bad_alloc")
                 text = eng.text if eng.text is not None else f"heard {len(pcm) / SR:.2f}s"
                 speech = [("speech_ms", vad.speech_ms(eng.vad.probs(pcm)))]
                 return speech + ([("final", text)] if text else [])
@@ -391,6 +394,26 @@ def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine):
     assert "not recognized before exit" in results and len(results) == 3
     assert sorted(r[5] for r in rows[1:]) == results
     assert lines[-1]["type"] == "done"
+
+
+def test_an_utterance_the_engine_fails_on_is_named_and_not_counted_as_no_speech(tmp_path, engine):
+    engine.fail = lambda n: n == 3 * SR // 2
+    rec = str(tmp_path / "demo.tvd")
+    demo(rec)
+    rc, session, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet")
+    assert rc == 0
+    voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["t_utc"])
+    assert [(r["nick"], r["result"], r["text"]) for r in voice] == [
+        ("alice", "text", "heard 4.00s"),
+        ("bob", "recognition failed", ""),
+        ("alice", "text", "heard 1.00s"),
+    ]
+    assert sorted(r[5] for r in rows[1:]) == sorted(r["result"] for r in voice)
+    assert [r["text"] for r in lines if r["type"] == "asr"][-1].endswith(
+        ": RuntimeError: bad_alloc"
+    )
+    meta = json.loads((session / "meta.json").read_text())
+    assert (meta["counters"]["phrases"], meta["counters"]["nospeech"]) == (2, 0)
 
 
 def test_an_engine_that_fails_to_load_ends_the_run_before_reading(tmp_path, monkeypatch):

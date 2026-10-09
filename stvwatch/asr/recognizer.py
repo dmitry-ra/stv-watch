@@ -138,7 +138,7 @@ class Recognizer:
                 st = self.engine.open()
                 events = st.push(pcm) + st.finish()
             except Exception as e:  # noqa: BLE001
-                events = []
+                events, meta = [], dict(meta, result="recognition failed")
                 self.out.put(("error", jkey, f"{type(e).__name__}: {e}"))
             # Wall time, not thread CPU: engine threads do the work outside this one.
             compute = time.monotonic() - w0

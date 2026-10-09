@@ -65,6 +65,17 @@ def test_steam_voice_roundtrip_keeps_frames_and_crc():
     assert steamvoice.parse(b"\x00" * 11).error == "short"
 
 
+def test_a_byte_left_over_in_an_opus_blob_is_a_framing_error():
+    """Too short for a frame header: with a valid CRC it still means the
+    frames were cut wrong."""
+    body = struct.pack("<QBH", 42, steamvoice.CHUNK_SAMPLERATE, 24000)
+    for blob in (struct.pack("<HH", 2, 7) + b"\x01\x02", struct.pack("<H", 0xFFFF)):
+        for tail, error in ((b"", ""), (b"\xaa", "opus blob trailing byte")):
+            b = body + struct.pack("<BH", steamvoice.CHUNK_OPUS, len(blob + tail)) + blob + tail
+            p = steamvoice.parse(b + struct.pack("<I", zlib.crc32(b)))
+            assert (p.crc_ok, p.error) == (True, error)
+
+
 def test_lost_frames_are_concealed_short_and_silenced_long_keeping_the_timeline():
     """seq gaps of up to 3 frames are concealed by the decoder, longer ones
     filled with silence: the decoded length always equals the seq span."""

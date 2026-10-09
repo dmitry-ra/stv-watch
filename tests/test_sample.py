@@ -162,6 +162,8 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
                     return []
 
                 def finish(self):
+                    if 20000 < sum(n) < 30000:
+                        raise RuntimeError("bad_alloc")
                     text = [("final", "a phrase")] if sum(n) > 20000 else []
                     return [("speech_ms", sum(n) // 16)] + text
 
@@ -186,6 +188,7 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
         ("voice", "asr off", False),
         ("voice", "text", True),
         ("voice", "no speech", True),
+        ("voice", "recognition failed", False),
         ("asr", None, False),
     } <= seen
     assert check(dict(CHAT, channel="all", ent=1, result="text"), schema) == ["$: result on 'chat'"]

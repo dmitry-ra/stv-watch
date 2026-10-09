@@ -78,9 +78,10 @@ def parse(p):
                 off += 2
                 out.append(Frame("opus", seq=seq, data=bytes(p[off : off + flen])))
                 off += flen
+            if not err and off < blob_end:
+                err = "opus blob trailing byte"
             if err:
                 break
-            off = blob_end
         else:
             err = f"unknown chunk 0x{t:02x}"
             break

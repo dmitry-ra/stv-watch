@@ -936,6 +936,22 @@ def test_duration_options_are_whole_milliseconds(old, new, capsys):
     assert "whole milliseconds" in capsys.readouterr().err
 
 
+def test_every_option_the_docs_name_is_one_stv_watch_takes(capsys):
+    """With abbreviations off, a stale name in the docs is an argument error."""
+    with pytest.raises(SystemExit):
+        parse_args(["--help"])
+    known = set(re.findall(r"--[a-z][a-z0-9-]*", capsys.readouterr().out))
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    named = {}
+    for doc in ("README.md", "AGENTS.md", "docs/session-files.md", "docs/events.schema.json"):
+        with open(os.path.join(root, doc), encoding="utf-8") as f:
+            for opt in re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", f.read()):
+                named.setdefault(opt, doc)
+    # uv's and black's, in the README's how-to
+    stale = {o: d for o, d in named.items() if o not in known | {"--project", "--check"}}
+    assert stale == {}
+
+
 def test_crc_failing_voice_is_counted_and_makes_no_speaker(tmp_path):
     """Not Steam voice at all, and Steam voice whose CRC does not match: both
     counted by the framer and by the viewer, neither decoded."""
@@ -945,13 +961,19 @@ def test_crc_failing_voice_is_counted_and_makes_no_speaker(tmp_path):
     plan = [(0, packet(1, [(1, voice_payload(a)), (1, bytes(bad_crc))])), (2000, packet(2))]
     rec = str(tmp_path / "r.tvd")
     write_recording(rec, [(T0 + ms * 1_000_000, d) for ms, d in plan])
-    replay_lines(rec, tmp_path / "out")
-    session = session_of(tmp_path / "out")
+    out = tmp_path / "out"
+    app = App(
+        parse_args(["--replay", rec, "--speed", "0", "--monitor", "--debug", "--out", str(out)])
+    )
+    assert app.run() == 0
+    session = session_of(out)
     lines = (session / "events.jsonl").read_text().splitlines()
     assert "voice" not in [json.loads(ln)["type"] for ln in lines]
     meta = json.loads((session / "meta.json").read_text())
     assert meta["counters"]["payload_bad"] == 2 and meta["speakers"] == {}
     assert meta["framer"]["voice_msgs"] == 2 and meta["framer"]["voice_crc_bad"] == 2
+    (voice,) = ["".join(t for t, _s in ln) for ln in app.block() if ln and ln[0][0] == "voice"]
+    assert voice.startswith("voice msgs 2 (via -2 0%)  bad 2  ")
 
 
 class Lines:
