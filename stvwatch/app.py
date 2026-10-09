@@ -107,6 +107,9 @@ def lag_style(seconds):
     return "red" if seconds > 5.0 else "yellow" if seconds > 2.0 else ""
 
 
+STATS = ("frames", "plc", "gap", "opus_bytes", "presses", "via_split")
+
+
 class ChannelAudio:
     """Per-speaker audio of the utterance being built."""
 
@@ -128,6 +131,28 @@ class ChannelAudio:
         self.presses = 0
         self.arrivals = []  # receive time of each voice message
         self.via_split = 0
+        self.marks = []  # (nsamp, t_ns, msgs, STATS) after each voice message
+
+    def mark(self, t_ns):
+        self.marks.append((self.nsamp, t_ns, len(self.arrivals), [getattr(self, k) for k in STATS]))
+
+    def split(self, cut):
+        """The transport facts of the voice messages wholly in the first `cut`
+        samples go to a copy, for the piece that ends there; this one keeps
+        the rest, counted from the cut."""
+        n = sum(1 for m in self.marks if m[0] <= cut)
+        _s, last, msgs, head = self.marks[n - 1] if n else (0, self.start_ns, 0, [0] * len(STATS))
+        piece = ChannelAudio()
+        piece.start_ns, piece.last_ns = self.start_ns, last
+        piece.arrivals, self.arrivals = self.arrivals[:msgs], self.arrivals[msgs:]
+        for k, v in zip(STATS, head, strict=True):
+            setattr(piece, k, v)
+            setattr(self, k, getattr(self, k) - v)
+        self.marks = [
+            (s - cut, t, m - msgs, [x - y for x, y in zip(c, head, strict=True)])
+            for s, t, m, c in self.marks[n:]
+        ]
+        return piece
 
 
 class Utt:
@@ -142,6 +167,7 @@ class Utt:
         self.audio_s = 0.0
         self.cont = False  # a piece of a monologue after the first
         self.nick, self.spectator = "", None  # as of the end, see App.speaker
+        self.meta = {}  # the recognizer job, once closed
 
 
 class App:
@@ -390,6 +416,7 @@ class App:
             if ca is not None and ca.open:
                 ca.arrivals.append(m.t_ns)
                 ca.via_split += m.via_split
+                ca.mark(m.t_ns)
 
     def game_lines(self):
         """Feed lines of the game events the framer just decoded."""
@@ -570,13 +597,16 @@ class App:
         ca = self.audio[sid]
         ch = self.channels[sid]
         pcm = asrmod.np_concat(ca.parts)
-        rest = None
+        rest, facts, closed = None, ca, t_ns
         if cut is not None and cut < len(pcm):
             pcm, rest = pcm[:cut], pcm[cut:]
+            t_ns -= len(rest) * NS // SR
+            facts = ca.split(cut)
         meta = {
             "sid": sid,
             "start_ns": ca.start_ns,
             "end_ns": t_ns,
+            "closed_ns": closed,  # a monologue piece ends before it is cut: lag from the cut
             "why": why,
             "audio_s": len(pcm) / SR,
             "wav": self.write_wav(sid, ca, pcm),
@@ -586,24 +616,25 @@ class App:
         utt = self.utts.get(ca.key)
         meta["key"] = ca.key
         if utt is not None:
-            utt.details = self.details(ca, t_ns, why, len(pcm) / SR)
+            utt.details = self.details(facts, t_ns, why, len(pcm) / SR)
             utt.audio_s = len(pcm) / SR
             utt.end_ns, utt.state = t_ns, "recognizing"
             utt.nick, utt.spectator = ch.nick, self.game.unheard(sid)
+            utt.meta = meta
         if self.asr is None or not len(pcm):
             self.finalize(utt, "", meta)
-        else:
-            self.asr.utterance(sid, pcm, meta)
+        elif not self.asr.utterance(sid, pcm, meta):
+            self.finalize(utt, "", dict(meta, result="not recognized, queue full"))
         ca.parts, ca.nsamp = [], 0
-        ca.reset_stats()
+        if rest is None:
+            ca.reset_stats()
         if keep_open:
-            carried = 0 if rest is None else len(rest)
-            ca.start_ns = t_ns - carried * NS // SR
+            ca.start_ns = t_ns
             ca.index += 1
             self.speech_start(ch, ca, ca.start_ns)
             self.utts[ca.key].cont = True
-            if carried:
-                ca.parts, ca.nsamp = [rest], carried
+            if rest is not None:
+                ca.parts, ca.nsamp = [rest], len(rest)
             return
         ca.open = False
         ca.seg_id = -1
@@ -713,7 +744,7 @@ class App:
         del self.utts[utt.key]
         ch = self.channels[utt.sid]
         t_end = utt.end_ns or meta.get("end_ns") or self.now
-        lag = max(0.0, (self.now - t_end) / NS)
+        lag = max(0.0, (self.now - (meta.get("closed_ns") or t_end)) / NS)
         head = [(local(utt.start_ns, self.tz) + " ", "dim")]
         tail = utt.details + (
             "" if self.asr is None else f" asr {meta.get('asr_ms', 0) / 1000:.2f}s +{lag:.1f}s"
@@ -1024,6 +1055,7 @@ class App:
                     a.min_speech_ms,
                     self.pacer.media_now,
                     self.q_out,
+                    wait=not self.live,
                 )
                 # Load before reading or connecting: the load holds the GIL for
                 # seconds, which would stall the reader (a fake traffic stop in
@@ -1254,15 +1286,15 @@ class App:
                 end = time.monotonic() + self.a.drain_ms / 1000
                 while time.monotonic() < end and self.asr.state != "failed":
                     jobs, _p = self.asr.queue_depth()
-                    if self.asr.state == "ready" and not jobs and not self.asr.busy:
+                    if self.asr.state == "ready" and not jobs:
                         break
                     self.tick(False)
                     self.render()
                     time.sleep(0.05)
-                self.asr.close(timeout=0.5)
+                self.asr.close()
                 self.tick(False)
             for utt in list(self.utts.values()):
-                self.finalize(utt, "", {"result": "not recognized before exit"})
+                self.finalize(utt, "", dict(utt.meta, result="not recognized before exit"))
             if self.client is not None and self.a2s_before is not None:
                 ok, after, text = self.slot_check()
                 self.event("conn", text, "green" if ok else "red")

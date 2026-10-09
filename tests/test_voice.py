@@ -198,14 +198,22 @@ class Pieces:
     def utterance(self, sid, pcm, meta):
         self.lengths.append(round(len(pcm) / SR, 2))
         self.metas.append(meta)
+        return True
 
 
 def monologue(tmp_path, seconds, pauses, with_vad=True, *extra):
     """A tone of `seconds` with silent (start, length) pauses, fed in 20 ms
     chunks; -> (piece lengths s, why each piece ended, continued marks)."""
-    sid = steamid64(1)
     app = bare_app(tmp_path, *extra)
     app.asr = Pieces(with_vad)
+    speak(app, seconds, pauses)
+    whys = [u.details.split(" ")[-2] for u in app.utts.values()]
+    conts = [u.cont for u in app.utts.values()]
+    return app.asr.lengths, whys, conts
+
+
+def speak(app, seconds, pauses):
+    sid = steamid64(1)
     ch = app.channels[sid] = Channel(sid, T0)
     ca = app.audio[sid] = ChannelAudio()
     ca.open, ca.start_ns, ca.index = True, T0, 1
@@ -217,9 +225,6 @@ def monologue(tmp_path, seconds, pauses, with_vad=True, *extra):
         quiet = any(p <= t < p + n for p, n in pauses)
         app.add_pcm(sid, ca, np.zeros(step, np.float32) if quiet else sound, T0 + int(t * 1e9))
     app.finish_utterance(sid, T0 + seconds * 10**9, "end")
-    whys = [u.details.split(" ")[-2] for u in app.utts.values()]
-    conts = [u.cont for u in app.utts.values()]
-    return app.asr.lengths, whys, conts
 
 
 def test_a_monologue_is_cut_at_the_longest_pause_of_the_last_40_percent(tmp_path):
@@ -235,6 +240,23 @@ def test_a_monologue_is_cut_at_the_longest_pause_of_the_last_40_percent(tmp_path
     assert sum(lengths[:2]) == pytest.approx(50.0 + (4 * 512 / SR + 0.6) / 2, abs=0.04)
     assert sum(lengths) == 70.0 and len(lengths) == 3
     assert whys == ["pause", "pause", "end"] and conts == [False, True, True]
+
+
+def test_the_lag_of_a_monologue_piece_runs_from_its_cut(tmp_path, engine):
+    """The piece's audio ends at the pause, 4.5 s before the limit cuts it at
+    30 s; the lag tells how far the recognizer is behind, so it runs from the
+    cut: in the transcript and in the block alike."""
+    app = bare_app(tmp_path, "--max-utt-ms", "30000", "--asr", "parakeet")
+    app.now = T0 + 31 * 10**9
+    app.asr = recognizer.Recognizer("parakeet", 2, "", 0, lambda: app.now, app.q_out)
+    speak(app, 31, ((25.0, 1.0),))
+    first = app.q_out.get(timeout=5)
+    while first[0] != "final" or first[3]["why"] != "pause":
+        first = app.q_out.get(timeout=5)
+    app.handle_result(first)
+    row = (next(tmp_path.iterdir()) / "transcript.tsv").read_text().splitlines()[1].split("\t")
+    assert (row[1][11:], row[10]) == ("09:40:25.548Z", "1000")
+    assert app.asr.stats.done[0][3] == 1.0
 
 
 @pytest.mark.parametrize("with_vad", [True, False])
@@ -379,21 +401,108 @@ def test_a_long_monologue_reaches_the_engine_in_pieces_marked_continued(tmp_path
         ("heard 8.62s", True),
         ("heard 0.50s", False),
     ]
+    # the piece ends where the next begins, and each holds the frames and
+    # messages of its own audio: 3 frames per message of 60 ms
+    assert voice[0]["t_end_utc"] == voice[1]["t_utc"] == "2025-10-07T09:40:27.416Z"
+    assert [r["details"].split(" arr ")[0].split("fr ")[1] for r in voice[:2]] == [
+        "1368 plc 0 gap 0 32kb/s press 1 msg 456 -2 0%",
+        "432 plc 0 gap 0 32kb/s press 0 msg 144 -2 0%",
+    ]
     assert max(engine.seen) <= 30 * SR
     assert [r[7] for r in rows[1:]] == ["", "", ""]  # --no-audio: no WAV, no path
     assert not (_session / "audio").exists()
 
 
-def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine):
-    engine.delay = 0.5
+def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine, monkeypatch):
+    """The engine holds every job until the exit starts, then takes 0.3 s:
+    --drain-ms 0 waits for none of them, and each keeps its WAV."""
+    gate = threading.Event()
+    stream = engine.open
+
+    def held():
+        gate.wait()
+        return stream()
+
+    engine.open, engine.delay = held, 0.3
+    shutdown = App.shutdown
+    monkeypatch.setattr(App, "shutdown", lambda app, meta: (gate.set(), shutdown(app, meta)))
     rec = str(tmp_path / "demo.tvd")
     demo(rec)
-    rc, _s, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet", "--drain-ms", "0")
+    rc, session, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet", "--drain-ms", "0")
     assert rc == 0
-    results = sorted(r["result"] for r in lines if r["type"] == "voice")
-    assert "not recognized before exit" in results and len(results) == 3
-    assert sorted(r[5] for r in rows[1:]) == results
+    assert [r["result"] for r in lines if r["type"] == "voice"] == [
+        "not recognized before exit"
+    ] * 3
+    assert [(r[5], (session / r[7]).is_file()) for r in rows[1:]] == [
+        ("not recognized before exit", True)
+    ] * 3
     assert lines[-1]["type"] == "done"
+
+
+def test_a_replay_waits_for_the_recognizer_once_its_queue_is_full(tmp_path, engine, monkeypatch):
+    """Bound 2 s of queued audio: the 4 s utterance goes in alone, each later
+    one waits until it fits."""
+    monkeypatch.setattr(recognizer, "MAX_QUEUED_S", 2.0)
+    engine.delay = 0.2
+    depth = []
+    submit = recognizer.Recognizer.utterance
+
+    def watched(self, *job):
+        took = submit(self, *job)
+        depth.append(self.queue_depth()[1])
+        return took
+
+    monkeypatch.setattr(recognizer.Recognizer, "utterance", watched)
+    rec = str(tmp_path / "demo.tvd")
+    demo(rec)
+    _rc, _s, lines, _rows = replay(rec, tmp_path / "o", "--asr", "parakeet")
+    assert sorted(r["text"] for r in lines if r["type"] == "voice") == [
+        "heard 1.00s",
+        "heard 1.50s",
+        "heard 4.00s",
+    ]
+    assert max(depth) <= 4.0
+
+
+def test_live_audio_over_the_queue_bound_is_named_not_waited_for(tmp_path, engine, monkeypatch):
+    """Live input never waits for the recognizer: past the bound an utterance
+    is not queued, its line says so and its WAV stays. The engine is held 1 s."""
+    monkeypatch.setattr(recognizer, "MAX_QUEUED_S", 2.0)
+    gate = threading.Event()
+    threading.Timer(1.0, gate.set).start()
+    engine.open = lambda stream=engine.open: (gate.wait(), stream())[1]
+    sid = steamid64(1)
+    app = bare_app(tmp_path)
+    app.asr = recognizer.Recognizer("parakeet", 2, "", 0, lambda: 0, app.q_out, wait=False)
+    while app.asr.state == "loading":
+        time.sleep(0.01)
+    ch = app.channels[sid] = Channel(sid, T0)
+    ca = app.audio[sid] = ChannelAudio()
+    t0 = time.monotonic()
+    for k, seconds in enumerate((1.5, 1.0)):
+        ca.open, ca.start_ns, ca.index = True, T0 + k * 10 * 10**9, k + 1
+        app.speech_start(ch, ca, ca.start_ns)
+        app.add_pcm(sid, ca, np.full(int(seconds * SR), 0.3, np.float32), ca.start_ns)
+        app.finish_utterance(sid, ca.start_ns + int(seconds * 10**9), "clock")
+    assert time.monotonic() - t0 < 0.5
+    app.asr.close()
+    rows = (next(tmp_path.iterdir()) / "transcript.tsv").read_text().splitlines()[1:]
+    assert [(r.split("\t")[5], r.split("\t")[7] != "") for r in rows] == [
+        ("not recognized, queue full", True)
+    ]
+
+
+def test_close_drops_the_queued_jobs_instead_of_recognizing_them(engine):
+    engine.delay = 0.1
+    out = recognizer.queue.Queue()
+    asr = recognizer.Recognizer("parakeet", 2, "", 0, lambda: 0, out)
+    while asr.state == "loading":
+        time.sleep(0.01)
+    for k in range(5):
+        asr.utterance(k, np.full(SR, 0.3, np.float32), {})
+    asr.close()
+    time.sleep(0.6)
+    assert len(engine.seen) <= 1 and asr.queue_depth() == (0, 0.0)
 
 
 def test_an_utterance_the_engine_fails_on_is_named_and_not_counted_as_no_speech(tmp_path, engine):

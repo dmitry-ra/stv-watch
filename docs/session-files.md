@@ -45,8 +45,10 @@ Voice (always shown, not filtered by `--events`):
 - `result`: `text` (`text` holds what was said), `no speech` (the voice
   activity detector found less speech than `--min-speech-ms`, or the model
   heard nothing), `asr off` (run without `--asr`), `not recognized before exit`
-  (still queued when `--drain-ms` ran out), `recognition failed` (the engine
-  raised an error on it; the `asr` line before it says which).
+  (still queued when `--drain-ms` ran out), `not recognized, queue full` (live
+  only: 600 s of audio was already waiting for the recognizer; a replay waits
+  for room instead), `recognition failed` (the engine raised an error on it;
+  the `asr` line before it says which).
 - `continued`: a piece of a monologue after the first; pieces are cut at the
   longest pause in their last 40 %, at most `--max-utt-ms` long.
 - `speech_ms`: milliseconds of speech Silero VAD found in the utterance
@@ -101,15 +103,15 @@ they were finished (tabs and line breaks inside a field become spaces):
 
 | Column | Meaning |
 |---|---|
-| `t_start_utc`, `t_end_utc` | first frame and close of the utterance, the format of `t_utc` |
+| `t_start_utc`, `t_end_utc` | first frame and close of the utterance (a monologue piece ends where the next begins), the format of `t_utc` |
 | `steamid64`, `nick` | the speaker |
 | `model` | the recognizer (`parakeet`), empty without `--asr` |
-| `result` | as in the `voice` line: `text`, `no speech`, `asr off`, `not recognized before exit`, `recognition failed` |
+| `result` | as in the `voice` line: `text`, `no speech`, `asr off`, `not recognized before exit`, `not recognized, queue full`, `recognition failed` |
 | `text` | what was recognized, empty unless `result` is `text` |
 | `audio` | the WAV file, relative to the session directory; empty with `--no-audio` |
 | `speech_ms` | speech found by the VAD, as in the `voice` line; empty when not measured |
 | `asr_ms` | milliseconds the recognizer spent on it |
-| `lag_ms` | milliseconds from the close of the utterance to its line |
+| `lag_ms` | milliseconds from the close of the utterance (of a monologue piece: from its cut) to its line |
 | `t_local` | only with `--tz`: the start in that zone, `YYYY-MM-DD HH:MM:SS` |
 
 ## audio/

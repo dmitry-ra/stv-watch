@@ -4,7 +4,9 @@ utterance.
 The channel's audio is collected until the utterance closes (no frames for
 the close time, or a monologue piece cut at --max-utt-ms), then recognized in
 one call; one final line per utterance. One worker thread, FIFO. Results go
-to `out` as tuples; the main loop owns all display state.
+to `out` as tuples; the main loop owns all display state. The queue holds at
+most MAX_QUEUED_S of audio: past it a replay waits for room, live input drops
+the utterance, as the network client must never wait for the recognizer.
 """
 
 import queue
@@ -18,6 +20,7 @@ from ..model import NS
 from . import build
 
 SR = 16000
+MAX_QUEUED_S = 600.0  # float32 at 16 kHz: 38 MB of PCM waiting for the worker
 
 
 class Stats:
@@ -58,7 +61,7 @@ class Stats:
 
 
 class Recognizer:
-    def __init__(self, model, threads, models_dir, min_speech_ms, media_now, out):
+    def __init__(self, model, threads, models_dir, min_speech_ms, media_now, out, wait=True):
         self.model_name = model
         self.threads = threads
         self.models_dir = models_dir
@@ -70,10 +73,11 @@ class Recognizer:
         self.error = ""
         self.load_s = 0.0
         self.stats = Stats()
-        self.pending = {}  # key -> [jobs, audio_s] not yet processed
-        self.plock = threading.Lock()
+        self.wait = wait  # a full queue: True waits for room (replay), False drops (live)
+        self.jobs = 0  # queued or being recognized
+        self.audio_s = 0.0
+        self.room = threading.Condition()
         self.shared_q = queue.Queue()
-        self.busy = 0
         threading.Thread(target=self._load, daemon=True, name="asr-load").start()
 
     # ---- engine
@@ -92,32 +96,39 @@ class Recognizer:
         ).start()
 
     # ---- submission (main loop)
-    def _pend(self, key, jobs, audio_s):
-        with self.plock:
-            p = self.pending.setdefault(key, [0, 0.0])
-            p[0] += jobs
-            p[1] += audio_s
+    def _done(self, audio_s):
+        with self.room:
+            self.jobs -= 1
+            self.audio_s -= audio_s
+            self.room.notify_all()
 
     def queue_depth(self):
-        with self.plock:
-            return (
-                sum(p[0] for p in self.pending.values()),
-                sum(p[1] for p in self.pending.values()),
-            )
+        with self.room:
+            return self.jobs, self.audio_s
 
     def utterance(self, key, pcm, meta):
-        """One closed utterance -> one job."""
-        self._pend(key, 1, len(pcm) / SR)
+        """One closed utterance -> one job, or False when the queue already
+        holds MAX_QUEUED_S of audio and this input must not wait for room."""
+        audio_s = len(pcm) / SR
+        with self.room:
+            while self.jobs and self.audio_s + audio_s > MAX_QUEUED_S:
+                if not self.wait or self.state != "ready":
+                    return False
+                self.room.wait()
+            self.jobs += 1
+            self.audio_s += audio_s
         self.shared_q.put((key, pcm, meta))
+        return True
 
-    def close(self, timeout=10.0):
-        """Let queued work drain (bounded), then stop the worker."""
-        end = time.monotonic() + timeout
-        while time.monotonic() < end and self.state == "ready":
-            jobs, _a = self.queue_depth()
-            if not jobs and not self.busy:
+    def close(self):
+        """Stop the worker: queued jobs are dropped for the caller to name, the
+        one being recognized ends unread."""
+        while True:
+            try:
+                _key, pcm, _meta = self.shared_q.get_nowait()
+            except queue.Empty:
                 break
-            time.sleep(0.05)
+            self._done(len(pcm) / SR)
         self.shared_q.put(None)
 
     # ---- worker
@@ -129,10 +140,8 @@ class Recognizer:
             jkey, pcm, meta = job
             audio_s = len(pcm) / SR
             if self.state != "ready":
-                self._pend(jkey, -1, -audio_s)
+                self._done(audio_s)
                 continue
-            with self.plock:
-                self.busy += 1
             w0 = time.monotonic()
             try:
                 st = self.engine.open()
@@ -143,15 +152,13 @@ class Recognizer:
             # Wall time, not thread CPU: engine threads do the work outside this one.
             compute = time.monotonic() - w0
             now = self.media_now()
-            ref = meta.get("end_ns") or now
+            ref = meta.get("closed_ns") or now
             self.stats.add(now, audio_s, compute, max(0.0, (now - ref) / NS))
-            self._pend(jkey, -1, -audio_s)
-            with self.plock:
-                self.busy -= 1
             texts = [t.strip() for kind, t in events if kind == "final" and t.strip()]
             done = dict(meta, asr_ms=round(compute * 1000))
             done.update((kind, v) for kind, v in events if kind == "speech_ms")
             self.out.put(("final", jkey, " ".join(texts), done))
+            self._done(audio_s)
 
 
 def np_concat(parts):

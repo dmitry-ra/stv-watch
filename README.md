@@ -89,7 +89,8 @@ the files on disk.
 Recognition runs on the CPU (`--threads`, default 2) after an utterance ends,
 so its text follows the speech by about a second. On exit, queued utterances
 get `--drain-ms` (default 20000); the rest are marked `not recognized before
-exit`.
+exit`. The queue holds at most 600 s of audio: a replay waits for room, while
+live an utterance that does not fit is marked `not recognized, queue full`.
 
 Silero VAD stands in front of the model as a gate: an utterance with less
 speech in it than `--min-speech-ms` (default 250) gets no text (`no speech`)
