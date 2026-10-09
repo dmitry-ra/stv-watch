@@ -1,4 +1,4 @@
-{"type": "play", "steamid64": 0, "nick": "", "text": "replay SAMPLE at max speed"}
+{"type": "play", "steamid64": 0, "nick": "", "text": "replay SAMPLE at max speed", "version": "VERSION"}
 {"t_utc": "2025-10-07T09:40:00.001Z", "t_local": "2025-10-07 11:40:00", "type": "conn", "steamid64": 0, "nick": "", "text": "session #1 open (127.0.0.1:27020)"}
 {"t_utc": "2025-10-07T09:40:00.100Z", "t_local": "2025-10-07 11:40:00", "type": "net", "steamid64": 0, "nick": "", "text": "traffic started"}
 {"t_utc": "2025-10-07T09:40:00.150Z", "t_local": "2025-10-07 11:40:00", "type": "conn", "steamid64": 0, "nick": "", "text": "FULL on dm_sample (0.1 s after open)"}

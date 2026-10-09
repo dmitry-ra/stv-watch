@@ -10,7 +10,7 @@ import sys
 from datetime import timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import asr
+from . import asr, version
 from . import events as gamevents
 from .app import MAX_UTT_MS, App
 from .asr import weights
@@ -55,6 +55,7 @@ def parse_args(argv=None):
         "optional transcript, game chat and events, connection and traffic, live or from a "
         "recording.",
     )
+    ap.add_argument("--version", action="version", version="stv-watch " + version.version())
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--relay", metavar="IP:PORT", help="live: connect to this SourceTV relay")
     src.add_argument("--replay", metavar="DUMP", help="replay a .tvd recording")

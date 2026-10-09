@@ -14,6 +14,7 @@ recorded as a RECONNECT record so the gap is explained rather than mysterious.
 import socket
 import time
 
+from .. import version
 from . import a2s, builds, handshake, wire
 from . import dump as dumpfmt
 from . import session as sess
@@ -47,6 +48,8 @@ class Options:
         # >0: resend `rate` once after FULL (see Session.poll). Off by default.
         self.rerate = kw.get("rerate", 0)
         self.leave_reason = kw.get("leave_reason", handshake.LEAVE)
+        # the viewer passes its own: one build named in all of a session's files
+        self.version = kw.get("version") or version.version()
 
 
 class Supervisor:
@@ -114,6 +117,7 @@ class Supervisor:
                         session=self.sessions,
                         attempt=attempt,
                         endpoint=self.endpoint,
+                        version=self.opt.version,
                     )
                     self.log(
                         "[session] #%d open (challenge=0x%08x)" % (self.sessions, conn.challenge)
