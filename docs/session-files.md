@@ -57,7 +57,7 @@ Voice (always shown, not filtered by `--events`):
 - `result`: `text` (`text` holds what was said), `no speech` (the voice
   activity detector found less speech than `--min-speech-ms`, or the model
   heard nothing), `asr off` (run without `--asr`), `not recognized before exit`
-  (still queued when `--drain-ms` ran out), `not recognized, queue full` (live
+  (still queued when the exit stopped waiting, see `--drain-ms`), `not recognized, queue full` (live
   only: 600 s of audio was already waiting for the recognizer; a replay waits
   for room instead), `recognition failed` (the engine raised an error on it;
   the `asr` line before it says which).

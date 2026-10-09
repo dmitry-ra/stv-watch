@@ -38,6 +38,7 @@ SR = 16000
 CLOSE_S = 1.0  # end of speech: this long without frames from the channel
 # the ONNX export of Parakeet holds positions for 5000 encoder frames: 400 s
 MAX_UTT_MS = 400_000
+LIVE_DRAIN_MS = 20_000  # --drain-ms unless a replay ended by itself
 CUT_FROM = 0.6  # a monologue piece ends at a pause in the last 40 % of --max-utt-ms
 TSV_HEAD = (
     "t_start_utc",
@@ -238,6 +239,7 @@ class App:
         self.asr = None
         self.quit = False
         self.quit_why = ""
+        self.stops = 0  # signals and q
         self.conn = Conn()
         self.traffic = Traffic(quiet_s=a.quiet_ms / 1000)
         self.tables = StringTables()
@@ -1208,9 +1210,27 @@ class App:
         return 0
 
     def _on_signal(self, sig, _frm):
-        if self.quit:
-            raise KeyboardInterrupt
-        self.quit, self.quit_why = True, signal.Signals(sig).name
+        # Never raises: under systemd `uv run` and the cgroup kill both deliver
+        # SIGTERM, and an exception here would leave the recognizer inside
+        # onnxruntime. Every wait of the exit is bounded or ends on a stop.
+        self.ask_stop(signal.Signals(sig).name)
+
+    def ask_stop(self, why):
+        """A signal or q ends the run; one more while the exit waits for the
+        recognizer ends that wait."""
+        self.stops += 1
+        if not self.quit:
+            self.quit, self.quit_why = True, why
+
+    def drain_end(self, start):
+        """When the exit stops waiting for queued recognition; None: once the
+        queue is empty. Only a replay that ended by itself waits that long."""
+        ms = self.a.drain_ms
+        if ms is None:
+            if not (self.live or self.stops):
+                return None
+            ms = LIVE_DRAIN_MS
+        return start + ms / 1000
 
     def pump(self, budget_s=0.05):
         """Drain input items for up to budget_s. -> True if the queue ran dry."""
@@ -1286,7 +1306,7 @@ class App:
                     self.quit, self.quit_why = True, "alarm"
         k = self.screen.key()
         if k in ("q", "Q"):
-            self.quit, self.quit_why = True, "key q"
+            self.ask_stop("key q")
 
     def check_traffic(self, now):
         tr = self.traffic.check(now)
@@ -1372,8 +1392,11 @@ class App:
             self.seg.flush(self.now)
             self.process_closed()
             if self.asr is not None:
-                end = time.monotonic() + self.a.drain_ms / 1000
-                while time.monotonic() < end and self.asr.state != "failed":
+                stops = self.stops
+                end = self.drain_end(time.monotonic())
+                while self.stops == stops and self.asr.state != "failed":
+                    if end is not None and time.monotonic() >= end:
+                        break
                     jobs, _p = self.asr.queue_depth()
                     if self.asr.state == "ready" and not jobs:
                         break
