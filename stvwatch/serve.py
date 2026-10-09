@@ -22,17 +22,22 @@ import collections
 import json
 import os
 import select
+import signal
 import socket
 import stat
+import sys
 import threading
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .render import Screen
+from .render import Screen, clean
 
 PROTO = 1
 HISTORY = 200
 CLIENT_BUF = 1 << 20
 DRAIN_S = 1.0  # at exit, how long the last bytes may take to reach the clients
+RETRY_S = 0.5
 
 
 class ServeError(Exception):
@@ -334,3 +339,221 @@ class ServedScreen:
     def stop(self, final_block=()):
         self.server.close(self._batch({"op": "bye", "block": list(final_block)}))
         self.log.stop(())
+
+
+def _spans(raw):
+    return [(clean(t), str(s)) for t, s in raw]
+
+
+def _key(k):
+    return tuple(k) if isinstance(k, list) else k
+
+
+class Attached:
+    """--attach: the screen of a served engine. Reconnects by itself when the
+    engine goes away and says so in one line when it is back."""
+
+    def __init__(self, path, screen, status_every_ms=10_000):
+        self.path, self.screen = path, screen
+        self.sock = None
+        self.buf = b""
+        self.engine = None  # hello of the engine shown
+        self.last_seq = 0
+        self.open = {}  # key -> latest spans of a live line on our screen
+        self.block = None
+        self.ended = False  # the engine said bye
+        self.lost_at = time.monotonic()
+        self.retry_at = 0.0
+        self.shown_s = -1
+        self.quit = False
+        self.rc = 0
+        self.status_every = status_every_ms / 1000
+        self.last_status = 0.0
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(self.path)
+        except OSError:
+            s.close()
+            return False
+        s.setblocking(False)
+        self.sock, self.buf = s, b""
+        return True
+
+    def close(self):
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+
+    def step(self, timeout=0.1):
+        if self.sock is None:
+            now = time.monotonic()
+            if now >= self.retry_at:
+                self.retry_at = now + RETRY_S
+                self.connect()
+        if self.sock is None:
+            time.sleep(timeout)
+        elif select.select([self.sock], [], [], timeout)[0]:
+            self._read()
+        k = self.screen.key()
+        if k in ("q", "Q"):
+            self.quit = True
+        if self.screen.tty and (
+            self.screen.resized
+            or (self.sock is None and int(time.monotonic() - self.lost_at) != self.shown_s)
+        ):
+            self._draw()
+
+    def _read(self):
+        try:
+            data = self.sock.recv(1 << 16)
+        except BlockingIOError:
+            return
+        except OSError:
+            data = b""
+        if not data:
+            self._lost()
+            return
+        lines = (self.buf + data).split(b"\n")
+        self.buf = lines.pop()
+        for ln in lines:
+            try:
+                m = json.loads(ln)
+            except ValueError:
+                self._lost()
+                return
+            self.handle(m)
+            if self.sock is None:
+                return
+
+    def _lost(self):
+        self.close()
+        self.lost_at = time.monotonic()
+        self.retry_at = self.lost_at + RETRY_S
+        self.shown_s = -1
+        if not self.screen.tty:
+            self.note("engine ended" if self.ended else "engine gone", ", waiting for it")
+            self.screen.draw(())
+
+    def handle(self, m):
+        op = m.get("op")
+        key = _key(m.get("key"))
+        if op == "hello":
+            self._hello(m)
+        elif op == "line":
+            spans = _spans(m["spans"])
+            if m["seq"] > self.last_seq:
+                self.last_seq = m["seq"]
+                self.screen.feed(spans)
+            elif key in self.open:
+                del self.open[key]
+                self.screen.live_close(key, spans, _spans(m.get("cont", ())))
+        elif op == "open":
+            spans = _spans(m["spans"])
+            if m["seq"] > self.last_seq:
+                self.last_seq = m["seq"]
+                self.open[key] = spans
+                self.screen.live_open(key, spans)
+            elif key in self.open:
+                self.open[key] = spans
+                self.screen.live_update(key, spans)
+        elif op == "update":
+            if key in self.open:
+                self.open[key] = _spans(m["spans"])
+                self.screen.live_update(key, self.open[key])
+        elif op == "close":
+            self.last_seq = max(self.last_seq, m.get("seq", 0))
+            self.open.pop(key, None)
+            self.screen.live_close(key, _spans(m["spans"]), _spans(m["cont"]))
+        elif op in ("draw", "bye"):
+            self.block = [_spans(line) for line in m["block"]]
+            self.ended = op == "bye"
+            self._draw(status=op == "draw")
+
+    def _hello(self, m):
+        if m.get("proto") != PROTO:
+            self.note(f"the engine speaks protocol {m.get('proto')}, this stv-watch {PROTO}")
+            self.quit, self.rc = True, 2
+            self.close()
+            return
+        old, self.engine, self.ended = self.engine, m, False
+        if old is None:
+            if not self.screen.tty:
+                self.note(f"attached to {self.path} (engine pid {m['pid']})")
+        elif old["engine"] == m["engine"]:
+            self.note(f"reconnected to {self.path} (engine pid {m['pid']})")
+        else:
+            # what the old engine left open will not close: freeze it as it was
+            for key, spans in self.open.items():
+                self.screen.live_close(key, spans)
+            self.open, self.last_seq = {}, 0
+            self.note(f"engine restarted: pid {old['pid']} -> {m['pid']}, {self.path}")
+
+    def note(self, text, more=""):
+        """A feed line of our own, timed like the engine's."""
+        tz = (self.engine or {}).get("tz", "UTC")
+        try:
+            zone = ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            zone = ZoneInfo("UTC")
+        t = datetime.now(zone)
+        stamp = t.strftime("%H:%M:%S") + ".%03d " % (t.microsecond // 1000)
+        self.screen.feed([(stamp, "dim"), ("attach ", "blue"), (text + more, "")])
+
+    def attach_line(self):
+        pid = (self.engine or {}).get("pid", "?")
+        line = [("attach ", "blue"), (self.path, "")]
+        if self.ended:
+            return line + [(f"  engine pid {pid} ended, waiting for the next", "yellow")]
+        if self.sock is None:
+            secs = int(time.monotonic() - self.lost_at)
+            return line + [(f"  engine gone, reconnecting {secs}s", "yellow")]
+        return line + [(f"  engine pid {pid}", ""), ("  q closes this screen only", "dim")]
+
+    def view(self):
+        block = self.block or [[(" stv-watch ", "bar")]]
+        return block[:1] + [self.attach_line()] + block[1:]
+
+    def _draw(self, status=False):
+        if not self.screen.tty:
+            now = time.monotonic()
+            if status and now - self.last_status >= self.status_every:
+                self.last_status = now
+                for spans in self.block[1:-1]:
+                    self.screen.feed([("status ", "dim")] + spans)
+            self.screen.draw(())
+            return
+        self.shown_s = int(time.monotonic() - self.lost_at) if self.sock is None else -1
+        self.screen.draw(self.view())
+
+    def final(self):
+        """The block printed under the feed when we leave; without the hint
+        line, as a local run prints it (the engine's last block has none)."""
+        if not self.screen.tty:
+            return []
+        v = self.view()
+        return v if self.ended else v[:-1]
+
+
+def attach(a):
+    """stv-watch --attach PATH. -> exit code."""
+    screen = Screen(plain=a.plain, color=False if a.no_color else None)
+    c = Attached(a.attach, screen, a.status_every_ms)
+    if not c.connect():
+        print(f"stv-watch: no engine serves {a.attach}", file=sys.stderr)
+        return 2
+
+    def on_signal(_sig, _frm):
+        c.quit = True
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, on_signal)
+    screen.start()
+    try:
+        while not c.quit:
+            c.step()
+    finally:
+        screen.stop(c.final())
+        c.close()
+    return c.rc

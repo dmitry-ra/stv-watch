@@ -3,6 +3,7 @@
 stv-watch --relay IP:PORT [--asr parakeet] [--events all] [--tz Europe/Berlin] ...
 stv-watch --replay capture.tvd [--speed 0] [--json] ...
 stv-watch --relay IP:PORT [--asr parakeet] --serve NAME   (headless, its screen on a socket)
+stv-watch --attach NAME                                     (that screen)
 """
 
 import argparse
@@ -65,6 +66,12 @@ def parse_args(argv=None):
         metavar="JOURNAL",
         help="watch a .tvd journal another process is writing (another stv-watch): no client "
         "of our own, one connection for many watchers; earlier records only set the state",
+    )
+    src.add_argument(
+        "--attach",
+        metavar="SOCKET",
+        help="show the screen of an engine run with --serve SOCKET: no relay, no model; q "
+        "closes this screen only; reconnects when the engine restarts",
     )
     ap.add_argument(
         "--serve",
@@ -213,13 +220,16 @@ def parse_args(argv=None):
             argv[i : i + 2] = ["--events=" + argv[i + 1]]
             break
     a = ap.parse_args(argv)
-    if a.serve:
-        try:
-            a.serve = serve.socket_path(a.serve)
-        except serve.ServeError as e:
-            ap.error(f"--serve: {e}")
+    for opt in ("serve", "attach"):
+        if getattr(a, opt):
+            try:
+                setattr(a, opt, serve.socket_path(getattr(a, opt)))
+            except serve.ServeError as e:
+                ap.error(f"--{opt}: {e}")
     if a.serve and (a.plain or a.monitor or a.json):
-        ap.error("--serve has no screen of its own: no --plain, --monitor or --json")
+        ap.error("--serve has no screen of its own: --plain, --monitor and --json go to --attach")
+    if a.attach and (a.serve or a.monitor or a.json):
+        ap.error("--attach shows a screen only: read events.jsonl of the engine's session")
     if a.relay is not None:
         a.relay = relay_addr(a.relay, ap)
     if a.follow:
@@ -259,6 +269,8 @@ def parse_args(argv=None):
 
 def main(argv=None):
     a = parse_args(argv)
+    if a.attach:
+        return serve.attach(a)
     if a.asr:
         try:
             for name in asr.WEIGHTS[a.asr]:
