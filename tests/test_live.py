@@ -130,7 +130,7 @@ def test_the_main_loop_never_waits_on_the_engine():
                 r.close(("x", i))
             took.append(time.monotonic() - t0)
 
-    t = threading.Thread(target=main_loop)
+    t = threading.Thread(target=main_loop, daemon=True)
     t.start()
     t.join(2)
     assert not t.is_alive() and max(took) < 0.05
