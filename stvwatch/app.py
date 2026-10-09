@@ -20,8 +20,10 @@ import numpy as np
 
 from . import events as gamevents
 from . import source, version
+from .asr import build_live
 from .asr import recognizer as asrmod
 from .asr import vad as vadmod
+from .asr.live import LiveRecognizer
 from .asr.parakeet import level_peak
 from .model import NS, Channel, Conn, Traffic
 from .net import a2s, wire
@@ -59,8 +61,9 @@ SLOT_HEAD = ("slot", "verified", "slot_steamid64")
 
 # Every feed line type (docs/events.schema.json), or state -> style for a type
 # whose lines differ. What people say leads in bold: voice white, chat yellow;
-# a voice line is green while the player talks, yellow while it is recognized,
-# a result without text dim. Console magenta; joins and leaves in their own
+# a voice line is green while the player talks (the live recognizer's partial
+# text after it, not bold), yellow while it is recognized, a result without
+# text dim. Console magenta; joins and leaves in their own
 # muted green and red (not the green and red of our connection lines);
 # connects, team and nick changes and server text players read in chat dimmed;
 # kills and other server notices dimmest. Game lines are painted whole, except
@@ -68,6 +71,7 @@ SLOT_HEAD = ("slot", "verified", "slot_steamid64")
 LINE_STYLE = {
     "voice": {
         "talking": "green",
+        "partial": "partial",
         "recognizing": "yellow",
         "text": "bold",
         "no text": "dim",
@@ -226,6 +230,7 @@ class Utt:
         self.nick, self.spectator = "", None  # as of the end, see App.speaker
         self.slot, self.verified, self.slot_owner = None, None, None  # as of the end
         self.meta = {}  # the recognizer job, once closed
+        self.partial = ""  # the live recognizer's text while talking
 
 
 class App:
@@ -237,6 +242,7 @@ class App:
         self.model = a.asr
         self.q_out = queue.Queue()
         self.asr = None
+        self.live_asr = None
         self.quit = False
         self.quit_why = ""
         self.stops = 0  # signals and q
@@ -630,6 +636,8 @@ class App:
         ca.last_ns = cf.t_ns
 
     def add_pcm(self, sid, ca, pcm, t_ns):
+        if self.live_asr is not None:
+            self.live_asr.push(ca.key, pcm)
         ca.parts.append(pcm)
         ca.nsamp += len(pcm)
         cut = self.cut_point(ca)
@@ -686,6 +694,8 @@ class App:
         ch.utterances += 1
         utt = self.utts.get(ca.key)
         meta["key"] = ca.key
+        if self.live_asr is not None:
+            self.live_asr.close(ca.key)
         if utt is not None:
             utt.details = self.details(facts, t_ns, why, len(pcm) / SR)
             utt.audio_s = len(pcm) / SR
@@ -719,6 +729,8 @@ class App:
         utt = self.utts[ca.key] = Utt(ca.key, ch.sid64, t_ns)
         utt.first = ch.utterances == 0
         self.screen.live_open(ca.key, self.progress(utt))
+        if self.live_asr is not None:
+            self.live_asr.open(ca.key)
 
     def details(self, ca, t_ns, why, audio_s):
         """Transport summary of a closed utterance: audio s / arrival span s,
@@ -769,6 +781,9 @@ class App:
                 )
                 if utt.first:
                     out.append((f" {steam2(utt.sid)} new", "dim"))
+            if utt.partial:
+                # last: a line too wide keeps the end of it (render.fit)
+                out += [(": ", ""), (utt.partial, line_style("voice", "partial"))]
         else:
             out.append((" recognizing", line_style("voice", "recognizing")))
             out.append((" " + utt.details if self.a.debug else f" {utt.audio_s:.1f}s", "dim"))
@@ -807,6 +822,26 @@ class App:
             return
         if kind == "error":
             self.event("asr", f"error on {r[1]}: {clean(r[2])}", "error")
+            return
+        if kind == "partial":
+            utt = self.utts.get(r[1])
+            if utt is not None and utt.state == "talking":
+                utt.partial = clean(r[2])
+            return
+        if kind == "live_loaded":
+            _k, state, err, load_s = r
+            name, n = self.a.live_asr, self.a.live_asr_threads
+            if state == "ready":
+                self.event(
+                    "asr",
+                    f"{name} live ready in {load_s:.1f} s ({n} thread{'s' if n > 1 else ''})",
+                    "ready",
+                )
+            else:
+                self.event("asr", f"{name} live failed: {clean(err)}", "failed")
+            return
+        if kind == "live_error":
+            self.event("asr", f"{self.a.live_asr} live error: {clean(r[1])}", "error")
             return
         if kind == "final":
             meta = r[3]
@@ -1028,9 +1063,29 @@ class App:
                 )
             else:
                 L.append([("asr  ", "blue"), (self.model, ""), st_span, lag])
+            L[-1] += self.live_block(dbg)
 
         L.append([("q quit  ", "dim"), (self.dir, "dim")])
         return L
+
+    def live_block(self, dbg):
+        """The live recognizer's end of the asr line."""
+        lv = self.live_asr
+        if lv is None:
+            return []
+        out = [
+            (f"  live {self.a.live_asr} ", ""),
+            (lv.state, {"ready": "green", "loading": "yellow"}.get(lv.state, "red")),
+        ]
+        if lv.state == "ready":
+            s = lv.stats.summary(time.monotonic_ns())
+            out.append((f" lag {s['lag_last']:.1f}s", ""))
+            if dbg:
+                rtf = f"{s['rtf']:.2f}" if s["jobs_min"] else "-"
+                out.append(
+                    (f" RTF {rtf} dropped {lv.dropped_s:.1f}s", "yellow" if lv.drops else "")
+                )
+        return out
 
     # ---------------------------------------------------------------- live helpers
     def a2s_poll(self):
@@ -1147,10 +1202,12 @@ class App:
                     self.q_out,
                     wait=not self.live,
                 )
+                if a.live_asr:
+                    self.start_live()
                 # Load before reading or connecting: the load holds the GIL for
                 # seconds, which would stall the reader (a fake traffic stop in
                 # a replay) and miss the first phrases live.
-                while self.asr.state == "loading" and not self.quit:
+                while self.loading() and not self.quit:
                     self.tick(False)
                     self.render()
                     time.sleep(0.1)
@@ -1208,6 +1265,22 @@ class App:
         if self.live and (self.quit_why == "alarm" or self.client_rc != 0):
             return 3
         return 0
+
+    def start_live(self):
+        """--live-asr: its text is seen only in live lines, which a screen
+        without a terminal (--plain, --monitor, --json) never shows."""
+        a = self.a
+        if not self.screen.tty:
+            self.event(
+                "asr", f"{a.live_asr} live off: partial text shows on a screen only", "ready"
+            )
+            return
+        self.live_asr = LiveRecognizer(
+            lambda: build_live(a.live_asr, a.live_asr_threads, a.models_dir), self.q_out
+        )
+
+    def loading(self):
+        return "loading" in (self.asr.state, self.live_asr and self.live_asr.state)
 
     def _on_signal(self, sig, _frm):
         # Never raises: under systemd `uv run` and the cgroup kill both deliver
@@ -1391,6 +1464,8 @@ class App:
                     self.event("tvd", clean(line), "info")
             self.seg.flush(self.now)
             self.process_closed()
+            if self.live_asr is not None:
+                self.live_asr.stop()
             if self.asr is not None:
                 stops = self.stops
                 end = self.drain_end(time.monotonic())
@@ -1456,6 +1531,18 @@ class App:
                     "audio_ms": round(self.asr.stats.total_audio * 1000),
                     "compute_ms": round(self.asr.stats.total_compute * 1000),
                     "jobs": self.asr.stats.jobs,
+                }
+            if self.live_asr is not None:
+                lv = self.live_asr
+                meta["live_asr"] = {
+                    "engine": self.a.live_asr,
+                    "state": lv.state,
+                    "error": lv.error,
+                    "load_ms": round(lv.load_s * 1000),
+                    "audio_ms": round(lv.stats.total_audio * 1000),
+                    "compute_ms": round(lv.stats.total_compute * 1000),
+                    "dropped_ms": round(lv.dropped_s * 1000),
+                    "drops": lv.drops,
                 }
             self.event("done", f"{self.quit_why or 'stopped'} -> {self.dir}")
         finally:
