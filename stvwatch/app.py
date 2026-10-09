@@ -25,22 +25,46 @@ from .stream.userinfo import NickBook
 SIGNON = {3: "NEW", 4: "PRESPAWN", 5: "SPAWN", 6: "FULL", 7: "CHANGELEVEL"}
 
 
-# Chat leads the feed in bold yellow. Console magenta; joins and leaves in
-# their own muted green and red (not the green and red of our connection
-# lines); connects, team and nick changes dimmed; kills and server notices
-# dimmest.
+# Every feed line type (docs/events.schema.json), or state -> style for a type
+# whose lines differ. Chat leads in bold yellow; console magenta; joins and
+# leaves in their own muted green and red (not the green and red of our
+# connection lines); connects, team and nick changes and server text players
+# read in chat dimmed; kills and other server notices dimmest. Game lines are
+# painted whole, except chat, which keeps its cyan nick; our own lines keep
+# the blue tag.
 LINE_STYLE = {
+    "chat": "boldyellow",
     "console": "magenta",
     "connect": "dim",
-    "team": "dim",
-    "name": "dim",
     "join": "joingreen",
     "leave": "leavered",
     "death": "gray",
-    "server": "gray",
+    "team": "dim",
+    "name": "dim",
+    "server": {"talk": "dim", "other": "gray"},
     "sourcemod": "gray",
+    "conn": {"info": "", "ok": "green", "warn": "yellow", "fail": "red"},
+    "net": {"ok": "green", "warn": "yellow", "fail": "red"},
+    "play": "",
+    "tvd": {"info": "dim", "fail": "red"},
+    "done": "",
 }
-CHAT_STYLE = {"bold": "boldyellow"}
+HUD_PRINTTALK = 3
+
+
+def line_style(typ, state=None):
+    s = LINE_STYLE[typ]
+    if isinstance(s, dict):
+        return s[state]
+    if state is not None:
+        raise KeyError(state)
+    return s
+
+
+def game_state(r):
+    if r["type"] == "server":
+        return "talk" if r["extra"].get("dest") == HUD_PRINTTALK else "other"
+    return None
 
 
 def local(t_ns, tz, fmt=None):
@@ -151,7 +175,7 @@ class App:
             self.event(
                 "net",
                 text,
-                "yellow",
+                "warn",
                 pkt.t_ns,
                 {
                     "type": "net",
@@ -186,12 +210,7 @@ class App:
         if self.a.json:
             self.screen.feed([(line, "")])
         else:
-            typ = rec.get("type") if rec else None
-            st = LINE_STYLE.get(typ)
-            shown = [(t, st) for t, _s in spans] if st else spans
-            if typ == "chat":
-                shown = [(t, CHAT_STYLE.get(s, s)) for t, s in spans]
-            self.screen.feed([(local(t_ns, self.tz) + " ", "dim")] + shown)
+            self.screen.feed([(local(t_ns, self.tz) + " ", "dim")] + spans)
         self.log(full or spans, t_ns, rec.get("steamid64", 0) if rec else 0)
 
     def json_line(self, rec, t_ns):
@@ -219,14 +238,14 @@ class App:
         self.feed_fh.write(f"{utc_iso(t_ns)}\t{sid or ''}\t{text}\n")
         self.feed_fh.flush()
 
-    def event(self, tag, text, style="", t_ns=None, rec=None):
+    def event(self, tag, text, state=None, t_ns=None, rec=None):
         if (
             self.follow
             and self.pacer is not None
             and self.pacer.skipping(t_ns or self.now or time.time_ns())
         ):
             return  # the journal's past: state only
-        self.feed([(f"{tag:<5} ", "blue"), (text, style)], t_ns, rec)
+        self.feed([(f"{tag:<5} ", "blue"), (text, line_style(tag, state))], t_ns, rec)
 
     # ---------------------------------------------------------------- input items
     def handle_event(self, t_ns, rtype, data):
@@ -245,14 +264,14 @@ class App:
         if rtype == dumpfmt.SESSION_START:
             c.sessions = f.get("session", c.sessions + 1)
             c.state, c.state_ns = "signon", t_ns
-            self.event("conn", f"session #{c.sessions} open ({f.get('endpoint', '')})")
+            self.event("conn", f"session #{c.sessions} open ({f.get('endpoint', '')})", "info")
         elif rtype == dumpfmt.RECONNECT:
             if not f.get("ok", True):
                 c.attempts_failed += 1
                 c.last_error = str(f.get("error", ""))
                 c.state, c.state_ns = "retry", t_ns
                 self.event(
-                    "conn", f"attempt {f.get('attempt')} failed: {clean(c.last_error)}", "yellow"
+                    "conn", f"attempt {f.get('attempt')} failed: {clean(c.last_error)}", "warn"
                 )
             else:
                 c.state, c.state_ns = "connecting", t_ns
@@ -261,19 +280,17 @@ class App:
             if name == "FULL":
                 took = (t_ns - c.state_ns) / NS if c.state_ns else 0.0
                 c.state, c.state_ns, c.full_ns = "FULL", t_ns, t_ns
-                self.event(
-                    "conn", f"FULL on {clean(c.map) or '?'} ({took:.1f} s after open)", "green"
-                )
+                self.event("conn", f"FULL on {clean(c.map) or '?'} ({took:.1f} s after open)", "ok")
             else:
                 c.state = "signon:" + name
         elif rtype == dumpfmt.BROKEN:
             c.state, c.state_ns = "broken", t_ns
-            self.event("conn", f"break: {f.get('cause')}: {clean(f.get('detail', ''))}", "yellow")
+            self.event("conn", f"break: {f.get('cause')}: {clean(f.get('detail', ''))}", "warn")
         elif rtype == dumpfmt.MAPCHANGE:
-            self.event("conn", f"map change -> {clean(f.get('map', ''))}")
+            self.event("conn", f"map change -> {clean(f.get('map', ''))}", "info")
         elif rtype == dumpfmt.LEAVE:
             c.state, c.state_ns = "left", t_ns
-            self.event("conn", f"left: net_Disconnect x{f.get('sent')} ({f.get('why')})")
+            self.event("conn", f"left: net_Disconnect x{f.get('sent')} ({f.get('why')})", "info")
 
     def handle_dg(self, dg):
         t = dg.t_ns
@@ -296,25 +313,11 @@ class App:
             full = self.game_spans(r, full=True)
             self.feed(full if self.a.debug else self.game_spans(r), r["t_ns"], r, full)
 
-    def who_spans(self, r):
+    @staticmethod
+    def who(r):
         nick = clean(r["nick"])
         sid = r["steamid64"]
-        if nick:
-            return [(nick, "cyan")]
-        return [(steam2(sid), "cyan")] if sid else []
-
-    GAME_STYLE = {
-        "chat": "bold",
-        "console": "yellow",
-        "connect": "dim",
-        "join": "green",
-        "leave": "yellow",
-        "death": "",
-        "team": "dim",
-        "name": "",
-        "server": "dim",
-        "sourcemod": "dim",
-    }
+        return [nick] if nick else [steam2(sid)] if sid else []
 
     def game_spans(self, r, full=False):
         """Time is added by feed(); here: type tag, who, what. Each line stands
@@ -322,39 +325,41 @@ class App:
         --debug) adds both SteamIDs to a kill."""
         typ, x = r["type"], r["extra"]
         text = clean(r["text"])
-        out = [(f"{typ:<5} ", "blue")]
-        who = self.who_spans(r)
-        style = self.GAME_STYLE.get(typ, "")
-        sid = r["steamid64"]
+        tag = f"{typ:<5} "
+        style = line_style(typ, game_state(r))
         if typ == "chat":
             ch = x.get("channel", "all")
-            out += (
-                who
+            return (
+                [(tag, "blue")]
+                + [(w, "cyan") for w in self.who(r)]
                 + ([(f" [{ch}]", "dim")] if ch not in ("all", "") else [])
                 + [(": ", ""), (text, style)]
             )
-        elif typ == "console":
-            out += [("Console: ", "yellow"), (text, style)]
+        who = self.who(r)
+        sid = r["steamid64"]
+        out = [tag]
+        if typ == "console":
+            out += ["Console: ", text]
         elif typ in ("connect", "join", "leave", "team", "name"):
             if typ == "name":
-                out += [(clean(x.get("old", "")), "cyan"), (" -> ", ""), (clean(r["nick"]), "cyan")]
+                out += [clean(x.get("old", "")), " -> ", clean(r["nick"])]
             else:
-                out += who + [(" " + text if typ != "leave" else " left: " + text, style)]
+                out += who + [" " + text if typ != "leave" else " left: " + text]
             if sid:
-                out.append((f"  {steam2(sid)}", "dim"))
+                out.append(f"  {steam2(sid)}")
             elif typ == "leave" and x.get("networkid"):
-                out.append((f"  {clean(x['networkid'])}", "dim"))
+                out.append(f"  {clean(x['networkid'])}")
         elif typ == "death":
-            out += who + [(" " + text, style)]
+            out += who + [" " + text]
             victim = x.get("victim_steamid64", 0)
             if full and (sid or victim):
                 ids = steam2(sid) if sid else "-"
                 if "victim" in x:
                     ids += " > " + (steam2(victim) if victim else "-")
-                out.append(("  " + ids, "dim"))
+                out.append("  " + ids)
         else:
-            out += [(text, style)]
-        return out
+            out.append(text)
+        return [(t, style) for t in out]
 
     # ---------------------------------------------------------------- status block
     BLOCK_LINES = 4
@@ -523,7 +528,7 @@ class App:
             if self.live:
                 err = self.precheck()
                 if err:
-                    self.event("conn", "refused: " + err, "red")
+                    self.event("conn", "refused: " + err, "fail")
                     self.quit_why = "precheck"
                     return 2
             else:
@@ -543,9 +548,10 @@ class App:
                     "conn",
                     f"connecting to {a.relay} ({clean(self.conn.hostname)}, "
                     f"relay {self.conn.players}/{self.conn.max_players})",
+                    "info",
                 )
                 if not self.client.start():
-                    self.event("conn", "network client did not start, see tvdump.log", "red")
+                    self.event("conn", "network client did not start, see tvdump.log", "fail")
                     return 2
                 self.logtail = source.LogTail(os.path.join(self.dir, "tvdump.log"))
                 self.rec = source.Reader(cap, follow=True)
@@ -640,8 +646,7 @@ class App:
                 self.cpu = (t, c1, 0.0)
         if self.logtail is not None:
             for line in self.logtail.lines():
-                style = "red" if line.startswith("[alarm]") else "dim"
-                self.event("tvd", clean(line), style)
+                self.event("tvd", clean(line), "fail" if line.startswith("[alarm]") else "info")
                 if line.startswith("[alarm]"):
                     self.quit, self.quit_why = True, "alarm"
         k = self.screen.key()
@@ -657,13 +662,13 @@ class App:
             self.event(
                 "net",
                 f"traffic stopped (no datagrams for {gap:.1f} s)",
-                "red",
+                "fail",
                 self.traffic.last_ns,
             )
         elif kind == "resumed":
-            self.event("net", f"traffic resumed after {gap:.1f} s", "green")
+            self.event("net", f"traffic resumed after {gap:.1f} s", "ok")
         else:
-            self.event("net", "traffic started", "green")
+            self.event("net", "traffic started", "ok")
 
     def render(self, force=False):
         t = time.monotonic()
@@ -706,12 +711,12 @@ class App:
         try:
             rc = None
             if self.client is not None:
-                self.event("conn", "leaving relay ...")
+                self.event("conn", "leaving relay ...", "info")
                 self.render(force=True)
                 rc = self.client_rc = self.client.stop()
                 if rc is None:
                     self.event(
-                        "conn", "network client killed: relay keeps the slot up to 300 s", "red"
+                        "conn", "network client killed: relay keeps the slot up to 300 s", "fail"
                     )
             if self.rec is not None and not self.live:
                 self.rec.abandon.set()
@@ -726,10 +731,10 @@ class App:
                 self.tick(True)
             if self.logtail is not None:
                 for line in self.logtail.lines():
-                    self.event("tvd", clean(line), "dim")
+                    self.event("tvd", clean(line), "info")
             if self.client is not None and self.a2s_before is not None:
                 ok, after, text = self.slot_check()
-                self.event("conn", text, "green" if ok else "red")
+                self.event("conn", text, "ok" if ok else "fail")
                 meta["slot_released"] = ok
                 meta["relay_before"] = self.a2s_before
                 meta["relay_with_us"] = self.with_us
