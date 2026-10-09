@@ -14,6 +14,7 @@ import threading
 import time
 
 import pytest
+from test_voice import forged_recording
 from voicegen import demo
 
 from stvwatch import cli, serve
@@ -114,15 +115,18 @@ class Recorded(Screen):
         super().stop(final_block)
 
 
-@pytest.fixture(scope="module")
-def local(voice, tmp_path_factory):
-    """The local screen of the voice replay: its lines and final block."""
-    out = tmp_path_factory.mktemp("local")
-    app = App(parse_args(["--replay", voice, "--speed", "0", "--events", "all", "--out", str(out)]))
+def local_run(rec, out):
+    """The local screen of a replay: its lines and final block."""
+    app = App(parse_args(["--replay", rec, "--speed", "0", "--events", "all", "--out", str(out)]))
     sc = app.screen = Recorded(out=FakeTty(), color=False, size=lambda: SIZE)
     assert app.run() == 0
     s = session_of(out)
     return normal(screen_lines(sc), s), normal(sc.final, s)
+
+
+@pytest.fixture(scope="module")
+def local(voice, tmp_path_factory):
+    return local_run(voice, tmp_path_factory.mktemp("local"))
 
 
 def served_app(voice, out, path, speed="0"):
@@ -153,6 +157,20 @@ def test_two_attached_screens_draw_what_the_local_screen_draws(
         assert normal(screen_lines(c.screen), s) == lines
         assert normal(c.block, s) == final
     assert not os.path.exists(sock)
+
+
+def test_an_attached_screen_marks_a_voice_from_someone_elses_slot_in_red(
+    tmp_path, sock, monkeypatch
+):
+    rec = str(tmp_path / "forged.tvd")
+    forged_recording(rec)
+    lines, _final = local_run(rec, tmp_path / "local")
+    assert (" [slot 2: bob]", "red") in [span for spans in lines for span in spans]
+    hold_start(monkeypatch, 1)
+    c = Client(sock)
+    out = tmp_path / "served"
+    assert served_app(rec, out, sock).run() == 0
+    assert normal(screen_lines(c.finish().screen), session_of(out)) == lines
 
 
 def test_a_late_screen_gets_the_history_open_live_lines_and_block_on_connect(
