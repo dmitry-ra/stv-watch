@@ -119,6 +119,31 @@ Times are in UTC. `--tz` takes an IANA zone name for the screen and the files
 uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin
 ```
 
+### A headless engine and its screens
+
+`--serve SOCKET` runs the viewer without a terminal UI: it connects, records,
+recognizes and writes its session files as always, and serves its screen on a
+Unix socket (mode 0600) to any number of clients. `--attach SOCKET` is such a
+client: the same screen, drawn from what the engine sends, with no connection to
+the relay, no parsing and no model of its own. A name without `/` is a socket in
+`$XDG_RUNTIME_DIR/stv-watch/`:
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --serve noob   # in tmux, a service, ...
+uv run stv-watch --attach noob                                         # in any terminal, as often as you like
+uv run stv-watch --attach noob --plain                                 # finished lines only
+```
+
+The attached screen looks like a local run, with one more line in the block:
+`attach SOCKET  engine pid N`. On connect it gets the last 200 feed lines, the
+voice lines still open and the block, then follows the engine. `q` closes only
+that screen. When the engine goes away the screen waits for it, and when an
+engine serves the socket again it reconnects by itself and says so in one feed
+line. A client that does not keep up is dropped and reconnects; the engine never
+waits for a screen. The engine's stdout gets its finished feed lines (as
+`--plain` without status lines); a socket file left by an engine that died is
+taken over, one that a live engine serves is refused.
+
 ### For scripts and agents
 
 `--json` prints one JSON object per line, flushed as each event happens; no
@@ -143,7 +168,8 @@ The fields are `t_utc`, `t_local` (only with `--tz`), `type`, `steamid64`, `nick
 as plain text lines. [AGENTS.md](AGENTS.md) is a guide for agents that run it.
 
 Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording),
-2 when the relay was refused before connecting, the command line is wrong or the
+2 when the relay was refused before connecting, the command line is wrong, no
+engine serves the socket given to `--attach`, the socket of `--serve` is taken or the
 recognizer could not start (its weights could not be fetched or checked, or the
 model failed to load), 3 when the network client stopped on its own (the relay
 refuses us for a reason retrying will not change).

@@ -24,6 +24,10 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
 - `--speed 0` replays as fast as possible; the default 1 keeps the recorded pace.
 - Add `--tz ZONE` only if you need local time; `t_utc` is always there.
 - stdin is not read in `--json`/`--monitor` mode; no key needs to be pressed.
+- `--serve SOCKET` (headless engine, its screen on a Unix socket) and
+  `--attach SOCKET` (that screen) are for people watching; they do not change
+  the session files. An agent reads `--json` or `events.jsonl`, never an
+  attached screen.
 - `--asr parakeet` downloads 2.55 GB of weights on its first run (Parakeet and
   Silero VAD; a line on stderr for each; the files are checked by SHA-256) and
   then needs about 2.6 GB of memory. Ask your user before the first download.
