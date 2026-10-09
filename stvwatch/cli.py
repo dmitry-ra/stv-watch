@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import asr, serve, version
 from . import events as gamevents
-from .app import MAX_UTT_MS, App
+from .app import LIVE_DRAIN_MS, MAX_UTT_MS, App
 from .asr import weights
 
 
@@ -142,9 +142,11 @@ def parse_args(argv=None):
     ap.add_argument(
         "--drain-ms",
         type=ms,
-        default=20_000,
+        default=None,
         metavar="MS",
-        help="on exit, wait this long for queued recognition",
+        help="on exit, wait at most this long for queued recognition (default: a replay "
+        "that ends by itself waits for all of it; live, or stopped by a signal or q: "
+        f"{LIVE_DRAIN_MS}); a signal or q during the wait ends it",
     )
     ap.add_argument("--no-audio", action="store_true", help="do not write utterance WAV files")
     ap.add_argument(

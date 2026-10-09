@@ -88,9 +88,11 @@ revision (Hugging Face, GitHub) and checks its size and SHA-256 before using it;
 a file that fails the check is deleted and the run stops. Later runs start from
 the files on disk.
 Recognition runs on the CPU (`--threads`, default 2) after an utterance ends,
-so its text follows the speech by about a second. On exit, queued utterances
-get `--drain-ms` (default 20000); the rest are marked `not recognized before
-exit`. The queue holds at most 600 s of audio: a replay waits for room, while
+so its text follows the speech by about a second. A replay that reaches its
+end waits until every queued utterance is recognized; live, or stopped by a
+signal or `q`, the exit waits at most `--drain-ms` (default 20000), and the
+rest are marked `not recognized before exit`. `--drain-ms` bounds a replay's
+wait too, and a signal or `q` during the wait ends it. The queue holds at most 600 s of audio: a replay waits for room, while
 live an utterance that does not fit is marked `not recognized, queue full`.
 
 Silero VAD stands in front of the model as a gate: an utterance with less
