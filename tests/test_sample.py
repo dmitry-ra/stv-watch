@@ -23,7 +23,7 @@ SAMPLE = os.path.join(HERE, "data", "sample.tvd")
 EXPECTED = os.path.join(HERE, "data", "sample.events.jsonl")
 SCHEMA = os.path.join(os.path.dirname(HERE), "docs", "events.schema.json")
 ARGS = ["--speed", "0", "--json", "--events", "all", "--debug", "--tz", "Europe/Berlin"]
-VIEWER_TYPES = ("conn", "net", "play", "tvd", "done")
+VIEWER_TYPES = ("conn", "net", "play", "tvd", "asr", "done")
 
 
 def replay(out, *extra):
@@ -73,14 +73,14 @@ def test_replay_of_the_sample_gives_the_expected_events(tmp_path):
     assert (session / "events.jsonl").read_text(encoding="utf-8").splitlines() == lines
 
 
-def test_replay_seconds_bound_what_is_shown_even_at_max_speed(tmp_path):
+def test_replay_duration_bounds_what_is_shown_even_at_max_speed(tmp_path):
     """The sample's first datagram is at 0.100 s and its last line at 6.100 s:
-    with --seconds 1 nothing after 1.100 s is shown, and the run says why it
+    with --duration-ms 1000 nothing after 1.100 s is shown, and the run says why it
     ended."""
-    args = ("--speed", "0", "--seconds", "1", "--json", "--events", "all")
+    args = ("--speed", "0", "--duration-ms", "1000", "--json", "--events", "all")
     lines = [json.loads(ln) for ln in replay(tmp_path, *args)]
     shown = max(r["t_utc"] for r in lines if r["type"] not in ("play", "done"))
-    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "seconds")
+    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "duration")
 
 
 def test_the_build_is_named_once_at_the_start_and_in_meta(tmp_path):
@@ -142,7 +142,7 @@ def check(value, schema, where="$"):
 def test_every_line_matches_the_schema(tmp_path):
     with open(SCHEMA, encoding="utf-8") as f:
         schema = json.load(f)
-    assert schema["properties"]["type"]["enum"] == list(ge.TYPES + VIEWER_TYPES)
+    assert schema["properties"]["type"]["enum"] == ["voice", *ge.TYPES, *VIEWER_TYPES]
     with_tz = replay(tmp_path / "a", *ARGS)
     plain = replay(tmp_path / "b", "--speed", "0", "--json", "--events", "all")
     seen = set()
@@ -161,6 +161,62 @@ def test_every_line_matches_the_schema(tmp_path):
         "$.nick: 1 is not string",
         "$: unexpected z",
     ]
+
+
+def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
+    """The synthetic voice recording without and with a recognizer (a
+    stand-in engine that hears text in some utterances and none in others)."""
+    from voicegen import demo
+
+    from stvwatch.app import App
+    from stvwatch.asr import recognizer
+    from stvwatch.cli import parse_args
+
+    class Engine:
+        def open(self):
+            n = []
+
+            class Stream:
+                def push(self, pcm):
+                    n.append(len(pcm))
+                    return []
+
+                def finish(self):
+                    if 20000 < sum(n) < 30000:
+                        raise RuntimeError("bad_alloc")
+                    text = [("final", "a phrase")] if sum(n) > 20000 else []
+                    return [("speech_ms", sum(n) // 16)] + text
+
+            return Stream()
+
+    monkeypatch.setattr(recognizer, "build", lambda *a: Engine())
+    with open(SCHEMA, encoding="utf-8") as f:
+        schema = json.load(f)
+    rec = str(tmp_path / "demo.tvd")
+    demo(rec)
+    seen = set()
+    for n, extra in enumerate((["--tz", "Europe/Berlin"], ["--asr", "parakeet", "--debug"])):
+        out = tmp_path / str(n)
+        args = ["--replay", rec, "--speed", "0", "--json", "--out", str(out), *extra]
+        assert App(parse_args(args)).run() == 0
+        (session,) = list(out.iterdir())
+        for ln in (session / "events.jsonl").read_text(encoding="utf-8").splitlines():
+            r = json.loads(ln)
+            assert check(r, schema) == [], ln
+            seen.add((r["type"], r.get("result"), "speech_ms" in r))
+    assert {
+        ("voice", "asr off", False),
+        ("voice", "text", True),
+        ("voice", "no speech", True),
+        ("voice", "recognition failed", False),
+        ("asr", None, False),
+    } <= seen
+    assert check(dict(CHAT, channel="all", ent=1, result="text"), schema) == ["$: result on 'chat'"]
+    assert check(dict(CHAT, channel="all", ent=1, speech_ms=1), schema) == [
+        "$: speech_ms on 'chat'"
+    ]
+    voice = dict(CHAT, type="voice", result="text", continued=False, spectator=False, details="")
+    assert check(voice, schema) == ["$: t_end_utc missing"]
 
 
 CHAT = {

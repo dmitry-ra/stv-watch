@@ -3,7 +3,7 @@
 import io
 
 from stvwatch import version
-from stvwatch.model import NS, Traffic
+from stvwatch.model import NS, Channel, Traffic
 from stvwatch.render import Screen, clean, fit, width
 from stvwatch.source import Pacer
 
@@ -197,7 +197,10 @@ def test_block_height_is_fixed_whatever_the_state(tmp_path):
     app.conn.state, app.conn.full_ns, app.conn.sessions = "FULL", 1, 3
     app.conn.hostname, app.conn.map = "host", "dm_test"
     app.traffic.inbound(10, 100, True)
-    assert len(app.block()) == empty == app.BLOCK_LINES == 4
+    for sid in range(3):
+        app.channels[sid] = Channel(sid, 0)
+        app.channels[sid].talking = True
+    assert len(app.block()) == empty == app.BLOCK_LINES == 6
     assert app.block()[0] == [(f" stv-watch {version.version()} ", "bar")]
 
 

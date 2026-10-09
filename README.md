@@ -2,23 +2,27 @@
 
 A SourceTV relay viewer for Half-Life 2: Deathmatch, in the terminal. It joins a
 relay as a spectator, as the game client would, and shows what the relay sends:
-chat, console messages, connects, joins, leaves, kills, team and nick changes,
-server and SourceMod notices, the connection's state and its traffic. It can also
-replay a recording at any speed. For scripts and agents, the same events come
-out as one JSON object per line.
+who talks on voice chat and, with `--asr parakeet`, what they say; chat, console
+messages, connects, joins, leaves, kills, team and nick changes, server and
+SourceMod notices, the connection's state and its traffic. It can also replay a
+recording at any speed. For scripts and agents, the same events come out as one
+JSON object per line.
 
 Every live session is recorded byte for byte (`capture.tvd`), and a replay of
 that recording gives the same lines the live run printed.
-
-Voice chat is not shown yet: voice messages are recorded and skipped.
 
 ## Requirements
 
 - Linux. The network client is a child process that the kernel stops when the
   viewer dies (`PR_SET_PDEATHSIG`), and the screen uses `termios`.
-- Python 3.12 or newer.
-- [uv](https://docs.astral.sh/uv/). There are no runtime dependencies beyond the
-  standard library; uv provides the interpreter and the environment.
+- Python 3.12 to 3.14, x86-64. onnxruntime publishes wheels up to CPython
+  3.14; on a newer Python the install stops at it with no matching wheel.
+- [uv](https://docs.astral.sh/uv/). uv provides the interpreter and the
+  environment with the dependencies, all wheels from PyPI (about 45 MB of
+  downloads): numpy, opuslib-next-bundled (the Opus decoder, libopus inside),
+  onnxruntime and onnx-asr (speech recognition).
+- For `--asr parakeet`: 2.55 GB of disk for the model weights (Parakeet and
+  Silero VAD) and about 2.6 GB of memory while it runs.
 
 ## Install and run
 
@@ -58,6 +62,56 @@ uv run stv-watch --relay RELAY_IP:27020 --events all,-server   # everything but 
 uv run stv-watch --relay RELAY_IP:27020 --events chat,death
 ```
 
+### Voice
+
+Every utterance is a line: who talks, `talking N s` while the key is held, then
+the final line when the speaker has been silent for a second. A monologue is cut
+into pieces of at most two minutes (`--max-utt-ms`, default 120000, at most
+400000: Parakeet takes at most 400 s in one call); later pieces are marked
+`(cont)`. A piece ends in the middle of the longest pause in its last 40 %, the
+pauses found by Silero VAD (with `--asr`); with no pause there, or without
+`--asr`, the cut is hard at the limit. Each utterance is also saved as a WAV file and a row of
+`transcript.tsv` (`--no-audio` turns the WAV files off).
+
+To see what is said, add a recognizer:
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --asr parakeet
+```
+
+The first run downloads the weights of Parakeet TDT 0.6B v3 (2.55 GB, about 25
+European languages, Russian and English among them) and of Silero VAD (0.64 MB)
+into `$XDG_CACHE_HOME/stv-watch/models` (`~/.cache/stv-watch/models` when it is
+unset; `--models-dir` chooses another place). For each it prints one line with
+the size and the revision first, fetches every file from its source at a pinned
+revision (Hugging Face, GitHub) and checks its size and SHA-256 before using it;
+a file that fails the check is deleted and the run stops. Later runs start from
+the files on disk.
+Recognition runs on the CPU (`--threads`, default 2) after an utterance ends,
+so its text follows the speech by about a second. On exit, queued utterances
+get `--drain-ms` (default 20000); the rest are marked `not recognized before
+exit`. The queue holds at most 600 s of audio: a replay waits for room, while
+live an utterance that does not fit is marked `not recognized, queue full`.
+
+Silero VAD stands in front of the model as a gate: an utterance with less
+speech in it than `--min-speech-ms` (default 250) gets no text (`no speech`)
+and is not recognized, because on noise Parakeet tends to make up an
+interjection; `--min-speech-ms 0` turns the gate off. Each voice line carries
+the speech the VAD found, `speech_ms`.
+
+Durations in options and in the files are whole milliseconds, their names end
+in `_ms` / `-ms`; moments are ISO times. The screen speaks seconds.
+
+Without a recording at hand, `tests/voicegen.py` writes a synthetic one with
+voice made of tones and noise (no speech):
+
+```sh
+uv run python tests/voicegen.py /tmp/voice.tvd
+uv run stv-watch --replay /tmp/voice.tvd --speed 0 --asr parakeet
+```
+
+### Time zones
+
 Times are in UTC. `--tz` takes an IANA zone name for the screen and the files
 (the system time zone database, package `tzdata`, must be installed):
 
@@ -76,7 +130,11 @@ uv run stv-watch --relay RELAY_IP:27020 --json --events all
 
 ```json
 {"t_utc": "2025-10-07T09:40:00.200Z", "type": "chat", "steamid64": 76561201960265729, "nick": "alice", "text": "hello", "channel": "all", "ent": 1}
+{"t_utc": "2025-10-07T09:40:09.060Z", "type": "voice", "steamid64": 76561201960265729, "nick": "alice", "text": "see you", "result": "text", "continued": false, "spectator": false, "details": "1.0s/0.9s fr 50 plc 0 gap 0 33kb/s press 1 msg 17 -2 0% arr 17 p50 60 max 60ms +1.1s asr 0.24s +0.9s", "t_end_utc": "2025-10-07T09:40:11.050Z"}
 ```
+
+A voice line is written when the utterance is recognized, so it can come after
+lines of later events; its `t_utc` is when the speaker started.
 
 The fields are `t_utc`, `t_local` (only with `--tz`), `type`, `steamid64`, `nick`,
 `text` and the extra fields of the type; the format is
@@ -84,10 +142,11 @@ The fields are `t_utc`, `t_local` (only with `--tz`), `type`, `steamid64`, `nick
 [docs/session-files.md](docs/session-files.md). `--monitor` gives the same events
 as plain text lines. [AGENTS.md](AGENTS.md) is a guide for agents that run it.
 
-Exit codes: 0 when the run ended (q, a signal, `--seconds`, end of a recording),
-2 when the relay was refused before connecting or the command line is wrong, 3
-when the network client stopped on its own (the relay refuses us for a reason
-retrying will not change).
+Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording),
+2 when the relay was refused before connecting, the command line is wrong or the
+recognizer could not start (its weights could not be fetched or checked, or the
+model failed to load), 3 when the network client stopped on its own (the relay
+refuses us for a reason retrying will not change).
 
 ## Version
 
@@ -105,8 +164,8 @@ start record of `capture.tvd`.
 Each run writes a directory under `$XDG_DATA_HOME/stv-watch/sessions`
 (`~/.local/share/stv-watch/sessions` when `XDG_DATA_HOME` is unset; `--out`
 chooses another parent): `capture.tvd` (live only), `events.jsonl`, `feed.log`,
-`meta.json`, `tvdump.log` (live only), `stderr.log`. See
-[docs/session-files.md](docs/session-files.md).
+`transcript.tsv`, `audio/` (a WAV per utterance), `meta.json`, `tvdump.log`
+(live only), `stderr.log`. See [docs/session-files.md](docs/session-files.md).
 
 ## A server on an unknown build
 
@@ -129,9 +188,10 @@ add it to the table: [docs/protocol.md](docs/protocol.md#server-builds).
   growing delay, and a refusal that retrying will not change (wrong build,
   password, ban) is retried only every few minutes and ends the viewer.
 - Do not stay connected to a server whose owners asked you not to.
-- Recordings and logs contain other people's nicks, SteamIDs and chat, and the
-  recording also holds their voice. Treat them as personal data: keep them to
-  yourself and delete what you do not need.
+- Recordings, WAV files, transcripts and logs contain other people's voices,
+  nicks, SteamIDs and chat. Treat them as personal data: keep them to yourself
+  and delete what you do not need. Recording or transcribing voice chat may need
+  the consent of those who speak where you or they live.
 
 ## Development
 
@@ -141,7 +201,10 @@ uv run black --check .
 uv run ruff check .
 ```
 
-The tests need no network beyond loopback and no game server.
+The tests need no network beyond loopback, no game server and no model weights;
+they use synthetic tones and noise, never speech. The test with the real model
+runs on its own: `uv run pytest -m model` (it uses the weights in the default
+place, or the directory in `STV_WATCH_MODELS`).
 `tools/local_srcds.py` starts a loopback dedicated server with SourceTV for
 manual checks, `tools/tmux_check.sh` checks the screen in a real terminal.
 How the protocol works: [docs/protocol.md](docs/protocol.md).
@@ -149,3 +212,13 @@ How the protocol works: [docs/protocol.md](docs/protocol.md).
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+The recognition model is not part of this repository: stv-watch downloads it
+from its source. Parakeet TDT 0.6B v3 is by NVIDIA
+([nvidia/parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)),
+the ONNX export it uses is
+[istupakov/parakeet-tdt-0.6b-v3-onnx](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx);
+both are under CC-BY-4.0. Silero VAD is by the Silero team
+([snakers4/silero-vad](https://github.com/snakers4/silero-vad), MIT); the file
+it uses, `silero_vad.onnx` (v4), is the ONNX export published by k2-fsa in the
+`asr-models` release of [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).

@@ -3,11 +3,8 @@
 The receive path is net/receiver.py, the same object the live session
 feeds: split reassembly, SNAP inflate, checksum, sequence, reliable
 subchannel reassembly, resends of unacked reliable packets, the message-chain
-walk. This module only hands the walked messages to the hooks and records a
-fate for every packet, so a loss has a named cause.
-
-svc_VoiceData is sized by the walk (its length field) and skipped: the
-messages after it in the same stream stay aligned.
+walk. This module only reads the walked messages (voice, hooks) and records
+a fate for every packet, so a loss has a named cause.
 
 Packet fates (one per netchannel packet, plain or joined from split parts):
 
@@ -35,10 +32,11 @@ Our own outbound packets are needed to recognize resends: feed the
 recording's non-inbound records (the session markers too) to `observe` in
 file order (`frame()` does).
 
-Messages before a stop point are still handed over: the walk is sequential,
-so everything before the stop was sized correctly.
+Messages before a stop point, voice among them, are still handed over: the
+walk is sequential, so everything before the stop was sized correctly.
 """
 
+import zlib
 from dataclasses import dataclass
 
 from ..net import receiver, wire
@@ -47,14 +45,35 @@ from .recording import Boundaries
 SVC_VOICEDATA = 15
 DATAGRAM_OUT = 0x02  # same record type in .tvd and .hcap
 STRING_TABLE_IDS = (12, 13)  # svc_CreateStringTable, svc_UpdateStringTable
-# decoded by the walk or skipped, never handed to on_msg
+# decoded by the walk, never handed to on_msg
 _LIFECYCLE = (
     wire.NET_DISCONNECT,
     wire.NET_TICK,
     wire.NET_SIGNONSTATE,
     wire.SVC_SERVERINFO,
-    SVC_VOICEDATA,
 )
+
+
+def steam_voice_crc_ok(payload):
+    """Steam voice ends with CRC32 of everything before it: a check that a
+    message was cut from the stream at the right bit, independent of the walk."""
+    return len(payload) > 12 and zlib.crc32(payload[:-4]) == int.from_bytes(payload[-4:], "little")
+
+
+@dataclass(frozen=True)
+class VoiceMessage:
+    """One svc_VoiceData as it left the chain."""
+
+    index: int  # datagram index of the packet that carried it
+    t_ns: int  # receive time of that packet (client clock)
+    session: int
+    sequence: int  # netchannel sequence of the packet
+    tick: int  # last server tick seen in this session (server clock)
+    from_client: int  # slot; NOT an identity (renumbered per map)
+    proximity: int
+    data: bytes  # Steam voice payload; first 8 bytes = SteamID64
+    via_split: bool  # carried by a packet reassembled from -2 parts
+    stream: str  # "reliable" | "unreliable"
 
 
 @dataclass(frozen=True)
@@ -66,13 +85,24 @@ class PacketFate:
     parts: tuple = ()  # datagram indices of split parts, if joined
 
 
+def voice_fields(payload, start):
+    """svc_VoiceData body at `start` -> (from_client, proximity, data)."""
+    br = wire.BitReader(payload)
+    br.pos = start
+    from_client = br.read_byte()
+    proximity = br.read_byte()
+    nbits = br.read_ubit(16)
+    return from_client, proximity, br.read_bytes(nbits // 8)
+
+
 def _stop(stop):
     return "message cap" if stop["id"] is None else f"id{stop['id']}:{stop['kind']}"
 
 
 class Framer:
-    """Feed recording.Datagram in order; hooks get the walked messages, and
-    a PacketFate is kept per packet (keep_fates).
+    """Feed recording.Datagram in order; voice messages collect in `voice`,
+    hooks get the other walked messages, and a PacketFate is kept per packet
+    (keep_fates).
 
     reassemble_splits=False drops split parts instead of joining them, as a
     client without -2 support would."""
@@ -97,6 +127,7 @@ class Framer:
         self.rx = receiver.Receiver(split_timeout_ns, reassemble_splits, infer_connections=True)
         self.keep_fates = keep_fates
         self.fates = []
+        self.voice = []
         self.counters = self.rx.counters
         self.session = None
         self.boundary = Boundaries()
@@ -154,6 +185,7 @@ class Framer:
 
     def _packet(self, pkt, session):
         fate = pkt.fate
+        found = []
         if fate in (receiver.OK, receiver.RESEND):
             if pkt.reliable_error:
                 why = (
@@ -165,19 +197,40 @@ class Framer:
             self.cur_t_ns, self.cur_session, self.cur_packet = pkt.t_ns, session, pkt
             for w in pkt.walks:
                 self.cur_stream = w.stream
-                self._dispatch(w)
+                self._dispatch(w, pkt, session, found)
                 if w.stop is not None and fate == receiver.OK:
                     fate = f"{w.stream}_stop:" + _stop(w.stop)
             self.cur_stream = None
+            self.voice.extend(found)
+            self.counters["voice_msgs"] += len(found)
+            self.counters["voice_crc_bad"] += sum(not steam_voice_crc_ok(v.data) for v in found)
+            if pkt.via_split:
+                self.counters["voice_msgs_via_split"] += len(found)
         self._fate(pkt.index, session, fate, pkt.via_split, pkt.parts)
         self.cur_fate = fate
         if self.on_packet is not None:
             self.on_packet(pkt)
 
-    def _dispatch(self, w):
+    def _dispatch(self, w, pkt, session, found):
         rx, payload = self.rx, w.payload
         for mid, start, end, fields in w.msgs:
-            if mid == wire.NET_TICK:
+            if mid == SVC_VOICEDATA:
+                fc, prox, data = voice_fields(payload, start)
+                found.append(
+                    VoiceMessage(
+                        pkt.index,
+                        pkt.t_ns,
+                        session,
+                        pkt.header.sequence,
+                        rx.tick,
+                        fc,
+                        prox,
+                        data,
+                        pkt.via_split,
+                        w.stream,
+                    )
+                )
+            elif mid == wire.NET_TICK:
                 if fields["tick"] > 0:
                     rx.tick = max(rx.tick, fields["tick"])
             elif mid == wire.SVC_SERVERINFO:

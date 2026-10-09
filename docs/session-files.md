@@ -12,6 +12,8 @@ Every run of stv-watch writes one directory:
 | `capture.tvd` | yes | - | the raw recording: every datagram both ways and the session lifecycle |
 | `events.jsonl` | yes | yes | one JSON object per line, the same bytes `--json` prints |
 | `feed.log` | yes | yes | the feed as text, tab separated, with full details |
+| `transcript.tsv` | yes | yes | one row per utterance: who, when, the recognized text, its WAV |
+| `audio/` | yes | yes | a WAV file per utterance (not with `--no-audio`; only once someone spoke) |
 | `meta.json` | yes | yes | arguments, counters and how the run ended, written at exit |
 | `tvdump.log` | yes | - | the network client's own log |
 | `stderr.log` | yes | yes | anything printed to stdout or stderr other than the screen |
@@ -20,6 +22,8 @@ Every run of stv-watch writes one directory:
 version that wrote them, as `stv-watch --version` prints it:
 `0.1.0` for a plain release, `0.1.0+g976b9ae` when run from a git checkout at
 that commit, `0.1.0+g976b9ae.dirty` when tracked files differ from it.
+`transcript.tsv` and `audio/` go by the session's version and carry none of
+their own.
 
 ## events.jsonl
 
@@ -28,20 +32,53 @@ The schema is [events.schema.json](events.schema.json). Every line has:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `t_utc` | string | `YYYY-MM-DDTHH:MM:SS.mmmZ`, receive time of the packet that carried the event |
+| `t_utc` | string | `YYYY-MM-DDTHH:MM:SS.mmmZ`, receive time of the packet that carried the event (voice: of the utterance's first frame) |
 | `t_local` | string | `YYYY-MM-DD HH:MM:SS` in the `--tz` zone; only when `--tz` was given |
 | `type` | string | see below |
 | `steamid64` | integer | the player the line is about, 0 when none or unknown |
 | `nick` | string | the player's nick as the stream names him |
 | `text` | string | what happened |
 
-The first line of a session (`conn` live, `play` in a replay or `--follow`;
-`done` if the run ended before either) also has `version`, the stv-watch
-version that wrote it. No other line has it.
+The first line of a session (`asr` when `--asr` loads the recognizer first,
+else `conn` live, `play` in a replay or `--follow`; `done` if the run ended
+before either) also has `version`, the stv-watch version that wrote it. No
+other line has it.
 
 Players are named by the stream itself: the nick is the current entry of the
 `userinfo` string table, the SteamID64 comes from the same entry or from the
 game event; nothing is looked up elsewhere.
+
+Voice (always shown, not filtered by `--events`):
+
+| type | extra fields | what |
+|---|---|---|
+| `voice` | `result`, `continued`, `spectator`, `details`, `t_end_utc`, `speech_ms` | one utterance, or one piece of a monologue; `text` is what was recognized |
+
+- `result`: `text` (`text` holds what was said), `no speech` (the voice
+  activity detector found less speech than `--min-speech-ms`, or the model
+  heard nothing), `asr off` (run without `--asr`), `not recognized before exit`
+  (still queued when `--drain-ms` ran out), `not recognized, queue full` (live
+  only: 600 s of audio was already waiting for the recognizer; a replay waits
+  for room instead), `recognition failed` (the engine raised an error on it;
+  the `asr` line before it says which).
+- `continued`: a piece of a monologue after the first; pieces are cut at the
+  longest pause in their last 40 %, at most `--max-utt-ms` long.
+- `speech_ms`: milliseconds of speech Silero VAD found in the utterance
+  (32 ms windows above 0.5); only when the recognizer looked at it.
+- `spectator`: the speaker is a spectator and `sv_alltalk` is off, so the
+  players in game did not hear him.
+- `details`: audio seconds / seconds from first to last frame, Opus frames
+  (`fr`), frames concealed by the decoder (`plc`) and filled with silence
+  (`gap`), bit rate, key presses, voice messages and their share in split
+  packets, distinct arrivals with the median and largest gap between them, why
+  the utterance closed when not by the clock (`max_len`, `pause`, `session`,
+  `end`) and how long after its last frame; with `--asr` also the recognition
+  time and how far the text was behind the speech.
+- `t_end_utc`: when the utterance closed.
+
+A voice line is written when its utterance closes (without `--asr`) or when its
+recognition returns, so voice lines are not in time order with the rest; sort by
+`t_utc` if order matters.
 
 Game event types (filtered by `--events`) and their extra fields:
 
@@ -62,6 +99,7 @@ The viewer's own lines: `conn` (connecting, signon, map change, breaks,
 reconnects, leaving, the slot check), `net` (traffic started, stopped, resumed;
 with `--debug` also `lost: seq A -> B (N)` with `seq_from`, `seq_to`, `lost`),
 `play` (replay started), `tvd` (a line of the network client's log, live only),
+`asr` (the recognizer loaded, failed to load, or failed on an utterance),
 `done` (the last line: why the run ended and where its files are).
 
 ## feed.log
@@ -69,6 +107,31 @@ with `--debug` also `lost: seq A -> B (N)` with `seq_from`, `seq_to`, `lost`),
 `<t_utc>\t<steamid64 or empty>\t<line>`, one line per event, UTF-8. The line is
 what the screen shows with `--debug`: a kill names both SteamIDs, the time is
 not repeated. The first line ends with `  [stv-watch VERSION]`.
+
+## transcript.tsv
+
+Tab separated, UTF-8, a header line, then one row per utterance in the order
+they were finished (tabs and line breaks inside a field become spaces):
+
+| Column | Meaning |
+|---|---|
+| `t_start_utc`, `t_end_utc` | first frame and close of the utterance (a monologue piece ends where the next begins), the format of `t_utc` |
+| `steamid64`, `nick` | the speaker |
+| `model` | the recognizer (`parakeet`), empty without `--asr` |
+| `result` | as in the `voice` line: `text`, `no speech`, `asr off`, `not recognized before exit`, `not recognized, queue full`, `recognition failed` |
+| `text` | what was recognized, empty unless `result` is `text` |
+| `audio` | the WAV file, relative to the session directory; empty with `--no-audio` |
+| `speech_ms` | speech found by the VAD, as in the `voice` line; empty when not measured |
+| `asr_ms` | milliseconds the recognizer spent on it |
+| `lag_ms` | milliseconds from the close of the utterance (of a monologue piece: from its cut) to its line |
+| `t_local` | only with `--tz`: the start in that zone, `YYYY-MM-DD HH:MM:SS` |
+
+## audio/
+
+`HHMMSS_<steamid64>_<n>.wav`: 16 kHz mono 16-bit PCM of one utterance as
+decoded (lost frames concealed or filled with silence, loud peaks limited).
+`HHMMSS` is the start in UTC, or in the `--tz` zone; `<n>` counts the speaker's
+utterances in the session, so names do not repeat.
 
 ## capture.tvd
 
@@ -92,8 +155,8 @@ epoch ns), `u16` length and the relay's address. Then records:
 the event records are JSON, so it needed no change of the format, and files
 written before it simply lack the field.
 
-Voice messages stay in the recorded datagrams: a later version can replay old
-recordings with voice. A file cut by a crash is readable up to the cut.
+Voice messages stay in the recorded datagrams: a replay shows and recognizes
+them as a live run does. A file cut by a crash is readable up to the cut.
 `stv-watch --replay` also reads the older `.hcap` format (magic `HLTVCAP`,
 datagrams only).
 
@@ -101,12 +164,21 @@ datagrams only).
 
 Written at exit: `version`, `build` (`version`, `release`, `commit` = the full
 hash, `dirty`; the last two null outside a git checkout), `args` (the command
-line), `dir`, `tz`, `pid`, `start_utc`,
-`end_utc`, `quit` (`end of recording`, `seconds`, `key q`, `SIGINT`, `SIGTERM`,
-`SIGHUP`, `alarm`, `client exited`, `precheck`), `tvdump_rc` (exit code of the
-network client; null when it had to be killed), `traffic`, `framer` (receive
-path counters: `seq_lost`, `seq_choked`, `resend_skipped`, packet fates, ...),
-`conn` (last connection state), `game_events` (counts per type, shown or not).
+line), `model` (the `--asr` engine or null), `dir`, `tz`, `pid`, `start_utc`,
+`end_utc`, `quit` (`end of recording`, `duration`, `key q`, `SIGINT`,
+`SIGTERM`, `SIGHUP`, `alarm`, `client exited`, `precheck`, `asr failed`),
+`tvdump_rc` (exit code of the network client; null when it had to be killed),
+`traffic`, `framer` (receive path counters: `seq_lost`, `seq_choked`,
+`resend_skipped`, `voice_msgs`, `voice_crc_bad`, packet fates, ...), `segments`
+(speech segmenter counters), `counters` (`utterances`, `phrases` with text,
+`nospeech`, `wav` files, `payload_bad` voice messages that failed the Steam
+voice check), `conn` (last connection state; `state_utc` and `full_utc` are
+when it was entered and when it reached FULL), `game_events` (counts per type,
+shown or not), `speakers` (per SteamID64: `nick`, `audio_ms`, Opus `frames`,
+`utterances`, `phrases`). With `--asr` also `asr`: `state`, `error`, `load_ms`,
+`audio_ms` and `compute_ms` recognized, `jobs`. Every duration is whole
+milliseconds named `*_ms`; `args` holds the options under their names
+(`duration_ms`, `skip_ms`, ...).
 Live runs also have `slot_released`, `relay_before`, `relay_with_us` and
 `relay_after`: the relay's spectator counts used to check that our slot was
 freed.

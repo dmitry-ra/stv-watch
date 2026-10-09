@@ -2,7 +2,7 @@
 """The one way to put a live client on a relay.
 
     ok, why, facts = precheck("IP:PORT", game="IP:PORT")
-    c = LiveClient("IP", PORT, "x.tvd", "x.log", name="stvwatch", seconds=0)
+    c = LiveClient("IP", PORT, "x.tvd", "x.log", name="stvwatch", duration_ms=0)
     c.start(); ...; rc = c.stop()
     released, after = slot_released("IP:PORT", facts["spectators_before"])
 
@@ -131,10 +131,10 @@ def slot_freed(relay, with_us, settle_s=2.0, polls=3, every=2.0, info=None):
 class LiveClient:
     """tvdump child process writing the session journal (the dump)."""
 
-    def __init__(self, ip, port, dump_path, log_path, name="tvdump", seconds=0.0, extra=()):
+    def __init__(self, ip, port, dump_path, log_path, name="tvdump", duration_ms=0, extra=()):
         self.ip, self.port = ip, port
         self.dump_path, self.log_path = dump_path, log_path
-        self.name, self.seconds, self.extra = name, seconds, list(extra)
+        self.name, self.duration_ms, self.extra = name, duration_ms, list(extra)
         self.proc = None
         self.log_fh = None
 
@@ -159,8 +159,8 @@ class LiveClient:
             str(self.port),
             "--name",
             self.name,
-            "--seconds",
-            str(self.seconds),
+            "--duration-ms",
+            str(self.duration_ms),
             "--parent-pid",
             str(os.getpid()),
         ] + self.extra

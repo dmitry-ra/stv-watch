@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The network client (tvdump): holds a relay session and writes the journal.
 
-    python -m stvwatch.net.main run  --dump PATH --ip IP --port N [--seconds N] ...
-    python -m stvwatch.net.main read PATH [--assert-full] [--assert-no-gaps-over S] ...
+    python -m stvwatch.net.main run  --dump PATH --ip IP --port N [--duration-ms N] ...
+    python -m stvwatch.net.main read PATH [--assert-full] [--assert-no-gaps-over-ms N] ...
 
 stv-watch starts `run` as its child process (client.LiveClient).
 
@@ -53,9 +53,9 @@ def cmd_run(a):
         build=None if a.build == "auto" else a.build,
         password=a.password,
         crc=None if a.crc == "auto" else int(a.crc, 0),
-        seconds=a.seconds,
+        seconds=a.duration_ms / 1000,
         fsync_ms=a.fsync_ms,
-        silence_full_s=a.silence_full_s,
+        silence_full_s=a.silence_full_ms / 1000,
         rerate=a.rerate,
         version=a.stv_version,
     )
@@ -95,7 +95,7 @@ def cmd_read(a):
         if rtype == dumpfmt.DATAGRAM_IN:
             if prev_in is not None:
                 gap = (t_ns - prev_in) / 1e9
-                if gap > a.gap_report:
+                if gap * 1000 > a.gap_report_ms:
                     gaps.append(((t_ns - first) / 1e9, gap))
             prev_in = t_ns
         elif rtype in dumpfmt.EVENT_TYPES:
@@ -126,7 +126,7 @@ def cmd_read(a):
     for rel, cause, detail in breaks:
         print(f"  break @{rel}s  {cause}: {detail}")
     if gaps:
-        print(f"inbound gaps > {a.gap_report}s: {shown(gaps[:20])}")
+        print(f"inbound gaps > {a.gap_report_ms / 1000:g}s: {shown(gaps[:20])}")
 
     rc = 0
     if a.assert_full and not any(s == wire.SIGNON_FULL for _, s in signons):
@@ -135,19 +135,21 @@ def cmd_read(a):
     if a.assert_max_breaks is not None and len(breaks) > a.assert_max_breaks:
         print(f"ASSERT FAILED: {len(breaks)} breaks > {a.assert_max_breaks}")
         rc = 1
-    if a.assert_no_gaps_over is not None:
-        big = [g for g in gaps if g[1] > a.assert_no_gaps_over]
+    if a.assert_no_gaps_over_ms is not None:
+        big = [g for g in gaps if g[1] * 1000 > a.assert_no_gaps_over_ms]
         if big:
-            print(f"ASSERT FAILED: gaps over {a.assert_no_gaps_over}s: {shown(big[:10])}")
+            print(
+                f"ASSERT FAILED: gaps over {a.assert_no_gaps_over_ms / 1000:g}s: {shown(big[:10])}"
+            )
             rc = 1
     return rc
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="SourceTV session client + dumper")
+    ap = argparse.ArgumentParser(description="SourceTV session client + dumper", allow_abbrev=False)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("run", help="connect, hold a FULL session, dump traffic")
+    r = sub.add_parser("run", help="connect, hold a FULL session, dump traffic", allow_abbrev=False)
     r.add_argument("--dump", required=True, help="output .tvd path")
     r.add_argument("--ip", required=True)
     r.add_argument("--port", type=int, required=True)
@@ -163,12 +165,12 @@ def main(argv=None):
         'A wrong one is refused: "different class tables"',
     )
     r.add_argument(
-        "--seconds",
-        type=float,
-        default=0.0,
+        "--duration-ms",
+        type=int,
+        default=0,
         help="bounded run for tests; 0 = daemon (run until signal)",
     )
-    r.add_argument("--silence-full-s", type=float, default=15.0)
+    r.add_argument("--silence-full-ms", type=int, default=15_000)
     r.add_argument(
         "--rerate", type=int, default=0, help="resend this rate once after FULL; 0 = off"
     )
@@ -183,13 +185,13 @@ def main(argv=None):
     )
     r.set_defaults(fn=cmd_run)
 
-    d = sub.add_parser("read", help="summarize a dump")
+    d = sub.add_parser("read", help="summarize a dump", allow_abbrev=False)
     d.add_argument("path")
     d.add_argument("--timeline", action="store_true", help="print every event")
-    d.add_argument("--gap-report", type=float, default=2.0)
+    d.add_argument("--gap-report-ms", type=int, default=2000)
     d.add_argument("--assert-full", action="store_true")
     d.add_argument("--assert-max-breaks", type=int, default=None)
-    d.add_argument("--assert-no-gaps-over", type=float, default=None)
+    d.add_argument("--assert-no-gaps-over-ms", type=int, default=None)
     d.set_defaults(fn=cmd_read)
 
     a = ap.parse_args(argv)

@@ -1,13 +1,18 @@
 [project]
 name = "stv-watch"
 version = "0.1.0"
-description = "SourceTV relay viewer for Half-Life 2: Deathmatch: game chat and events, live or from a recording"
+description = "SourceTV relay viewer for Half-Life 2: Deathmatch: voice with a transcript, game chat and events, live or from a recording"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Dmitry Razumikhin" }]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "numpy>=2.0",
+    "onnx-asr==0.12.0",
+    "onnxruntime>=1.30",
+    "opuslib-next-bundled==0.1.1",
+]
 classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.12",
@@ -44,4 +49,5 @@ select = ["E", "F", "W", "B", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider -m 'not model'"
+markers = ["model: needs the Parakeet weights (2.55 GB); run with -m model"]

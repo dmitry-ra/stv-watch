@@ -166,4 +166,4 @@ def test_the_gap_assertion_compares_the_measured_gap_not_its_rounding(tmp_path, 
     with dumpfmt.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
         for t in (10**18, 10**18 + gap_ns):
             w.write(dumpfmt.DATAGRAM_IN, b"\0" * 8, t_ns=t)
-    assert main.main(["read", path, "--assert-no-gaps-over", "2.0"]) == rc
+    assert main.main(["read", path, "--assert-no-gaps-over-ms", "2000"]) == rc
