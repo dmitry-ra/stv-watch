@@ -52,7 +52,7 @@ Voice (always shown, not filtered by `--events`):
 
 | type | extra fields | what |
 |---|---|---|
-| `voice` | `result`, `continued`, `spectator`, `details`, `t_end_utc`, `speech_ms` | one utterance, or one piece of a monologue; `text` is what was recognized |
+| `voice` | `result`, `continued`, `spectator`, `details`, `t_end_utc`, `speech_ms`, `slot`, `verified`, `slot_steamid64` | one utterance, or one piece of a monologue; `text` is what was recognized |
 
 - `result`: `text` (`text` holds what was said), `no speech` (the voice
   activity detector found less speech than `--min-speech-ms`, or the model
@@ -75,6 +75,17 @@ Voice (always shown, not filtered by `--events`):
   `end`) and how long after its last frame; with `--asr` also the recognition
   time and how far the text was behind the speech.
 - `t_end_utc`: when the utterance closed.
+- `slot`: the server slot its voice messages came from (with a mismatch, the
+  slot of the first one that did not match).
+- `verified`: whether the server's `userinfo` entry for that slot is the
+  player whose SteamID the voice payload carries (`steamid64`). `true` when
+  every message that could be checked matched; `false` when any did not;
+  `null` when none could be checked (no `userinfo` table yet, or an empty
+  slot). The screen marks `false` in red after the nick: `[slot 5: NICK]`,
+  NICK being who the server had there; `--debug` adds `slot N` to the
+  transport numbers of every voice line (and so does `feed.log`).
+- `slot_steamid64`: only when `verified` is `false`: SteamID64 of the player
+  in that slot (0 for a bot).
 
 A voice line is written when its utterance closes (without `--asr`) or when its
 recognition returns, so voice lines are not in time order with the rest; sort by
@@ -125,6 +136,7 @@ they were finished (tabs and line breaks inside a field become spaces):
 | `asr_ms` | milliseconds the recognizer spent on it |
 | `lag_ms` | milliseconds from the close of the utterance (of a monologue piece: from its cut) to its line |
 | `t_local` | only with `--tz`: the start in that zone, `YYYY-MM-DD HH:MM:SS` |
+| `slot`, `verified`, `slot_steamid64` | as in the `voice` line; `verified` is `true`, `false` or empty (null), `slot_steamid64` empty unless `verified` is `false` |
 
 ## audio/
 

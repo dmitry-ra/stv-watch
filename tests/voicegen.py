@@ -150,12 +150,14 @@ def demo(path):
                 unreliable=table_update(
                     ("alice", f"[U:1:{account(1)}]", account(1), 2),
                     ("bob", f"[U:1:{account(2)}]", account(2), 3),
+                    create=True,
                 ),
             ),
         ),
         (7.0, lambda seq: reliable_packet(seq, chat_bytes("bob", "synthetic voice only"))),
     ]
-    timed += [(t, lambda seq, p=p: packet(seq, [(1, p)])) for t, _sid, p in plan]
+    slots = {alice: 1, bob: 2}
+    timed += [(t, lambda seq, s=s, p=p: packet(seq, [(slots[s], p)])) for t, s, p in plan]
     timed += [(k * 0.05, lambda seq: packet(seq)) for k in range(1, 240)]
     timed.sort(key=lambda e: e[0])
     write_recording(path, [(T0 + int(t * 1e9), make(n + 1)) for n, (t, make) in enumerate(timed)])

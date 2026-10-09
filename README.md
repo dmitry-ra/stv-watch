@@ -99,6 +99,12 @@ and is not recognized, because on noise Parakeet tends to make up an
 interjection; `--min-speech-ms 0` turns the gate off. Each voice line carries
 the speech the VAD found, `speech_ms`.
 
+The SteamID a voice line names comes from the voice data, which the speaker's
+own game writes; the slot the data came from is the server's, and the server's
+`userinfo` table says who is in that slot. Each voice line checks one against
+the other (`verified`): a mismatch, a client claiming someone else's SteamID,
+is marked in red on screen with the slot and the nick of its real owner.
+
 Durations in options and in the files are whole milliseconds, their names end
 in `_ms` / `-ms`; moments are ISO times. The screen speaks seconds.
 

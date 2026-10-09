@@ -74,6 +74,7 @@ class VoiceMessage:
     data: bytes  # Steam voice payload; first 8 bytes = SteamID64
     via_split: bool  # carried by a packet reassembled from -2 parts
     stream: str  # "reliable" | "unreliable"
+    owner: object = None  # the slot's userinfo entry then (Framer slot_owner), if any
 
 
 @dataclass(frozen=True)
@@ -116,6 +117,7 @@ class Framer:
         on_info=None,
         on_msg=None,
         on_packet=None,
+        slot_owner=None,
     ):
         self.on_table = on_table  # (payload, start_bit, end_bit) of 12/13
         # (mid, payload, start_bit, end_bit) of every other sized message; the
@@ -124,6 +126,9 @@ class Framer:
         self.on_msg = on_msg
         self.on_info = on_info  # svc_ServerInfo dict (map, hostname, ...)
         self.on_packet = on_packet  # receiver.Packet; its fate in self.cur_fate
+        # (slot, session) -> VoiceMessage.owner, asked in stream order: a table
+        # update earlier in the same packet already counts
+        self.slot_owner = slot_owner
         self.rx = receiver.Receiver(split_timeout_ns, reassemble_splits, infer_connections=True)
         self.keep_fates = keep_fates
         self.fates = []
@@ -228,6 +233,7 @@ class Framer:
                         data,
                         pkt.via_split,
                         w.stream,
+                        None if self.slot_owner is None else self.slot_owner(fc, session),
                     )
                 )
             elif mid == wire.NET_TICK:

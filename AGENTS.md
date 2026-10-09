@@ -44,7 +44,9 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
 - `voice`: one utterance (always on). `text` is what was recognized; `result`
   says why it may be empty (`no speech`, `asr off`, `not recognized before
   exit`, `not recognized, queue full`, `recognition failed`); `continued` marks a later piece of a monologue; `t_end_utc` is when
-  it closed. It is written when recognition returns, so it may come after
+  it closed. `verified` false means the voice data names a SteamID other
+  than the player the server has in the slot it came from (`slot`,
+  `slot_steamid64`): trust the slot, not `steamid64`. It is written when recognition returns, so it may come after
   lines of later events: order by `t_utc`.
 - Game events: `chat`, `console`, `connect`, `join`, `leave`, `death`, `team`,
   `name`, `server`, `sourcemod`. Pick them with `--events` (`all`, `default`,

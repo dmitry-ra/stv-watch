@@ -140,16 +140,136 @@ def player_info(name, guid, friends_id, userid=5):
     return s + b"\0" * 40
 
 
-def table_update(*players):
-    """svc_UpdateStringTable of the userinfo table with these player_info_t
-    blobs; players are (name, guid, friends_id[, userid])."""
-    blob = b"\x07" + b"".join(player_info(*p) for p in players)
-    w = wire.BitWriter()
+USERINFO_MAX = 64  # entry index: Q_log2(64) = 6 bits
+
+
+def userinfo_entries(players):
+    """players: (name, guid, friends_id[, userid[, slot]]) -> [(slot, key,
+    user data)]; the slot defaults to 1 + the player's position."""
+    out = []
+    for i, p in enumerate(players):
+        slot = p[4] if len(p) > 4 else i + 1
+        out.append((slot, str(slot).encode(), player_info(*p[:4])))
+    return out
+
+
+def write_entries(w, entries, max_entries=USERINFO_MAX, fixed_bits=0):
+    """String table entries as CNetworkStringTable::WriteUpdate puts them.
+    entries: [(index, key, user data)]; key None (unchanged), bytes, or
+    (history index, prefix length, suffix bytes); user data None (absent)."""
+    last = -1
+    for idx, key, ud in entries:
+        if idx == last + 1:
+            w.write_one_bit(1)
+        else:
+            w.write_one_bit(0)
+            w.write_ubit(idx, max_entries.bit_length() - 1)
+        last = idx
+        w.write_one_bit(key is not None)
+        if isinstance(key, tuple):
+            w.write_one_bit(1)
+            w.write_ubit(key[0], 5)
+            w.write_ubit(key[1], 5)
+            w.write_bytes(key[2] + b"\0")
+        elif key is not None:
+            w.write_one_bit(0)
+            w.write_bytes(key + b"\0")
+        w.write_one_bit(ud is not None)
+        if ud is not None and fixed_bits:
+            w.write_ubit(int.from_bytes(ud, "little"), fixed_bits)
+        elif ud is not None:
+            w.write_ubit(len(ud), 14)
+            w.write_bytes(ud)
+
+
+def lzss(data):
+    """CLZSS::Compress, greedy: literals and back references of 2..16 bytes
+    within 4 KiB, then the end mark."""
+    items, i = [], 0
+    while i < len(data):
+        best = (0, 0)
+        for start in range(max(0, i - 4096), i):
+            n = 0
+            while n < 16 and i + n < len(data) and data[start + n] == data[i + n]:
+                n += 1
+            if n > best[0]:
+                best = (n, i - start - 1)
+        if best[0] >= 2:
+            items.append((best[1], best[0]))
+            i += best[0]
+        else:
+            items.append(data[i])
+            i += 1
+    items.append((0, 1))
+    out = bytearray(b"LZSS" + struct.pack("<I", len(data)))
+    for k in range(0, len(items), 8):
+        group = items[k : k + 8]
+        out.append(sum(1 << j for j, it in enumerate(group) if isinstance(it, tuple)))
+        for it in group:
+            if isinstance(it, tuple):
+                out += bytes([it[0] >> 4, (it[0] & 0xF) << 4 | (it[1] - 1)])
+            else:
+                out.append(it)
+    return bytes(out)
+
+
+def append_bits(w, other):
+    w.write_ubit(int.from_bytes(other.get_bytes(), "little"), other.nbits())
+
+
+def write_create(
+    w, entries, name="userinfo", max_entries=USERINFO_MAX, fixed=None, compressed=None
+):
+    """svc_CreateStringTable. fixed: (bytes, bits) of fixed-size user data;
+    compressed: a function bytes -> LZSS blob for the entry data."""
+    body_w = wire.BitWriter()
+    write_entries(body_w, entries, max_entries, fixed[1] if fixed else 0)
+    data, nbits = body_w.get_bytes(), body_w.nbits()
+    if compressed is not None:
+        blob = compressed(data)
+        data = struct.pack("<II", len(data), len(blob)) + blob
+        nbits = len(data) * 8
+    w.write_ubit(12, wire.NETMSG_TYPE_BITS)
+    w.write_string(name)
+    w.write_ubit(max_entries, 16)
+    w.write_ubit(len(entries), max_entries.bit_length())
+    w.write_varint32(nbits)
+    w.write_one_bit(fixed is not None)
+    if fixed:
+        w.write_ubit(fixed[0], 12)
+        w.write_ubit(fixed[1], 4)
+    w.write_one_bit(compressed is not None)
+    if compressed is not None:
+        w.write_bytes(data)
+    else:
+        append_bits(w, body_w)
+    return w
+
+
+def write_update(w, entries, table=0, max_entries=USERINFO_MAX):
+    body_w = wire.BitWriter()
+    write_entries(body_w, entries, max_entries)
     w.write_ubit(13, wire.NETMSG_TYPE_BITS)
-    w.write_ubit(7, 5)
-    w.write_one_bit(0)
-    w.write_ubit(len(blob) * 8, 20)
-    w.write_bytes(blob)
+    w.write_ubit(table, 5)
+    if len(entries) == 1:
+        w.write_one_bit(0)
+    else:
+        w.write_one_bit(1)
+        w.write_ubit(len(entries), 16)
+    w.write_ubit(body_w.nbits(), 20)
+    append_bits(w, body_w)
+    return w
+
+
+def table_update(*players, create=False):
+    """svc_UpdateStringTable of the userinfo table (table 0) with these
+    players (see userinfo_entries); create=True puts a userinfo
+    svc_CreateStringTable of 16 empty slots in front, as a join to an empty
+    server would have it."""
+    w = wire.BitWriter()
+    if create:
+        write_create(w, [(i, str(i).encode(), None) for i in range(16)])
+    write_update(w, userinfo_entries(players))
     return w.get_bytes()
 
 

@@ -64,10 +64,13 @@
     "details": {"description": "voice: transport numbers of the utterance (audio and arrival seconds, Opus frames, concealed and silence-filled frames, bit rate, key presses, voice messages, share in split packets, arrivals, how long after the last frame it closed) and, with --asr, recognition seconds and the lag behind the speech.", "type": "string"},
     "speech_ms": {"description": "voice: milliseconds of speech Silero VAD found in the utterance (32 ms windows above 0.5); only when the recognizer looked at it.", "type": "integer", "minimum": 0},
     "t_end_utc": {"description": "voice: when the utterance closed, the format of t_utc.", "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"},
+    "slot": {"description": "voice: the server slot (svc_VoiceData from_client) the utterance's voice messages came from; with a mismatch, the slot of the first one that did not match.", "type": ["integer", "null"], "minimum": 0},
+    "verified": {"description": "voice: whether the server's userinfo entry for the slot names the player whose SteamID the voice payload carries (steamid64): true when every voice message that could be checked matched, false when any did not (see slot_steamid64), null when none could be checked (no userinfo table yet, or an empty slot).", "type": ["boolean", "null"]},
+    "slot_steamid64": {"description": "voice, only when verified is false: SteamID64 of the player the server had in that slot (0 for a bot).", "type": "integer", "minimum": 0},
     "version": {"description": "Only on the first line of a session (asr when --asr loads the recognizer first, else conn live, play replay and follow, done if the run ended before either): the stv-watch version that wrote it, as `stv-watch --version` names it: 0.1.0 or, run from a git checkout, 0.1.0+g976b9ae (.dirty when tracked files differ from the commit).", "type": "string"}
   },
   "allOf": [
-    {"if": {"properties": {"type": {"const": "voice"}}}, "then": {"required": ["result", "continued", "spectator", "details", "t_end_utc"]}},
+    {"if": {"properties": {"type": {"const": "voice"}}}, "then": {"required": ["result", "continued", "spectator", "details", "t_end_utc", "slot", "verified"]}},
     {"if": {"properties": {"type": {"const": "chat"}}}, "then": {"required": ["channel", "ent"]}},
     {"if": {"properties": {"type": {"const": "connect"}}}, "then": {"required": ["userid"]}},
     {"if": {"properties": {"type": {"const": "leave"}}}, "then": {"required": ["userid", "networkid", "bot"]}},
@@ -102,6 +105,9 @@
     "details": {"properties": {"type": {"const": "voice"}}},
     "t_end_utc": {"properties": {"type": {"const": "voice"}}},
     "speech_ms": {"properties": {"type": {"const": "voice"}}},
+    "slot": {"properties": {"type": {"const": "voice"}}},
+    "verified": {"properties": {"type": {"const": "voice"}}},
+    "slot_steamid64": {"properties": {"type": {"const": "voice"}, "verified": {"const": false}}, "required": ["verified"]},
     "version": {"properties": {"type": {"enum": ["conn", "play", "asr", "done"]}}}
   },
   "dependentRequired": {
