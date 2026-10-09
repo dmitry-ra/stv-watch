@@ -54,6 +54,7 @@ def test_a_signal_to_the_viewer_leaves_the_relay_and_frees_the_slot(tmp_path, si
             if p.poll() is None:
                 p.kill()
         assert p.returncode == 0
+        assert r.wait(lambda: len(r.disconnects) == 2)
         assert r.disconnects == [(1, LEAVE), (1, LEAVE)]
         assert r.connected() == 0
     recs = [json.loads(ln) for ln in out.decode().splitlines()]
@@ -91,6 +92,7 @@ def test_q_on_the_normal_screen_leaves_the_relay(tmp_path):
         cmd = STV + ["--relay", r.addr, "--out", str(tmp_path)]
         rc, drawn = run_on_tty(cmd, ENV, keys=b"q")
         assert rc == 0 and b"LIVE" in drawn
+        assert r.wait(lambda: len(r.disconnects) == 2)
         assert r.disconnects == [(1, LEAVE), (1, LEAVE)]
     assert meta_of(tmp_path)["quit"] == "key q"
 
@@ -136,6 +138,7 @@ def test_the_client_alone_leaves_on_sigterm_and_at_its_deadline(tmp_path):
             timeout=60,
         ).returncode
         assert rc == 0
+        assert r.wait(lambda: len(r.disconnects) == 4)
         assert r.disconnects == [(1, LEAVE)] * 2 + [(2, LEAVE)] * 2
     leaves = [
         f for _t, t, f in dumpfmt.DumpReader(str(tmp_path / "b.tvd")).events() if t == dumpfmt.LEAVE
@@ -191,6 +194,7 @@ def test_a_session_cut_during_signon_reconnects_and_still_leaves(tmp_path):
         finally:
             sup.stop = True
             th.join(30)
+        assert r.wait(lambda: len(r.disconnects) == 4)
         assert r.disconnects == [(1, LEAVE)] * 2 + [(2, LEAVE)] * 2
     events = [(t, f) for _t, t, f in dumpfmt.DumpReader(str(tmp_path / "c.tvd")).events()]
     kinds = [t for t, _f in events]
