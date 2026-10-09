@@ -2,6 +2,7 @@
 
 stv-watch --relay IP:PORT [--asr parakeet] [--events all] [--tz Europe/Berlin] ...
 stv-watch --replay capture.tvd [--speed 0] [--json] ...
+stv-watch --relay IP:PORT [--asr parakeet] --serve NAME   (headless, its screen on a socket)
 """
 
 import argparse
@@ -10,7 +11,7 @@ import sys
 from datetime import timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import asr, version
+from . import asr, serve, version
 from . import events as gamevents
 from .app import MAX_UTT_MS, App
 from .asr import weights
@@ -64,6 +65,13 @@ def parse_args(argv=None):
         metavar="JOURNAL",
         help="watch a .tvd journal another process is writing (another stv-watch): no client "
         "of our own, one connection for many watchers; earlier records only set the state",
+    )
+    ap.add_argument(
+        "--serve",
+        metavar="SOCKET",
+        help="no terminal UI: serve the screen on this Unix socket (mode 0600) to any number "
+        "of --attach clients; stdout gets the finished feed lines. A name without '/' is "
+        "a socket in $XDG_RUNTIME_DIR/stv-watch/",
     )
     ap.add_argument(
         "--speed",
@@ -205,6 +213,13 @@ def parse_args(argv=None):
             argv[i : i + 2] = ["--events=" + argv[i + 1]]
             break
     a = ap.parse_args(argv)
+    if a.serve:
+        try:
+            a.serve = serve.socket_path(a.serve)
+        except serve.ServeError as e:
+            ap.error(f"--serve: {e}")
+    if a.serve and (a.plain or a.monitor or a.json):
+        ap.error("--serve has no screen of its own: no --plain, --monitor or --json")
     if a.relay is not None:
         a.relay = relay_addr(a.relay, ap)
     if a.follow:
@@ -251,7 +266,12 @@ def main(argv=None):
         except (weights.WeightsError, KeyboardInterrupt) as e:
             print(f"stv-watch: {a.asr} weights not available: {e}", file=sys.stderr)
             return 2
-    return App(a).run()
+    try:
+        app = App(a)
+    except serve.ServeError as e:
+        print(f"stv-watch: --serve {e}", file=sys.stderr)
+        return 2
+    return app.run()
 
 
 if __name__ == "__main__":
