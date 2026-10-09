@@ -76,12 +76,12 @@ def lzss(blob):
 
 
 def _read_cstring(br):
+    """bf_read::ReadString: what does not fit is read and dropped."""
     out = bytearray()
-    while True:
-        c = br.read_ubit(8)
-        if c == 0 or len(out) == MAX_STRING - 1:
-            return bytes(out)
-        out.append(c)
+    while c := br.read_ubit(8):
+        if len(out) < MAX_STRING - 1:
+            out.append(c)
+    return bytes(out)
 
 
 class Table:
@@ -94,7 +94,9 @@ class Table:
         self.data = []
 
     def parse(self, br, count):
-        """Apply `count` entries -> indices touched, in order."""
+        """Apply `count` entries -> indices touched, in order; all of them or,
+        when the entries do not decode, none."""
+        keys, data = list(self.keys), list(self.data)
         last, hist, touched = -1, [], []
         for _ in range(count):
             idx = last + 1 if br.read_one_bit() else br.read_ubit(self.entry_bits)
@@ -115,16 +117,17 @@ class Table:
                     ud = v.to_bytes(self.fixed_bytes, "little")
                 else:
                     ud = br.read_bytes(br.read_ubit(MAX_USERDATA_BITS))
-            if idx < len(self.keys):
-                self.data[idx] = ud
+            if idx < len(keys):
+                data[idx] = ud
             else:
-                idx = len(self.keys)  # AddString: the table grows by one
-                self.keys.append(key or b"")
-                self.data.append(ud)
-            hist.append(self.keys[idx])
-            if len(hist) > HISTORY - 1:
+                idx = len(keys)  # AddString: the table grows by one
+                keys.append(key or b"")
+                data.append(ud)
+            hist.append(keys[idx])
+            if len(hist) > HISTORY:
                 hist.pop(0)
             touched.append(idx)
+        self.keys, self.data = keys, data
         return touched
 
 

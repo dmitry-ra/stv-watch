@@ -120,13 +120,28 @@ def test_tables_are_numbered_per_connection_and_start_over():
 
 def test_a_message_that_does_not_decode_changes_nothing():
     tables = StringTables()
-    feed(tables, msg(write_create, [(0, b"0", ALICE)]))
-    w = msg(write_update, [(0, None, BOB)])
-    n = w.nbits() - 200  # the message ends inside the user data
+    feed(tables, msg(write_create, [(0, b"0", ALICE), (1, b"1", ALICE)]))
+    w = msg(write_update, [(0, None, BOB), (1, None, BOB)])
+    n = w.nbits() - 200  # the message ends inside the second entry's user data
     data = w.get_bytes()[: (n + 7) // 8] + b"\xff" * 200  # the next message
     assert tables.feed(data, wire.NETMSG_TYPE_BITS, n, 1) == (userinfo.TABLE_UPDATE, [])
     assert tables.errors == 1
-    assert tables.owner(0, 1).name == "alice"
+    assert [tables.owner(s, 1).name for s in (0, 1)] == ["alice", "alice"]
+
+
+def test_key_history_holds_32_keys_and_an_overlong_key_is_read_to_its_end():
+    """ParseUpdate drops the oldest key only when a 33rd comes, so the 33rd
+    is built on key 0 and the 34th on the 33rd, at 31; ReadString keeps 1023
+    bytes of a key and skips the rest."""
+    long_key = b"k" * 1100
+    create = [(i, b"key%02d" % i, None) for i in range(32)]
+    create += [(32, (0, 5, b"A"), None), (33, (31, 6, b"B"), None), (34, long_key, ALICE)]
+    tables = StringTables()
+    _mid, got = feed(tables, msg(write_create, create))
+    keys = tables.userinfo(1).keys
+    assert keys[32:] == [b"key00A", b"key00AB", long_key[:1023]]
+    assert got[-1] == (34, Player(account(1), "alice", 11))
+    assert tables.errors == 0
 
 
 @pytest.mark.parametrize(
