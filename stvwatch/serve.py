@@ -368,7 +368,7 @@ class Attached:
         self.quit = False
         self.rc = 0
         self.status_every = status_every_ms / 1000
-        self.last_status = 0.0
+        self.last_status = float("-inf")  # monotonic may start near 0 after boot
 
     def connect(self):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
