@@ -27,6 +27,7 @@ from .model import NS, Channel, Conn, Traffic
 from .net import a2s, wire
 from .net import dump as dumpfmt
 from .render import Screen, clean
+from .serve import ServedScreen
 from .stream.framing import Framer
 from .stream.userinfo import STEAMID64_BASE, NickBook, StringTables
 from .voice import audio, steamvoice
@@ -256,7 +257,6 @@ class App:
             slot_owner=self.tables.owner,
         )
         self.game.attach(self.framer)
-        self.screen = Screen(plain=a.plain, color=False if a.no_color else None)
         self.rec = None
         self.pacer = None
         self.held = None
@@ -276,6 +276,7 @@ class App:
         self.now = 0
         self.build = version.build()
         self.version_due = False  # run(): the session's first line names the build
+        self.screen = self._screen()
         self.dir = self._session_dir()
         self.feed_fh = open(os.path.join(self.dir, "feed.log"), "a", encoding="utf-8")
         # what --json prints, in any screen mode; errors as on the --json stdout
@@ -288,6 +289,14 @@ class App:
             self.tsv_fh.write("\t".join(head) + "\n")
 
     # ---------------------------------------------------------------- setup
+    def _screen(self):
+        """The terminal, or with --serve the clients of a socket."""
+        a = self.a
+        if a.serve:
+            hello = {"pid": os.getpid(), "version": self.build["version"], "tz": tz_label(self.tz)}
+            return ServedScreen(a.serve, hello)
+        return Screen(plain=a.plain, color=False if a.no_color else None)
+
     def _session_dir(self):
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         what = (
