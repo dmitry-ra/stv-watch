@@ -1,8 +1,9 @@
-"""Main loop: source -> framing -> game events, with a feed of events above
-a pinned status block.
+"""Main loop: source -> framing -> game events and voice channels -> speech
+segments -> audio -> recognizer, with a feed of events and phrases above a
+pinned status block.
 
-One thread owns all state; the reader thread hands it input items through a
-queue. Voice messages are sized by the walk and skipped.
+One thread owns all state; the reader thread and the recognizer talk to it
+through queues.
 """
 
 import json
@@ -11,24 +12,48 @@ import queue
 import signal
 import threading
 import time
+import wave
 from datetime import datetime, timezone
+from itertools import pairwise
+
+import numpy as np
 
 from . import events as gamevents
 from . import source
-from .model import NS, Conn, Traffic
+from .asr import recognizer as asrmod
+from .model import NS, Channel, Conn, Traffic
 from .net import a2s, wire
 from .net import dump as dumpfmt
 from .render import Screen, clean
 from .stream.framing import Framer
 from .stream.userinfo import NickBook
+from .voice import audio, steamvoice
+from .voice.segments import ChannelFrame, Segmenter
 
 SIGNON = {3: "NEW", 4: "PRESPAWN", 5: "SPAWN", 6: "FULL", 7: "CHANGELEVEL"}
+SR = 16000
+CLOSE_S = 1.0  # end of speech: this long without frames from the channel
+LEVEL_FRAME = int(0.02 * SR)
+PAUSE_FRAMES = 15  # 0.3 s below the level threshold is a pause
+TSV_HEAD = (
+    "t_start_utc",
+    "t_end_utc",
+    "steamid64",
+    "nick",
+    "model",
+    "result",
+    "text",
+    "audio",
+    "asr_s",
+    "lag_s",
+)
 
 
-# Chat leads the feed in bold yellow. Console magenta; joins and leaves in
-# their own muted green and red (not the green and red of our connection
-# lines); connects, team and nick changes dimmed; kills and server notices
-# dimmest.
+# What people say leads the feed in bold; voice and chat lines are alike but
+# for the colour of the said text: voice white, chat yellow. Console magenta;
+# joins and leaves in their own muted green and red (not the green and red of
+# our connection lines); connects, team and nick changes dimmed; kills and
+# server notices dimmest.
 LINE_STYLE = {
     "console": "magenta",
     "connect": "dim",
@@ -72,17 +97,95 @@ def steam2(sid64):
     return f"STEAM_0:{a & 1}:{a >> 1}"
 
 
+def lag_style(seconds):
+    """Recognition lag: text over 2 s behind the speech is late, over 5 s the
+    recognizer does not keep up."""
+    return "red" if seconds > 5.0 else "yellow" if seconds > 2.0 else ""
+
+
+class ChannelAudio:
+    """Per-speaker audio of the utterance being built."""
+
+    def __init__(self):
+        self.seg_id = -1
+        self.dec = None
+        self.parts = []
+        self.nsamp = 0
+        self.start_ns = 0
+        self.last_ns = 0
+        self.open = False
+        self.index = 0
+        self.key = None  # (sid, index) of the open utterance
+        self.levels = []  # RMS per 20 ms of the utterance's audio
+        self.lev_buf = np.zeros(0, np.float32)
+        self.reset_stats()
+
+    def add_levels(self, pcm):
+        buf = np.concatenate([self.lev_buf, pcm]) if len(self.lev_buf) else pcm
+        n = len(buf) // LEVEL_FRAME
+        if n:
+            fr = buf[: n * LEVEL_FRAME].reshape(n, LEVEL_FRAME)
+            self.levels.extend(np.sqrt((fr * fr).mean(axis=1)).tolist())
+        self.lev_buf = buf[n * LEVEL_FRAME :]
+
+    def pauses(self):
+        """-> [(first frame, frames)] of quiet runs of PAUSE_FRAMES or more;
+        quiet = under a tenth of the utterance's loud level (its 90th
+        percentile), so a quiet speaker's breath counts as well as silence."""
+        if not self.levels:
+            return []
+        lv = np.asarray(self.levels)
+        thr = max(1e-3, 0.1 * float(np.percentile(lv, 90)))
+        out, start = [], None
+        for i, q in enumerate(np.append(lv < thr, False)):
+            if q and start is None:
+                start = i
+            elif not q and start is not None:
+                if i - start >= PAUSE_FRAMES:
+                    out.append((start, i - start))
+                start = None
+        return out
+
+    def reset_stats(self):
+        """Per-utterance transport facts for the speaking event in the feed."""
+        self.frames = self.plc = self.gap = self.opus_bytes = 0
+        self.presses = 0
+        self.arrivals = []  # receive time of each voice message
+        self.via_split = 0
+
+
+class Utt:
+    """One utterance = one live line in the feed: talking -> recognizing ->
+    final text (or no speech)."""
+
+    def __init__(self, key, sid, start_ns):
+        self.key, self.sid, self.start_ns = key, sid, start_ns
+        self.end_ns = 0
+        self.state = "talking"
+        self.details = ""  # transport summary, set when it closes
+        self.audio_s = 0.0
+        self.cont = False  # a piece of a monologue after the first
+
+
 class App:
     def __init__(self, a):
         self.a = a
         self.live = a.relay is not None
         self.follow = a.follow is not None
         self.tz = a.tz
+        self.model = a.asr
+        self.q_out = queue.Queue()
+        self.asr = None
         self.quit = False
         self.quit_why = ""
         self.conn = Conn()
         self.traffic = Traffic(quiet_s=a.quiet)
         self.nicks = NickBook()
+        self.channels = {}
+        self.utts = {}  # key -> Utt with a live line
+        self.audio = {}
+        self.seg = Segmenter(close_s=CLOSE_S)
+        self.counters = {"payload_bad": 0, "phrases": 0, "nospeech": 0, "utterances": 0, "wav": 0}
         self.game = gamevents.GameEvents(a.event_types)
         self.framer = Framer(
             keep_fates=False,
@@ -116,6 +219,10 @@ class App:
         self.jsonl_fh = open(
             os.path.join(self.dir, "events.jsonl"), "a", encoding="utf-8", errors="replace"
         )
+        self.tsv_fh = open(os.path.join(self.dir, "transcript.tsv"), "a", encoding="utf-8")
+        if self.tsv_fh.tell() == 0:
+            head = TSV_HEAD + (("t_local",) if a.tz_given else ())
+            self.tsv_fh.write("\t".join(head) + "\n")
 
     # ---------------------------------------------------------------- setup
     def _session_dir(self):
@@ -285,9 +392,27 @@ class App:
         self.check_traffic(t)
         self.game.muted = self.pacer.skipping(t)
         self.framer.feed(dg)
+        msgs = self.framer.voice[:]
+        del self.framer.voice[:]
         self.game_lines()
-        if not self.pacer.skipping(t):
-            self.play_t0 = self.play_t0 or t
+        if self.pacer.skipping(t):
+            return
+        self.play_t0 = self.play_t0 or t
+        self.seg.clock(t)
+        self.process_closed()
+        for m in msgs:
+            p = steamvoice.parse(m.data)
+            if not p.crc_ok or p.error:
+                self.counters["payload_bad"] += 1
+                continue
+            for fr in p.frames:
+                self.on_frame(
+                    ChannelFrame(p.steamid64, m.t_ns, m.tick, m.session, m.from_client, fr)
+                )
+            ca = self.audio.get(p.steamid64)
+            if ca is not None and ca.open:
+                ca.arrivals.append(m.t_ns)
+                ca.via_split += m.via_split
 
     def game_lines(self):
         """Feed lines of the game events the framer just decoded."""
@@ -356,12 +481,334 @@ class App:
             out += [(text, style)]
         return out
 
+    # ---------------------------------------------------------------- channels
+    def channel(self, sid, t_ns):
+        ch = self.channels.get(sid)
+        if ch is None:
+            ch = self.channels[sid] = Channel(sid, t_ns)
+            self.audio[sid] = ChannelAudio()
+            self.refresh_name(ch)
+        return ch
+
+    def refresh_name(self, ch):
+        """The player's current nick, from the stream's userinfo table; the
+        key stays the SteamID."""
+        nick = self.nicks.nick(ch.sid64)
+        if nick:
+            ch.nick = clean(nick)
+
+    def display_name(self, ch):
+        return ch.nick or steam2(ch.sid64)
+
+    def name_spans(self, ch):
+        return [(self.display_name(ch), "cyan")]
+
+    def spec_mark(self, ch):
+        """A spectator's voice reaches only spectators unless sv_alltalk."""
+        return [(" [spec]", "dim")] if self.game.unheard(ch.sid64) else []
+
+    def on_frame(self, cf):
+        f = cf.frame
+        sid = cf.steamid64
+        ch = self.channel(sid, cf.t_ns)
+        if f.kind == "opus":
+            ch.frames += 1
+            ch.opus_bytes.add(cf.t_ns, len(f.data))
+            ch.opus_frames.add(cf.t_ns)
+            ch.last_ns = cf.t_ns
+        self.seg.feed(cf)
+        self.process_closed()
+        s = self.seg.open.get((cf.session, sid))
+        if s is None or not s.items or s.items[-1][1] is not f:
+            return
+        ca = self.audio[sid]
+        if not ca.open:
+            ca.open, ca.start_ns, ca.index = True, cf.t_ns, ca.index + 1
+            ch.talking = True
+            ch.utt_start_ns = cf.t_ns
+            self.speech_start(ch, ca, cf.t_ns)
+        if ca.seg_id != s.id:
+            if ca.seg_id >= 0 and ca.nsamp:
+                self.add_pcm(sid, ca, np.zeros(int(0.2 * SR), np.float32), cf.t_ns)
+            ca.seg_id = s.id
+            ca.dec = audio.StreamDecoder(SR)
+            ca.presses += 1
+        st0 = dict(ca.dec.stats)
+        pieces = ca.dec.feed(f.seq, f)
+        d_plc = ca.dec.stats["plc"] - st0["plc"]
+        d_gap = ca.dec.stats["gap_silence_frames"] - st0["gap_silence_frames"]
+        ch.plc += d_plc
+        ch.gap_frames += d_gap
+        ca.plc += d_plc
+        ca.gap += d_gap
+        if f.kind == "opus":
+            ca.frames += 1
+            ca.opus_bytes += len(f.data)
+        ch.resets += ca.dec.stats["resets"] - st0["resets"]
+        for pcm in pieces:
+            self.add_pcm(sid, ca, audio.limit(pcm), cf.t_ns)
+        ca.last_ns = cf.t_ns
+
+    def add_pcm(self, sid, ca, pcm, t_ns):
+        ca.parts.append(pcm)
+        ca.nsamp += len(pcm)
+        ca.add_levels(pcm)
+        cut = self.cut_point(ca)
+        if cut is not None:
+            self.finish_utterance(sid, t_ns, cut[1], keep_open=True, cut=cut[0])
+
+    def cut_point(self, ca):
+        """Where to end a piece of a monologue, in samples:
+        from 5 s before --max-utt, at the first pause; at --max-utt, at the
+        last pause past a third of it; with no pause, there (a hard cut).
+        -> (sample, why) or None."""
+        limit = int(self.a.max_utt * SR)
+        soft = max(0, limit - 5 * SR)
+        if ca.nsamp < soft:
+            return None
+        runs = ca.pauses()
+        mid = [(s + PAUSE_FRAMES // 2) * LEVEL_FRAME for s, _n in runs]
+        late = [m for m in mid if m >= soft]
+        if late:
+            return late[0], "pause"
+        if ca.nsamp < limit:
+            return None
+        back = [m for m in mid if m >= limit // 3]
+        return (back[-1], "pause") if back else (ca.nsamp, "max_len")
+
+    def process_closed(self):
+        if not self.seg.closed:
+            return
+        for s in self.seg.closed:
+            if s.close_reason in ("clock", "session", "end"):
+                ca = self.audio.get(s.steamid64)
+                if ca is not None and ca.open and ca.seg_id == s.id:
+                    self.finish_utterance(s.steamid64, s.close_ns, s.close_reason)
+        del self.seg.closed[:]
+
+    def finish_utterance(self, sid, t_ns, why, keep_open=False, cut=None):
+        ca = self.audio[sid]
+        ch = self.channels[sid]
+        pcm = asrmod.np_concat(ca.parts)
+        rest = None
+        if cut is not None and cut < len(pcm):
+            pcm, rest = pcm[:cut], pcm[cut:]
+        meta = {
+            "sid": sid,
+            "start_ns": ca.start_ns,
+            "end_ns": t_ns,
+            "why": why,
+            "audio_s": len(pcm) / SR,
+            "wav": self.write_wav(sid, ca, pcm),
+        }
+        self.counters["utterances"] += 1
+        ch.utterances += 1
+        utt = self.utts.get(ca.key)
+        meta["key"] = ca.key
+        if utt is not None:
+            utt.details = self.details(ca, t_ns, why, len(pcm) / SR)
+            utt.audio_s = len(pcm) / SR
+            utt.end_ns, utt.state = t_ns, "recognizing"
+        if self.asr is None or not len(pcm):
+            self.finalize(utt, "", meta)
+        else:
+            self.asr.utterance(sid, pcm, meta)
+        ca.parts, ca.nsamp = [], 0
+        ca.levels, ca.lev_buf = [], np.zeros(0, np.float32)
+        ca.reset_stats()
+        if keep_open:
+            carried = 0 if rest is None else len(rest)
+            ca.start_ns = t_ns - carried * NS // SR
+            ca.index += 1
+            self.speech_start(ch, ca, ca.start_ns)
+            self.utts[ca.key].cont = True
+            if carried:
+                ca.parts, ca.nsamp = [rest], carried
+                ca.add_levels(rest)
+            return
+        ca.open = False
+        ca.seg_id = -1
+        ch.talking = False
+
+    def speech_start(self, ch, ca, t_ns):
+        """A live line for the new utterance."""
+        ca.key = (ch.sid64, ca.index)
+        utt = self.utts[ca.key] = Utt(ca.key, ch.sid64, t_ns)
+        utt.first = ch.utterances == 0
+        self.screen.live_open(ca.key, self.progress(utt))
+
+    def details(self, ca, t_ns, why, audio_s):
+        """Transport summary of a closed utterance: audio s / arrival span s,
+        opus frames, concealed, silence-filled, bit rate, key presses, voice
+        messages and their share in -2, distinct arrivals with the median and
+        largest gap, how long after the last frame it closed (and why, unless
+        by the clock)."""
+        arr = ca.arrivals
+        # several voice messages ride one datagram (or one joined -2 packet):
+        # the arrival rhythm is that of distinct receive times
+        times = sorted(set(arr))
+        gaps = sorted(b - a for a, b in pairwise(times))
+        p50 = gaps[len(gaps) // 2] / 1e6 if gaps else 0.0
+        mx = gaps[-1] / 1e6 if gaps else 0.0
+        span = (ca.last_ns - ca.start_ns) / NS
+        kbps = ca.opus_bytes * 8 / (ca.frames * 0.020) / 1000 if ca.frames else 0.0
+        via = 100 * ca.via_split / len(arr) if arr else 0.0
+        close = (t_ns - ca.last_ns) / NS
+        return (
+            f"{audio_s:.1f}s/{span:.1f}s fr {ca.frames} plc {ca.plc} gap {ca.gap}"
+            f" {kbps:.0f}kb/s press {ca.presses} msg {len(arr)} -2 {via:.0f}%"
+            f" arr {len(times)} p50 {p50:.0f} max {mx:.0f}ms"
+            f" {'' if why == 'clock' else why + ' '}+{close:.1f}s"
+        )
+
+    VOICE_TAG = ("voice ", "blue")
+
+    def progress(self, utt):
+        """Live line of an utterance: who, state, seconds so far (transport
+        numbers with --debug)."""
+        ch = self.channels[utt.sid]
+        out = (
+            [(local(utt.start_ns, self.tz) + " ", "dim"), self.VOICE_TAG]
+            + self.name_spans(ch)
+            + self.spec_mark(ch)
+            + ([(" (cont)", "dim")] if utt.cont else [])
+        )
+        if utt.state == "talking":
+            ca = self.audio[utt.sid]
+            secs = max(0.0, (self.now - utt.start_ns) / NS)
+            out.append((f" talking {secs:.1f}s", "green"))
+            if self.a.debug:
+                kbps = ca.opus_bytes * 8 / (ca.frames * 0.020) / 1000 if ca.frames else 0.0
+                out.append(
+                    (f" {kbps:.0f}kb/s fr {ca.frames} gap {ca.gap} msg {len(ca.arrivals)}", "dim")
+                )
+                if utt.first:
+                    out.append((f" {steam2(utt.sid)} new", "dim"))
+        else:
+            out.append((" recognizing", "yellow"))
+            out.append((" " + utt.details if self.a.debug else f" {utt.audio_s:.1f}s", "dim"))
+        return out
+
+    def write_wav(self, sid, ca, pcm):
+        if self.a.no_audio or not len(pcm):
+            return ""
+        name = f"{local(ca.start_ns, self.tz, '%H%M%S')}_{sid}_{ca.index}.wav"
+        path = os.path.join(self.dir, "audio", name)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with wave.open(path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(SR)
+                w.writeframes(audio.to_int16(pcm).tobytes())
+        except OSError:
+            return ""
+        self.counters["wav"] += 1
+        return os.path.join("audio", name)
+
+    # ---------------------------------------------------------------- recognizer results
+    def handle_result(self, r):
+        kind = r[0]
+        if kind == "loaded":
+            _k, state, err, load_s = r
+            if state == "ready":
+                self.event(
+                    "asr", f"{self.model} ready in {load_s:.1f} s ({self.a.threads} threads)"
+                )
+            else:
+                self.event("asr", f"{self.model} failed: {clean(err)}", "red")
+            return
+        if kind == "error":
+            self.event("asr", f"error on {r[1]}: {clean(r[2])}", "red")
+            return
+        if kind == "final":
+            meta = r[3]
+            self.finalize(self.utts.get(meta.get("key")), clean(r[2]), meta)
+
+    def finalize(self, utt, text, meta):
+        """The utterance's live line becomes its final line: who and what was
+        said, bright; transport and recognition numbers, dim."""
+        if utt is None:
+            return
+        del self.utts[utt.key]
+        ch = self.channels[utt.sid]
+        t_end = utt.end_ns or meta.get("end_ns") or self.now
+        lag = max(0.0, (self.now - t_end) / NS)
+        head = [(local(utt.start_ns, self.tz) + " ", "dim")]
+        tail = utt.details + (
+            "" if self.asr is None else f" asr {meta.get('asr_s', 0):.2f}s +{lag:.1f}s"
+        )
+        label = ""
+        if not text:
+            label = meta.get("unfinished") or ("no speech" if self.asr is not None else "asr off")
+            if label == "no speech":
+                ch.nospeech += 1
+                self.counters["nospeech"] += 1
+            self.voice_close(utt, ch, head, [(": " + label, "dim")], "", label, tail)
+        else:
+            ch.finals += 1
+            self.counters["phrases"] += 1
+            self.voice_close(utt, ch, head, [(": ", ""), (text, "bold")], text, "", tail)
+        row = [
+            utc_iso(utt.start_ns),
+            utc_iso(t_end),
+            str(ch.sid64),
+            ch.nick,
+            self.model or "",
+            label or "text",
+            text,
+            meta.get("wav", ""),
+            "%.3f" % meta.get("asr_s", 0.0),
+            "%.2f" % lag,
+        ]
+        if self.a.tz_given:
+            row.append(local(utt.start_ns, self.tz, "%Y-%m-%d %H:%M:%S"))
+        self.tsv_fh.write("\t".join(f.replace("\t", " ").replace("\n", " ") for f in row) + "\n")
+        self.tsv_fh.flush()
+
+    def voice_close(self, utt, ch, head, said, text, label, tail):
+        """Final line of an utterance. On screen: who, what and how long, the
+        transport and recognition numbers only with --debug; feed.log and
+        --json always get them all."""
+        who = (
+            [self.VOICE_TAG]
+            + self.name_spans(ch)
+            + self.spec_mark(ch)
+            + ([(" (cont)", "dim")] if utt.cont else [])
+            + said
+        )
+        full = who + [("  " + tail, "dim")]
+        spans = full if self.a.debug else who + [(f"  {utt.audio_s:.1f}s", "dim")]
+        line = self.json_line(
+            {
+                "type": "voice",
+                "steamid64": ch.sid64,
+                "nick": ch.nick,
+                "text": text,
+                "extra": {
+                    "result": label or "text",
+                    "continued": utt.cont,
+                    "spectator": self.game.unheard(ch.sid64),
+                    "details": tail.strip(),
+                    "t_end_utc": utc_iso(utt.end_ns or self.now),
+                },
+            },
+            utt.start_ns,
+        )
+        self.jsonl(line)
+        if self.a.json:
+            self.screen.live_close(utt.key, [(line, "")])
+        else:
+            self.screen.live_close(utt.key, head + spans, cont=[("^ ", "dim")])
+        self.log(full, utt.start_ns, ch.sid64)
+
     # ---------------------------------------------------------------- status block
-    BLOCK_LINES = 4
+    BLOCK_LINES = 6
 
     def block(self):
-        """Fixed height: rule, connection, traffic, hint. By default what a
-        watcher acts on; transport internals with --debug."""
+        """Fixed height: rule, connection, traffic, voice, recognizer, hint.
+        By default what a watcher acts on; transport and recognizer internals
+        with --debug. Per-speaker details live in the speaker's line."""
         now = self.now or time.time_ns()
         dbg = self.a.debug
         c, tr = self.conn, self.traffic
@@ -423,6 +870,66 @@ class App:
         else:
             net.append((f"  lost {lost}", "yellow" if lost else ""))
         L.append(net)
+
+        talking = sum(1 for ch in self.channels.values() if ch.talking)
+        speakers = [
+            (f"  speakers {len(self.channels)} talking {talking}", "green" if talking else "")
+        ]
+        if dbg:
+            vm = fc.get("voice_msgs", 0)
+            via = fc.get("voice_msgs_via_split", 0)
+            L.append(
+                [
+                    ("voice", "blue"),
+                    (f" msgs {vm}", ""),
+                    (f" (via -2 {100 * via / vm:.0f}%)" if vm else "", "dim"),
+                    (f"  bad {fc.get('voice_crc_bad', 0) + self.counters['payload_bad']}", ""),
+                ]
+                + speakers
+                + [
+                    (
+                        f"  utt {self.counters['utterances']} phrases {self.counters['phrases']}"
+                        f" nospeech {self.counters['nospeech']}",
+                        "",
+                    )
+                ]
+            )
+        else:
+            L.append(
+                [("voice", "blue")] + speakers + [(f"  phrases {self.counters['phrases']}", "")]
+            )
+
+        if self.asr is None:
+            L.append([("asr  ", "blue"), ("off", "dim")])
+        else:
+            jobs, pend_s = self.asr.queue_depth()
+            s = self.asr.stats.summary(now)
+            st = self.asr.state
+            st_span = (
+                "  " + st,
+                "green" if st == "ready" else "yellow" if st == "loading" else "red",
+            )
+            lag = (
+                f"  lag {s['lag_last']:.1f}s"
+                + (f" p90 {s['lag_p90']:.1f}s" if s["jobs_min"] else ""),
+                lag_style(s["lag_last"]),
+            )
+            if dbg:
+                L.append(
+                    [
+                        ("asr  ", "blue"),
+                        (f"{self.model} t{self.a.threads}", ""),
+                        st_span,
+                        (
+                            f"  queue {max(0, jobs)} ({max(0.0, pend_s):.1f}s)",
+                            "yellow" if pend_s > 5 else "",
+                        ),
+                        lag,
+                        (f"  RTF {s['rtf']:.2f}" if s["jobs_min"] else "  RTF -", ""),
+                    ]
+                )
+            else:
+                L.append([("asr  ", "blue"), (self.model, ""), st_span, lag])
 
         L.append([("q quit  ", "dim"), (self.dir, "dim")])
         return L
@@ -505,6 +1012,7 @@ class App:
         a = self.a
         meta = {
             "args": vars(a),
+            "model": self.model,
             "dir": self.dir,
             "tz": tz_label(self.tz),
             "pid": os.getpid(),
@@ -528,6 +1036,23 @@ class App:
                     return 2
             else:
                 self.conn.state = "replay"
+            if self.model:
+                self.asr = asrmod.Recognizer(
+                    self.model, a.threads, a.models_dir, self.pacer.media_now, self.q_out
+                )
+                # Load before reading or connecting: the load holds the GIL for
+                # seconds, which would stall the reader (a fake traffic stop in
+                # a replay) and miss the first phrases live.
+                while self.asr.state == "loading" and not self.quit:
+                    self.tick(False)
+                    self.render()
+                    time.sleep(0.1)
+                self.tick(False)
+                if self.quit:
+                    return 0
+                if self.asr.state == "failed":
+                    self.quit_why = "asr failed"
+                    return 2
             if self.live:
                 ip, port = a.relay.rsplit(":", 1)
                 cap = os.path.join(self.dir, "capture.tvd")
@@ -625,8 +1150,17 @@ class App:
             mnow = self.pacer.media_now()
             if mnow > self.now:
                 self.now = mnow
+            self.seg.clock(self.now)
+            self.process_closed()
         if dry:
             self.check_traffic(self.now)
+        while True:
+            try:
+                self.handle_result(self.q_out.get_nowait())
+            except queue.Empty:
+                break
+        for ch in self.channels.values():
+            self.refresh_name(ch)
         t = time.monotonic()
         t0, c0, _ = self.cpu
         if t - t0 >= 2.0:
@@ -671,6 +1205,8 @@ class App:
             return
         self.last_render = t
         if self.screen.tty:
+            for utt in self.utts.values():
+                self.screen.live_update(utt.key, self.progress(utt))
             self.screen.draw(self.block())
         else:
             if not self.a.monitor and t - self.last_status_line >= self.a.status_every:
@@ -727,6 +1263,21 @@ class App:
             if self.logtail is not None:
                 for line in self.logtail.lines():
                     self.event("tvd", clean(line), "dim")
+            self.seg.flush(self.now)
+            self.process_closed()
+            if self.asr is not None:
+                end = time.monotonic() + self.a.drain
+                while time.monotonic() < end and self.asr.state != "failed":
+                    jobs, _p = self.asr.queue_depth()
+                    if self.asr.state == "ready" and not jobs and not self.asr.busy:
+                        break
+                    self.tick(False)
+                    self.render()
+                    time.sleep(0.05)
+                self.asr.close(timeout=0.5)
+                self.tick(False)
+            for utt in list(self.utts.values()):
+                self.finalize(utt, "", {"unfinished": "not recognized before exit"})
             if self.client is not None and self.a2s_before is not None:
                 ok, after, text = self.slot_check()
                 self.event("conn", text, "green" if ok else "red")
@@ -747,10 +1298,31 @@ class App:
                         "out": self.traffic.total_out,
                     },
                     "framer": dict(self.framer.counters),
+                    "segments": dict(self.seg.counters),
+                    "counters": self.counters,
                     "conn": vars(self.conn),
                     "game_events": dict(self.game.counts),
+                    "speakers": {
+                        str(s): {
+                            "nick": ch.nick,
+                            "audio_s": ch.audio_s,
+                            "frames": ch.frames,
+                            "utterances": ch.utterances,
+                            "phrases": ch.finals,
+                        }
+                        for s, ch in self.channels.items()
+                    },
                 }
             )
+            if self.asr is not None:
+                meta["asr"] = {
+                    "state": self.asr.state,
+                    "error": self.asr.error,
+                    "load_s": self.asr.load_s,
+                    "audio_s": self.asr.stats.total_audio,
+                    "compute_s": self.asr.stats.total_compute,
+                    "jobs": self.asr.stats.jobs,
+                }
             self.event("done", f"{self.quit_why or 'stopped'} -> {self.dir}")
         finally:
             with open(os.path.join(self.dir, "meta.json"), "w", encoding="utf-8") as f:
@@ -759,3 +1331,4 @@ class App:
             self.screen.stop(final[:-1])
             self.feed_fh.close()
             self.jsonl_fh.close()
+            self.tsv_fh.close()

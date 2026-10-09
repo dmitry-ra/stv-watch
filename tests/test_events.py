@@ -28,9 +28,10 @@ from helpers import (
     voice_payload,
     write_recording,
 )
+from voicegen import payload as steam_voice
 
 from stvwatch import events as ge
-from stvwatch.app import App
+from stvwatch.app import TSV_HEAD, App
 from stvwatch.cli import default_out, parse_args
 from stvwatch.net import dump, netchan, wire
 from stvwatch.source import Pacer
@@ -563,16 +564,17 @@ def test_a_lost_sequence_gap_is_one_feed_line_only_with_debug(tmp_path, debug):
 
 
 def chat_recording(path, voice=True):
-    """Chat lines between voice messages and plain traffic, 1 s of record time
-    per step: chat at 1.5 s, the recording ends at 6 s."""
+    """Two utterances of one speaker (the second after a 2.7 s pause) and a
+    chat line between them, then plain traffic: chat at 1.5 s, the recording
+    ends at 6 s."""
     a = steamid64(1)
     w = wire.BitWriter()
     chat(w, "nick", "between")
     plan = [
-        (0, packet(1, [(1, voice_payload(a))] if voice else [])),
-        (60, packet(2, [(1, voice_payload(a))] if voice else [])),
+        (0, packet(1, [(1, steam_voice(a, 0))] if voice else [])),
+        (60, packet(2, [(1, steam_voice(a, 3))] if voice else [])),
         (1500, reliable_packet(3, w.get_bytes() + b"\x00")),
-        (3000, packet(4, [(1, voice_payload(a))] if voice else [])),
+        (3000, packet(4, [(1, steam_voice(a, 0))] if voice else [])),
     ]
     seq = 5
     for ms in range(3020, 6000, 20):
@@ -583,8 +585,8 @@ def chat_recording(path, voice=True):
 
 def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     """What a program reading a pipe sees: each event is one JSON line
-    readable before the process ends, no escape sequences, voice messages
-    leave no line at all."""
+    readable before the process ends, no escape sequences, a voice utterance
+    only as its final line."""
     import time
 
     rec = str(tmp_path / "r.tvd")
@@ -610,8 +612,11 @@ def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     assert p.returncode == 0
     recs = [json.loads(raw) for raw, _rc, _t in seen]
     assert all(b"\x1b" not in raw and raw.endswith(b"\n") for raw, _rc, _t in seen)
-    assert [r["type"] for r in recs] == ["play", "net", "chat", "done"]
-    chat_rec = recs[2]
+    assert [r["type"] for r in recs if r["type"] != "voice"] == ["play", "net", "chat", "done"]
+    assert [(r["steamid64"], r["text"], r["result"]) for r in recs if r["type"] == "voice"] == [
+        (steamid64(1), "", "asr off")
+    ] * 2
+    chat_rec = recs[[r["type"] for r in recs].index("chat")]
     assert (chat_rec["nick"], chat_rec["text"]) == ("nick", "between")
     assert {"t_utc", "type", "steamid64", "nick", "text"} <= set(chat_rec)
     assert "t_local" not in chat_rec
@@ -632,7 +637,29 @@ def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     lines = out.splitlines()
     assert "\x1b" not in out and not any("status" in ln for ln in lines)
     assert all(ln[2] == ":" and ln[5] == ":" and ln[8] == "." and ln[12] == " " for ln in lines)
-    assert [ln[13:] for ln in lines if "nick" in ln] == ["chat  nick: between"]
+    # a voice line is written when the utterance closes (time = its start):
+    # the chat datagram at 1.5 s is the one whose clock closes the first
+    assert [ln[13:] for ln in lines if "nick" in ln or "voice" in ln] == [
+        "chat  nick: between",
+        f"voice {steam2(account(1))}: asr off  0.1s",
+        f"voice {steam2(account(1))}: asr off  0.1s",
+    ]
+    # --debug: the transport numbers on screen too
+    out = subprocess.run(
+        cmd + ["--status-every", "0", "--debug"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=60,
+        env=ENV,
+    ).stdout.decode()
+    # the bit rate is the encoder's, not ours to pin
+    shown = [re.sub(r" \d+kb/s ", " KBPS ", ln[13:]) for ln in out.splitlines() if " voice " in ln]
+    assert shown == [
+        f"voice {steam2(account(1))}: asr off  0.1s/0.1s fr 6 plc 0 gap 0 KBPS press 1 msg 2"
+        " -2 0% arr 2 p50 60 max 60ms +1.4s",
+        f"voice {steam2(account(1))}: asr off  0.1s/0.0s fr 3 plc 0 gap 0 KBPS press 1 msg 1"
+        " -2 0% arr 1 p50 0 max 0ms +1.0s",
+    ]
 
 
 def run_on_tty(cmd, env, timeout=60, keys=None):
@@ -718,7 +745,14 @@ def test_events_jsonl_holds_what_json_prints_in_every_screen_mode(tmp_path):
     assert printed.returncode == 0
     want = printed.stdout.decode().splitlines()
     assert jsonl("json") == want
-    assert [json.loads(ln)["type"] for ln in want] == ["play", "net", "chat", "done"]
+    assert [json.loads(ln)["type"] for ln in want] == [
+        "play",
+        "net",
+        "chat",
+        "voice",
+        "voice",
+        "done",
+    ]
     for name, mode in (("plain", ["--plain", "--status-every", "0"]), ("monitor", ["--monitor"])):
         assert (
             subprocess.run(
@@ -838,22 +872,55 @@ def test_session_directory_defaults_to_xdg_data_home(monkeypatch, tmp_path):
 
 
 def test_session_files_of_a_replay(tmp_path):
-    """The session directory holds the feed, the JSON lines and meta.json;
-    no voice leftovers."""
+    """The session directory holds the feed, the JSON lines, the transcript,
+    a WAV per utterance and meta.json. Voice messages whose payload fails
+    the Steam CRC are counted and make no speaker."""
     rec = str(tmp_path / "r.tvd")
     chat_recording(rec)
     replay_lines(rec, tmp_path / "out")
     session = session_of(tmp_path / "out")
     assert sorted(p.name for p in session.iterdir()) == [
+        "audio",
         "events.jsonl",
         "feed.log",
         "meta.json",
         "stderr.log",
+        "transcript.tsv",
     ]
     meta = json.loads((session / "meta.json").read_text())
     assert meta["quit"] == "end of recording" and meta["tz"] == "UTC"
     assert meta["traffic"]["in"] == 4 + len(range(3020, 6000, 20))
-    assert "speakers" not in meta and "asr" not in meta
+    sid = str(steamid64(1))
+    assert meta["speakers"] == {
+        sid: {"nick": "", "audio_s": 0.18, "frames": 9, "utterances": 2, "phrases": 0}
+    }
+    assert meta["counters"]["payload_bad"] == 0 and "asr" not in meta
+    rows = [ln.split("\t") for ln in (session / "transcript.tsv").read_text().splitlines()]
+    assert rows[0] == list(TSV_HEAD)
+    wavs = sorted(p.name for p in (session / "audio").iterdir())
+    assert [(r[2], r[5], r[6], r[7]) for r in rows[1:]] == [
+        (sid, "asr off", "", "audio/" + wavs[0]),
+        (sid, "asr off", "", "audio/" + wavs[1]),
+    ]
+    assert wavs == [f"014640_{sid}_1.wav", f"014643_{sid}_2.wav"]
+
+
+def test_crc_failing_voice_is_counted_and_makes_no_speaker(tmp_path):
+    """Not Steam voice at all, and Steam voice whose CRC does not match: both
+    counted by the framer and by the viewer, neither decoded."""
+    a = steamid64(1)
+    bad_crc = bytearray(steam_voice(a, 0))
+    bad_crc[-1] ^= 1
+    plan = [(0, packet(1, [(1, voice_payload(a)), (1, bytes(bad_crc))])), (2000, packet(2))]
+    rec = str(tmp_path / "r.tvd")
+    write_recording(rec, [(T0 + ms * 1_000_000, d) for ms, d in plan])
+    replay_lines(rec, tmp_path / "out")
+    session = session_of(tmp_path / "out")
+    lines = (session / "events.jsonl").read_text().splitlines()
+    assert "voice" not in [json.loads(ln)["type"] for ln in lines]
+    meta = json.loads((session / "meta.json").read_text())
+    assert meta["counters"]["payload_bad"] == 2 and meta["speakers"] == {}
+    assert meta["framer"]["voice_msgs"] == 2 and meta["framer"]["voice_crc_bad"] == 2
 
 
 class Lines:
@@ -864,6 +931,12 @@ class Lines:
 
     def feed(self, spans):
         self.fed.append(spans)
+
+    def live_open(self, key, spans):
+        pass
+
+    def live_close(self, key, spans, cont=()):
+        self.closed.append(spans)
 
 
 def text_of(spans):
@@ -994,11 +1067,14 @@ def test_the_count_with_us_is_taken_only_well_into_a_flowing_session(tmp_path):
 
 
 @pytest.mark.parametrize("color", [True, False])
-def test_chat_leads_the_feed_the_rest_steps_back(tmp_path, color):
-    """Colour: chat in bold yellow; console magenta, joins and leaves in their
-    own muted green and red (not the plain ones of our connection lines),
-    kills and server notices dimmest gray; all lines start at the same column.
-    Without colour: the same text."""
+def test_voice_and_chat_lead_the_feed_the_rest_steps_back(tmp_path, color):
+    """Colour: voice and chat lines alike (tag, nick, colon, bold) but for the
+    said text: voice white, chat yellow; console magenta, joins and leaves in
+    their own muted green and red (not the plain ones of our connection
+    lines), kills and server notices dimmest gray; all lines start at the
+    same column. Without colour: the same text."""
+    from stvwatch.app import ChannelAudio, Utt
+    from stvwatch.model import Channel
     from stvwatch.render import to_ansi
 
     app = make_app(tmp_path)
@@ -1041,7 +1117,13 @@ def test_chat_leads_the_feed_the_rest_steps_back(tmp_path, color):
     ]
     for r in recs:
         app.feed(app.game_spans(r), r["t_ns"], r)
-    got = [to_ansi(sp, color) for sp in app.screen.fed]
+    sid = steamid64(1)
+    app.channels[sid] = Channel(sid, T0)
+    app.audio[sid] = ChannelAudio()
+    utt = app.utts[(sid, 1)] = Utt((sid, 1), sid, T0)
+    utt.audio_s = 1.2
+    app.finalize(utt, "ok", {})
+    got = [to_ansi(sp, color) for sp in app.screen.fed + app.screen.closed]
     T, R = "\x1b[2m09:40:00.000 \x1b[0m", "\x1b[0m"
     if not color:
         assert got == [
@@ -1050,6 +1132,7 @@ def test_chat_leads_the_feed_the_rest_steps_back(tmp_path, color):
             "09:40:00.000 join  bob entered the game",
             "09:40:00.000 leave bob left: x",
             "09:40:00.000 death bob died (slam)",
+            f"09:40:00.000 voice {steam2(account(1))}: ok  1.2s",
         ]
         return
     assert got == [
@@ -1064,13 +1147,24 @@ def test_chat_leads_the_feed_the_rest_steps_back(tmp_path, color):
         + R,
         T + "\x1b[38;5;167mleave " + R + "\x1b[38;5;167mbob" + R + "\x1b[38;5;167m left: x" + R,
         T + "\x1b[2;90mdeath " + R + "\x1b[2;90mbob" + R + "\x1b[2;90m died (slam)" + R,
+        T
+        + "\x1b[34mvoice "
+        + R
+        + f"\x1b[36m{steam2(account(1))}"
+        + R
+        + ": "
+        + "\x1b[1mok"
+        + R
+        + "\x1b[2m  1.2s"
+        + R,
     ]
 
 
 def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
     """A player's name is his nick in the stream's userinfo table, the current
-    one; a rename is a `name` line. Every output that names a player carries
-    his SteamID64: --json and feed.log."""
+    one; a rename is a `name` line, and his next voice line has the new nick.
+    Every output that names a player carries his SteamID64: --json and
+    feed.log."""
     acc = account(4242)
     sid = STEAMID64_BASE + acc
     w = wire.BitWriter()
@@ -1080,7 +1174,7 @@ def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
             0,
             netchan.build_packet(1, 1, CHALLENGE, 0, unreliable=table_update(("old", u(acc), acc))),
         ),
-        (100, packet(2, [(1, voice_payload(sid))])),
+        (100, packet(2, [(1, steam_voice(sid, 0))])),
         (1500, reliable_packet(4, w.get_bytes() + b"\x00")),
         (
             2000,
@@ -1089,7 +1183,7 @@ def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
     ]
     seq = 6
     for ms in range(2020, 3000, 20):
-        plan.append((ms, packet(seq)))
+        plan.append((ms, packet(seq, [(1, steam_voice(sid, 0))] if ms == 2500 else [])))
         seq += 1
     rec = str(tmp_path / "r.tvd")
     write_recording(rec, [(T0 + ms * 1_000_000, d) for ms, d in plan])
@@ -1122,14 +1216,17 @@ def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
         ("chat", sid, "old", None),
         ("name", sid, "new", "old"),
     ]
-    assert not [r for r in recs if r["type"] == "voice"]
+    voice = sorted((r["t_utc"], r["steamid64"], r["nick"]) for r in recs if r["type"] == "voice")
+    assert [v[1:] for v in voice] == [(sid, "old"), (sid, "new")]
     feed = [
         ln.split("\t") for ln in (session_of(tmp_path / "o") / "feed.log").read_text().splitlines()
     ]
     assert [(f[1], f[2].split(" ")[0]) for f in feed if f[1]] == [
         (str(sid), "connect"),
         (str(sid), "chat"),
+        (str(sid), "voice"),
         (str(sid), "name"),
+        (str(sid), "voice"),
     ]
 
 

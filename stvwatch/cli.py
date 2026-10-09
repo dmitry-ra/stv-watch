@@ -1,6 +1,6 @@
 """Command line of stv-watch.
 
-stv-watch --relay IP:PORT [--events all] [--tz Europe/Berlin] ...
+stv-watch --relay IP:PORT [--asr parakeet] [--events all] [--tz Europe/Berlin] ...
 stv-watch --replay capture.tvd [--speed 0] [--json] ...
 """
 
@@ -10,8 +10,10 @@ import sys
 from datetime import timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import asr
 from . import events as gamevents
 from .app import App
+from .asr import weights
 
 
 def default_out():
@@ -36,8 +38,9 @@ def relay_addr(text, ap):
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         prog="stv-watch",
-        description="Watch a SourceTV relay of Half-Life 2: Deathmatch: game chat and events, "
-        "connection and traffic, live or from a recording.",
+        description="Watch a SourceTV relay of Half-Life 2: Deathmatch: voice chat with an "
+        "optional transcript, game chat and events, connection and traffic, live or from a "
+        "recording.",
     )
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--relay", metavar="IP:PORT", help="live: connect to this SourceTV relay")
@@ -80,6 +83,36 @@ def parse_args(argv=None):
         help="live: connect even if no relay slot would remain free after us",
     )
     ap.add_argument(
+        "--asr",
+        choices=asr.ENGINES,
+        default=None,
+        help="recognize what players say with this engine; its weights are downloaded on "
+        "the first use (parakeet: 2.55 GB). Without it voice is still shown: who talks and "
+        "how long, WAV files, transcript.tsv rows without text",
+    )
+    ap.add_argument("--threads", type=int, default=2, help="recognizer CPU threads")
+    ap.add_argument(
+        "--max-utt",
+        type=float,
+        default=30.0,
+        help="a monologue is recognized in pieces of about this many seconds, cut at a pause "
+        "(from 5 s before it; at it, the last pause past a third of it); hard only with no "
+        "pause; later pieces are marked (cont)",
+    )
+    ap.add_argument(
+        "--drain",
+        type=float,
+        default=20.0,
+        help="on exit, wait this many seconds for queued recognition",
+    )
+    ap.add_argument("--no-audio", action="store_true", help="do not write utterance WAV files")
+    ap.add_argument(
+        "--models-dir",
+        default=None,
+        help="where recognition weights live (default: $XDG_CACHE_HOME/stv-watch/models, "
+        "~/.cache/stv-watch/models when XDG_CACHE_HOME is unset)",
+    )
+    ap.add_argument(
         "--tz",
         metavar="NAME",
         default=None,
@@ -107,7 +140,7 @@ def parse_args(argv=None):
         "--monitor",
         action="store_true",
         help="for a program reading a pipe: one self-contained line per event, no status "
-        "lines, no escape sequences",
+        "lines, no escape sequences, voice only as its final line",
     )
     ap.add_argument(
         "--json",
@@ -130,10 +163,11 @@ def parse_args(argv=None):
     ap.add_argument(
         "--debug",
         action="store_true",
-        help="on screen also the transport numbers in the block (rates, -2, choked, CPU) "
-        "and both SteamIDs of a kill; feed.log always holds them. Also a feed line per "
-        "sequence gap counted as lost ('net lost: seq A -> B (N)'), in feed.log and --json "
-        "only with --debug",
+        help="on screen also the transport and recognizer numbers: per utterance (frames, "
+        "gaps, bit rate, arrivals, recognition time), in the block (rates, -2, choked, CPU, "
+        "queue, RTF) and both SteamIDs of a kill; feed.log and --json always hold them. "
+        "Also a feed line per sequence gap counted as lost ('net lost: seq A -> B (N)'), in "
+        "feed.log and --json only with --debug",
     )
     ap.add_argument("--no-color", action="store_true")
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -168,6 +202,12 @@ def parse_args(argv=None):
         a.tz = timezone.utc
     if a.out is None:
         a.out = default_out()
+    if a.models_dir is None:
+        a.models_dir = weights.default_dir()
+    if a.threads < 1:
+        ap.error("--threads wants 1 or more")
+    if a.max_utt < 6:
+        ap.error("--max-utt wants 6 seconds or more")
     a.monitor = a.monitor or a.json
     a.plain = a.plain or a.monitor
     if a.monitor:
@@ -176,7 +216,14 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
-    return App(parse_args(argv)).run()
+    a = parse_args(argv)
+    if a.asr:
+        try:
+            weights.ensure(weights.PINS[a.asr], a.models_dir)
+        except (weights.WeightsError, KeyboardInterrupt) as e:
+            print(f"stv-watch: {a.asr} weights not available: {e}", file=sys.stderr)
+            return 2
+    return App(a).run()
 
 
 if __name__ == "__main__":

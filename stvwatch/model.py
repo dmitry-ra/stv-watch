@@ -121,11 +121,8 @@ class Channel:
     nospeech: int = 0
     opus_bytes: Window = field(default_factory=lambda: Window(3.0))
     opus_frames: Window = field(default_factory=lambda: Window(3.0))
-    partial: str = ""
-    partial_ns: int = 0
     talking: bool = False
     utt_start_ns: int = 0  # first frame of the current or last utterance
-    stream_finals: int = 0  # stream mode: finals with text in the open utterance
 
     @property
     def audio_s(self):
