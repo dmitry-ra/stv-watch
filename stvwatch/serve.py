@@ -131,7 +131,7 @@ class Server:
         self.lock = threading.Lock()
         self.peers = []
         self.ring = collections.deque(maxlen=HISTORY)  # snapshot messages, oldest first
-        self.open = {}  # live key -> its message in the ring
+        self.open = {}  # live key -> its open message, kept after it leaves the ring
         self.last = None  # the last draw or bye
         self.seq = 0
         self.dropped = 0
@@ -180,13 +180,14 @@ class Server:
                 e["spans"] = m["spans"]
         elif op == "close":
             e = self.open.pop(m["key"], None)
-            if e is None:
-                # its open left the history: a line of its own, as on a screen
+            final = {"spans": m["spans"], "cont": m["cont"]}
+            if e is not None and self.ring and e["seq"] >= self.ring[0]["seq"]:
+                e.update(op="line", **final)
+            else:
+                # its open has left the history: the final text comes last
                 self.seq += 1
                 m["seq"] = self.seq
-                self.ring.append({"op": "line", "seq": self.seq, "spans": m["cont"] + m["spans"]})
-            else:
-                e.update(op="line", spans=m["spans"], cont=m["cont"])
+                self.ring.append(dict(op="line", seq=self.seq, key=m["key"], **final))
         else:
             self.last = m
 
@@ -218,7 +219,9 @@ class Server:
 
     # ---- I/O thread
     def _snapshot(self):
-        msgs = [self.hello] + [dict(e) for e in self.ring]
+        first = self.ring[0]["seq"] if self.ring else self.seq + 1
+        held = sorted((e for e in self.open.values() if e["seq"] < first), key=lambda e: e["seq"])
+        msgs = [self.hello] + [dict(e) for e in held + list(self.ring)]
         if self.last is not None:
             msgs.append(self.last)
         return encode(msgs)
@@ -443,12 +446,14 @@ class Attached:
             self._hello(m)
         elif op == "line":
             spans = _spans(m["spans"])
-            if m["seq"] > self.last_seq:
+            if key is not None and key in self.open:
+                # closed while we were away
+                self.last_seq = max(self.last_seq, m["seq"])
+                del self.open[key]
+                self.screen.live_close(key, spans, _spans(m["cont"]))
+            elif m["seq"] > self.last_seq:
                 self.last_seq = m["seq"]
                 self.screen.feed(spans)
-            elif key in self.open:
-                del self.open[key]
-                self.screen.live_close(key, spans, _spans(m.get("cont", ())))
         elif op == "open":
             spans = _spans(m["spans"])
             if m["seq"] > self.last_seq:

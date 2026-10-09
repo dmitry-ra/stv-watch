@@ -224,6 +224,36 @@ def test_a_screen_that_stops_reading_is_dropped_and_gets_what_it_missed_once(soc
     c.close()
 
 
+def test_a_live_line_older_than_the_history_is_still_open_and_still_closes(sock, monkeypatch):
+    monkeypatch.setattr(serve, "HISTORY", 4)
+    eng = served_screen(sock)
+    a = serve.Attached(sock, tty_screen())
+    assert a.connect()
+    eng.live_open("k", [("k talking", "")])
+    for n in range(6):
+        eng.feed([(f"line {n}", "")])
+    eng.draw([[("block", "")]])
+    until(lambda: (a.step(0.01), "line 5" in texts(a.screen))[1])
+    late = serve.Attached(sock, tty_screen())
+    assert late.connect()
+    until(lambda: (late.step(0.01), late.block)[1])
+    assert list(late.open) == ["k"]
+    # `a` is away while k closes, comes back and closes it too
+    a.close()
+    a.retry_at = time.monotonic() + 60
+    eng.live_close("k", [("k said", "")], [("^ ", "")])
+    eng.draw([[("block", "")]])
+    a.retry_at = 0.0
+    until(lambda: (a.step(0.01), not a.open and a.sock)[1])
+    until(lambda: (late.step(0.01), not late.open)[1])
+    for c in (a, late):
+        c.screen.draw(c.view())
+        assert [t for t in texts(c.screen) if t.startswith("k ")] == ["k said"]
+    eng.stop()
+    a.close()
+    late.close()
+
+
 def test_a_killed_screen_does_not_stall_the_engine(sock):
     eng = served_screen(sock)
     p = subprocess.Popen(
@@ -344,6 +374,7 @@ def test_q_closes_the_attached_screen(sock):
     sc.key = lambda: "q"
     c = serve.Attached(sock, sc)
     assert c.connect()
+    until(lambda: eng.server.count() == 1)
     c.step(0.01)
     assert c.quit and eng.server.count() == 1
     c.close()
