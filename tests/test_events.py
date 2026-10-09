@@ -1285,7 +1285,8 @@ def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
 
 def test_a_rename_in_the_silence_before_the_close_names_the_utterance(tmp_path):
     """--speed 0 drains many packets between ticks: the nick is read from the
-    table at the close, not from the last tick."""
+    table at the close, not from the last tick. A rename after the last close
+    still reaches the speakers in meta.json."""
     acc = account(4242)
     sid = STEAMID64_BASE + acc
     plan = [
@@ -1299,7 +1300,15 @@ def test_a_rename_in_the_silence_before_the_close_names_the_utterance(tmp_path):
             netchan.build_packet(3, 1, CHALLENGE, 0, unreliable=table_update(("new", u(acc), acc))),
         ),
     ]
-    plan += [(ms, packet(4 + i, [])) for i, ms in enumerate(range(520, 3000, 20))]
+    plan += [(ms, packet(4 + i, [])) for i, ms in enumerate(range(520, 2000, 20))]
+    plan.append(
+        (
+            2000,
+            netchan.build_packet(
+                78, 1, CHALLENGE, 0, unreliable=table_update(("newer", u(acc), acc))
+            ),
+        )
+    )
     rec = str(tmp_path / "r.tvd")
     write_recording(rec, [(T0 + ms * 1_000_000, d) for ms, d in plan])
     out = subprocess.run(
@@ -1311,6 +1320,8 @@ def test_a_rename_in_the_silence_before_the_close_names_the_utterance(tmp_path):
     ).stdout.decode()
     recs = [json.loads(ln) for ln in out.splitlines()]
     assert [r["nick"] for r in recs if r["type"] == "voice"] == ["new"]
+    meta = json.loads((session_of(tmp_path / "o") / "meta.json").read_text())
+    assert meta["speakers"][str(sid)]["nick"] == "newer"
 
 
 @pytest.mark.parametrize("debug", [False, True])
