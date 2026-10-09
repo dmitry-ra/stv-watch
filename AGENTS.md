@@ -32,9 +32,10 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
   Silero VAD; a line on stderr for each; the files are checked by SHA-256) and
   then needs about 2.6 GB of memory. Ask your user before the first download.
   Replaying at `--speed 0` with `--asr` reads ahead of the recognizer until
-  600 s of voice are queued: give it a `--drain-ms` long enough for the queue
-  (150 ms per second of voice on 2 threads of an i7-8700), or the rest ends as
-  `not recognized before exit`.
+  600 s of voice are queued; at the end of the recording it waits until all of
+  it is recognized (150 ms per second of voice on 2 threads of an i7-8700).
+  Live, or after SIGINT/SIGTERM, the exit waits at most `--drain-ms` (default
+  20000) and the rest ends as `not recognized before exit`.
 - Every duration in options, JSON lines, `transcript.tsv` and `meta.json` is a
   whole number of milliseconds named `*_ms`; moments are ISO strings.
 
