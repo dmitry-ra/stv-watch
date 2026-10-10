@@ -399,6 +399,24 @@ def test_q_closes_the_attached_screen(sock):
     eng.stop()
 
 
+def test_a_screen_refuses_an_engine_of_the_previous_protocol(sock, monkeypatch):
+    """A 0.3 engine draws the rule and the q hint the old way."""
+    from stvwatch import version
+
+    with monkeypatch.context() as m:
+        m.setattr(serve, "PROTO", 1)
+        eng = served_screen(sock)
+    c = serve.Attached(sock, tty_screen())
+    assert c.connect()
+    until(lambda: (c.step(0.01), c.quit)[1])
+    assert c.rc == 2 and c.engine is None
+    assert texts(c.screen)[-1].endswith(
+        f"attach the engine (stv-watch v) speaks protocol 1, this stv-watch"
+        f" {version.version()} speaks 2: attach with the engine's version"
+    )
+    eng.stop()
+
+
 def test_an_attached_screen_is_marked_and_says_q_leaves_the_engine_running(sock, tmp_path):
     """The block of a local run and the same block on an --attach screen: the
     rule there is labelled and has a colour of its own, the hint says q

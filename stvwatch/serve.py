@@ -31,9 +31,12 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import version
 from .render import Screen, clean, is_bar
 
-PROTO = 1
+# Bump on any change that the other side of an older version would draw
+# wrong, not only on a change of message shape: 2 is the attached marker.
+PROTO = 2
 HISTORY = 200
 CLIENT_BUF = 1 << 20
 DRAIN_S = 1.0  # at exit, how long the last bytes may take to reach the clients
@@ -480,7 +483,11 @@ class Attached:
 
     def _hello(self, m):
         if m.get("proto") != PROTO:
-            self.note(f"the engine speaks protocol {m.get('proto')}, this stv-watch {PROTO}")
+            self.note(
+                f"the engine (stv-watch {m.get('version', '?')}) speaks protocol"
+                f" {m.get('proto')}, this stv-watch {version.version()} speaks {PROTO}:"
+                " attach with the engine's version"
+            )
             self.quit, self.rc = True, 2
             self.close()
             return

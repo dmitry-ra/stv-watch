@@ -189,7 +189,9 @@ engine serves the socket again it reconnects by itself and says so in one feed
 line. A client that does not keep up is dropped and reconnects; the engine never
 waits for a screen. The engine's stdout gets its finished feed lines (as
 `--plain` without status lines); a socket file left by an engine that died is
-taken over, one that a live engine serves is refused.
+taken over, one that a live engine serves is refused. A screen and an engine of
+different socket protocol versions (0.4.0 brought protocol 2) do not work
+together: the screen names both versions and exits.
 
 ### For scripts and agents
 
@@ -216,10 +218,11 @@ as plain text lines. [AGENTS.md](AGENTS.md) is a guide for agents that run it.
 
 Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording),
 2 when the relay was refused before connecting, the command line is wrong, no
-engine serves the socket given to `--attach`, the socket of `--serve` is taken or the
-recognizer could not start (its weights could not be fetched or checked, or the
-model failed to load), 3 when the network client stopped on its own (the relay
-refuses us for a reason retrying will not change).
+engine serves the socket given to `--attach` or it speaks another protocol version,
+the socket of `--serve` is taken or the recognizer could not start (its weights
+could not be fetched or checked, or the model failed to load), 3 when the network
+client stopped on its own (the relay refuses us for a reason retrying will not
+change).
 
 ## Version
 
