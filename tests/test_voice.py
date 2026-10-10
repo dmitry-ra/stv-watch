@@ -31,6 +31,7 @@ from voicegen import payload as voice_payload
 
 from stvwatch import cli
 from stvwatch.app import SLOT_HEAD, SR, TSV_HEAD, App, ChannelAudio, Utt
+from stvwatch.asr import live as live_mod
 from stvwatch.asr import recognizer, vad, weights
 from stvwatch.cli import parse_args
 from stvwatch.model import Channel
@@ -1008,7 +1009,7 @@ def test_live_asr_changes_no_session_file_and_needs_a_screen(tmp_path, engine, m
     def slow(*a):
         # reading waits for the load, or the first utterances would be dropped
         built.append(a)
-        time.sleep(0.5)
+        time.sleep(live_mod.MAX_LAG_S + 0.5)
         return live
 
     monkeypatch.setattr(appmod, "build_live", slow)
@@ -1031,7 +1032,9 @@ def test_live_asr_changes_no_session_file_and_needs_a_screen(tmp_path, engine, m
     assert runs["on"][:3] == runs["off"][:3] and len(runs["on"][0]) == 3
     meta = runs["on"][3]
     assert "live_asr" not in runs["off"][3] and meta["live_asr"]["state"] == "ready"
-    assert meta["live_asr"]["audio_ms"] == live.heard * 1000 // SR == 6500
+    # what was queued when the run stopped is not decoded: no exact total
+    assert meta["live_asr"]["audio_ms"] == live.heard * 1000 // SR > 0
+    assert meta["live_asr"]["drops"] == 0
     assert built == [("nemotron", 1, meta["args"]["models_dir"])]
     assert fetched == ["parakeet", "silero-vad"] * 2 + ["nemotron"]
     fetched.clear()
