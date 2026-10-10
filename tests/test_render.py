@@ -16,6 +16,17 @@ def test_external_text_cannot_drive_the_terminal_and_cuts_by_cells():
     assert width("e\u0301") == 1  # combining mark
 
 
+def test_a_cut_line_ending_in_growing_text_keeps_the_end_of_it():
+    head = [("A talking 2.0s", "green"), (": ", "")]
+    said = ("they took the flag and ran to the base", "partial")
+    spans, used = fit(head + [said], 30)
+    assert spans == head + [("...the base", "partial")] and used == 16 + 11
+    # under 12 cells left for it, or not growing text: cut at the end as any line
+    for cols, style in ((27, "partial"), (30, "bold")):
+        spans, used = fit(head + [(said[0], style)], cols)
+        assert spans[-1] == ("~", "dim") and used == cols
+
+
 class FakeTty(io.StringIO):
     def isatty(self):
         return True

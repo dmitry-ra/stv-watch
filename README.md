@@ -22,7 +22,8 @@ that recording gives the same lines the live run printed.
   downloads): numpy, opuslib-next-bundled (the Opus decoder, libopus inside),
   onnxruntime, onnx-asr and sherpa-onnx (speech recognition).
 - For `--asr parakeet`: 2.55 GB of disk for the model weights (Parakeet and
-  Silero VAD) and about 2.6 GB of memory while it runs.
+  Silero VAD) and about 2.6 GB of memory while it runs. `--live-asr nemotron`
+  adds 0.68 GB of disk and about 1 GB of memory.
 
 ## Install and run
 
@@ -100,6 +101,34 @@ speech in it than `--min-speech-ms` (default 250) gets no text (`no speech`)
 and is not recognized, because on noise Parakeet tends to make up an
 interjection; `--min-speech-ms 0` turns the gate off. Each voice line carries
 the speech the VAD found, `speech_ms`.
+
+### Live text while a player talks
+
+`--live-asr nemotron` adds a second, streaming recognizer, Nemotron 3.5 ASR
+Streaming 0.6B, next to the one of `--asr`: the `talking` line shows what it
+hears while the player is still speaking, and the end of the text stays in
+view when the line is wider than the terminal. When the utterance ends, the
+`--asr` text replaces it. Only the screen shows that text (a terminal, or
+`--serve` and its `--attach` screens) and no file keeps it: the voice lines,
+`transcript.tsv` and the WAV files are the same with it or without it. The
+session records only the live recognizer's own state: its `asr` lines (loaded,
+failed, an error) in `events.jsonl` and `feed.log`, and `live_asr` in
+`meta.json`. With `--plain`, `--monitor` or `--json` it is not loaded at all.
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --live-asr nemotron
+```
+
+Its weights (0.68 GB) are fetched and checked like the others. It decodes 560 ms
+of audio at a time on one CPU thread (`--live-asr-threads`), about half a core
+per player talking; its threads run at a lower priority (nice + 10) than the
+`--asr` recognizer, and when it falls more than 1.5 s behind, it drops what is
+queued: the utterances open at that moment get no more live text, their final
+text comes as always. The model needs some speech before it says anything:
+under 1.5 s most utterances get no live text, from 3 s on it usually shows up
+in the first half. It runs on any x86-64; on a CPU without AVX2 it is slower
+(not measured). A model that fails to load is named in a red `asr` line and the
+run goes on without it.
 
 The SteamID a voice line names comes from the voice data, which the speaker's
 own game writes; the slot the data came from is the server's, and the server's

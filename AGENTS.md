@@ -36,6 +36,10 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
   it is recognized (150 ms per second of voice on 2 threads of an i7-8700).
   Live, or after SIGINT/SIGTERM, the exit waits at most `--drain-ms` (default
   20000) and the rest ends as `not recognized before exit`.
+- `--live-asr nemotron` is for people watching a screen: its partial text is in
+  no file, voice lines and `transcript.tsv` are the same as without it (it adds
+  only `asr` lines about itself and `live_asr` in `meta.json`); with `--json`
+  or `--monitor` it is not loaded (an `asr` line says so).
 - Every duration in options, JSON lines, `transcript.tsv` and `meta.json` is a
   whole number of milliseconds named `*_ms`; moments are ISO strings.
 

@@ -123,6 +123,23 @@ def parse_args(argv=None):
     )
     ap.add_argument("--threads", type=int, default=2, help="recognizer CPU threads")
     ap.add_argument(
+        "--live-asr",
+        choices=asr.LIVE_ENGINES,
+        default=None,
+        help="with --asr: also show what a player says while they talk, with this streaming "
+        "engine (nemotron: 0.68 GB of weights on the first use, about 1 GB of memory, half a "
+        "CPU core per player talking); the --asr text replaces it when the utterance ends. "
+        "On a screen only (a terminal, --serve and its --attach): no session file gets it, "
+        "and with --plain, --monitor or --json it is not loaded",
+    )
+    ap.add_argument(
+        "--live-asr-threads",
+        type=int,
+        default=1,
+        metavar="N",
+        help="CPU threads of the --live-asr engine",
+    )
+    ap.add_argument(
         "--min-speech-ms",
         type=ms,
         default=250,
@@ -255,8 +272,10 @@ def parse_args(argv=None):
         a.out = default_out()
     if a.models_dir is None:
         a.models_dir = weights.default_dir()
-    if a.threads < 1:
-        ap.error("--threads wants 1 or more")
+    if a.threads < 1 or a.live_asr_threads < 1:
+        ap.error("--threads and --live-asr-threads want 1 or more")
+    if a.live_asr and not a.asr:
+        ap.error("--live-asr needs --asr: its text is replaced by the --asr text")
     if not 1000 <= a.max_utt_ms <= MAX_UTT_MS:
         ap.error(
             f"--max-utt-ms wants 1000 to {MAX_UTT_MS}: the Parakeet model takes at most "
@@ -269,16 +288,24 @@ def parse_args(argv=None):
     return a
 
 
+def has_screen(a):
+    """Whether the run shows live lines (App: Screen.tty)."""
+    return bool(a.serve) or (not a.plain and sys.stdout.isatty())
+
+
 def main(argv=None):
     a = parse_args(argv)
     if a.attach:
         return serve.attach(a)
-    if a.asr:
+    engines = [(a.asr, asr.WEIGHTS)] if a.asr else []
+    if a.live_asr and has_screen(a):
+        engines.append((a.live_asr, asr.LIVE_WEIGHTS))
+    for engine, needs in engines:
         try:
-            for name in asr.WEIGHTS[a.asr]:
+            for name in needs[engine]:
                 weights.ensure(weights.PINS[name], a.models_dir)
         except (weights.WeightsError, KeyboardInterrupt) as e:
-            print(f"stv-watch: {a.asr} weights not available: {e}", file=sys.stderr)
+            print(f"stv-watch: {engine} weights not available: {e}", file=sys.stderr)
             return 2
     try:
         app = App(a)

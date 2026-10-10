@@ -1,6 +1,6 @@
 [project]
 name = "stv-watch"
-version = "0.2.3"
+version = "0.3.0"
 description = "SourceTV relay viewer for Half-Life 2: Deathmatch: voice with a transcript, game chat and events, live or from a recording"
 readme = "README.md"
 license = "MIT"

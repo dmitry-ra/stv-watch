@@ -56,7 +56,11 @@ STYLES = {
     "joingreen": "\x1b[38;5;71m",
     "leavered": "\x1b[38;5;167m",
     "gray": "\x1b[2;90m",
+    # text still growing (the live recognizer's): white, never bold
+    "partial": "\x1b[37m",
 }
+TAIL_FIRST = ("partial",)  # a line ending in a span of these keeps its end when cut
+MIN_TAIL = 12
 
 
 def clean(text):
@@ -87,10 +91,17 @@ def width(text):
 
 def fit(spans, cols):
     """Styled spans [(text, style)] cut to `cols` display cells.
-    -> (spans, used_cells). A cut line ends in '~'."""
+    -> (spans, used_cells). A cut line ends in '~', unless its last span is
+    one of TAIL_FIRST and at least MIN_TAIL cells are left for it: then that
+    span keeps its end (tail())."""
     total = sum(width(t) for t, _s in spans)
     if total <= cols:
         return spans, total
+    if spans[-1][1] in TAIL_FIRST:
+        head = total - width(spans[-1][0])
+        if cols - head >= MIN_TAIL:
+            end = tail(spans[-1][0], cols - head)
+            return spans[:-1] + [(end, spans[-1][1])], head + width(end)
     room = max(0, cols - 1)
     out, used = [], 0
     for text, style in spans:

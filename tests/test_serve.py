@@ -450,3 +450,36 @@ def test_attached_plain_screen_prints_the_lines_of_a_local_plain_run(sock, tmp_p
     assert strip(got) == strip(ref)
     assert any(ln.startswith("status REPLAY sample.tvd") for ln in got)
     assert [ln[13:] for ln in got if " attach " in ln][0].startswith("attach attached to ")
+
+
+def test_an_attached_screen_shows_the_live_text_and_then_the_final_only(
+    voice, tmp_path, sock, monkeypatch
+):
+    from test_voice import Engine, LiveEngine
+
+    from stvwatch import app as appmod
+    from stvwatch.asr import recognizer
+
+    monkeypatch.setattr(recognizer, "build", lambda *a: Engine())
+    monkeypatch.setattr(appmod, "build_live", lambda *a: LiveEngine())
+    seen = []
+
+    class Seen(Screen):
+        def live_update(self, key, spans):
+            seen.append(spans)
+            super().live_update(key, spans)
+
+    hold_start(monkeypatch, 1)
+    c = Client.__new__(Client)
+    c.c = serve.Attached(sock, Seen(out=FakeTty(), color=False, size=lambda: SIZE))
+    c.stop = threading.Event()
+    c.t = threading.Thread(target=c._loop, daemon=True)
+    c.t.start()
+    args = ["--replay", voice, "--speed", "4", "--out", str(tmp_path), "--serve", sock]
+    app = App(parse_args(args + ["--asr", "parakeet", "--live-asr", "nemotron"]))
+    assert app.run() == 0 and not app.live_asr.thread.is_alive()
+    lines = screen_lines(c.finish().screen)
+    said = [s for spans in seen for s in spans if s[1] == "partial"]
+    assert said and all(t.startswith("said ") for t, _s in said)
+    assert not [s for spans in lines for s in spans if s[1] == "partial"]
+    assert sum("heard " in "".join(t for t, _s in spans) for spans in lines) == 3

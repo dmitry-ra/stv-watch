@@ -6,6 +6,7 @@ import json
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import wave
@@ -30,6 +31,7 @@ from voicegen import payload as voice_payload
 
 from stvwatch import cli
 from stvwatch.app import SLOT_HEAD, SR, TSV_HEAD, App, ChannelAudio, Utt
+from stvwatch.asr import live as live_mod
 from stvwatch.asr import recognizer, vad, weights
 from stvwatch.cli import parse_args
 from stvwatch.model import Channel
@@ -904,3 +906,143 @@ def test_voice_lines_say_whether_the_slot_is_the_speakers(tmp_path):
     utt.state, utt.slot, utt.verified = "recognizing", 2, False
     utt.slot_owner = Player(account(2), "bob", 12)
     assert painted.slot_mark(utt) == [(" [slot 2: bob]", "red")]
+
+
+class Live:
+    """Stand-in live recognizer: the calls the app makes, by key."""
+
+    def __init__(self):
+        self.calls, self.state = [], "ready"
+
+    def open(self, key):
+        self.calls.append(("open", key))
+
+    def push(self, key, pcm):
+        self.calls.append(("push", key, len(pcm)))
+
+    def close(self, key):
+        self.calls.append(("close", key))
+
+
+def test_live_text_follows_the_talking_line_and_the_final_replaces_it(tmp_path):
+    """Every piece of a monologue is opened, fed and closed in the live
+    recognizer; what follows a cut is fed from the cut on, never the rest
+    before it. Its partial text ends the talking line; the final line has
+    the --asr text only."""
+    app = bare_app(tmp_path, "--max-utt-ms", "10000", "--asr", "parakeet")
+    app.asr = Pieces(True)
+    app.live_asr = Live()
+    sid = steamid64(1)
+    speak(app, 14, ((9.0, 0.5),))
+    k1, k2 = (sid, 1), (sid, 2)
+    assert [c for c in app.live_asr.calls if c[0] != "push"] == [
+        ("open", k1),
+        ("close", k1),
+        ("open", k2),
+        ("close", k2),
+    ]
+    fed = {
+        k: sum(c[2] for c in app.live_asr.calls if c[0] == "push" and c[1] == k) / SR
+        for k in (k1, k2)
+    }
+    assert app.asr.lengths[0] < fed[k1] == 10.02 and fed[k1] + fed[k2] == 14.0
+    assert fed[k2] < app.asr.lengths[1]  # the rest before the cut is not fed again
+    utt = app.utts[k2]
+    utt.state, app.now = "talking", utt.start_ns + 2 * 10**9
+    app.handle_result(("partial", k2, "they took\x1b[2J the flag"))
+    app.handle_result(("partial", (sid, 9), "no such utterance"))
+    line = app.progress(utt)
+    assert line[-2:] == [(": ", ""), ("they took?[2J the flag", "partial")]
+    assert text_of(line).endswith("(cont) talking 2.0s: they took?[2J the flag")
+    utt.state = "recognizing"
+    app.handle_result(("partial", k2, "late"))
+    assert utt.partial == "they took?[2J the flag" and "flag" not in text_of(app.progress(utt))
+    app.finalize(utt, "they took the flag", {})
+    assert text_of(app.screen.closed[-1]).endswith("(cont): they took the flag  4.7s")
+
+
+@pytest.mark.parametrize("debug", [False, True])
+def test_the_live_recognizer_ends_the_asr_line_of_the_block(tmp_path, debug):
+    app = bare_app(
+        tmp_path, "--asr", "parakeet", "--live-asr", "nemotron", *(["--debug"] if debug else [])
+    )
+    stats = SimpleNamespace(
+        summary=lambda now: {"lag_last": 0.4, "lag_p90": 0.4, "jobs_min": 1, "rtf": 0.5}
+    )
+    app.asr = SimpleNamespace(queue_depth=lambda: (0, 0.0), stats=stats, state="ready")
+    app.live_asr = SimpleNamespace(state="loading", stats=stats, dropped_s=0.0, drops=0)
+    assert text_of(app.block()[4]).endswith("  live nemotron loading")
+    app.live_asr.state, app.live_asr.dropped_s, app.live_asr.drops = "ready", 3.5, 2
+    tail = app.block()[4][-3:] if debug else app.block()[4][-2:]
+    if debug:
+        assert tail == [("ready", "green"), (" lag 0.4s", ""), (" RTF 0.50 dropped 3.5s", "yellow")]
+    else:
+        assert tail == [("ready", "green"), (" lag 0.4s", "")]
+
+
+class LiveEngine:
+    """Stand-in streaming engine: each partial names the audio heard so far."""
+
+    def __init__(self):
+        self.heard = 0
+
+    def open(self):
+        return {"n": 0}
+
+    def push_all(self, pairs):
+        for st, pcm in pairs:
+            st["n"] += len(pcm)
+            self.heard += len(pcm)
+        return [(st, [("partial", f"said {st['n'] / SR:.2f}s")]) for st, _pcm in pairs]
+
+
+def test_live_asr_changes_no_session_file_and_needs_a_screen(tmp_path, engine, monkeypatch):
+    """With --serve (a screen) the live recognizer hears every utterance and
+    the voice lines, transcript and WAVs are those of a run without it; with
+    --json it is not loaded and its weights are not fetched; without --asr
+    it is a usage error."""
+    from stvwatch import app as appmod
+
+    live = LiveEngine()
+    built = []
+
+    def slow(*a):
+        # reading waits for the load, or the first utterances would be dropped
+        built.append(a)
+        time.sleep(live_mod.MAX_LAG_S + 0.5)
+        return live
+
+    monkeypatch.setattr(appmod, "build_live", slow)
+    fetched = []
+    monkeypatch.setattr(weights, "ensure", lambda pin, d: fetched.append(pin.engine))
+    rec = str(tmp_path / "demo.tvd")
+    demo(rec)
+    runs = {}
+    for name, extra in (("off", []), ("on", ["--live-asr", "nemotron"])):
+        out = tmp_path / name
+        with tempfile.TemporaryDirectory(prefix="sw", dir="/tmp") as d:
+            argv = ["--replay", rec, "--speed", "0", "--out", str(out), "--serve", d + "/s"]
+            assert cli.main(argv + ["--asr", "parakeet", *extra]) == 0
+        s = session_of(out)
+        voice = [json.loads(ln) for ln in (s / "events.jsonl").read_text().splitlines()]
+        voice = [(r["t_utc"], r["text"], r["result"]) for r in voice if r["type"] == "voice"]
+        rows = [r.split("\t")[:8] for r in (s / "transcript.tsv").read_text().splitlines()]
+        wavs = {p.name: p.read_bytes() for p in (s / "audio").iterdir()}
+        runs[name] = (voice, rows, wavs, json.loads((s / "meta.json").read_text()))
+    assert runs["on"][:3] == runs["off"][:3] and len(runs["on"][0]) == 3
+    meta = runs["on"][3]
+    assert "live_asr" not in runs["off"][3] and meta["live_asr"]["state"] == "ready"
+    # what was queued when the run stopped is not decoded: no exact total
+    assert meta["live_asr"]["audio_ms"] == live.heard * 1000 // SR > 0
+    assert meta["live_asr"]["drops"] == 0
+    assert built == [("nemotron", 1, meta["args"]["models_dir"])]
+    assert fetched == ["parakeet", "silero-vad"] * 2 + ["nemotron"]
+    fetched.clear()
+    argv = ["--replay", rec, "--speed", "0", "--json", "--out", str(tmp_path / "json")]
+    assert cli.main(argv + ["--asr", "parakeet", "--live-asr", "nemotron"]) == 0
+    lines = (session_of(tmp_path / "json") / "events.jsonl").read_text()
+    assert '"nemotron live off: partial text shows on a screen only"' in lines
+    assert fetched == ["parakeet", "silero-vad"] and len(built) == 1
+    for bad in (["--live-asr", "nemotron"], ["--asr", "parakeet", "--live-asr-threads", "0"]):
+        with pytest.raises(SystemExit):
+            parse_args(["--replay", rec, *bad])

@@ -110,7 +110,10 @@ The viewer's own lines: `conn` (connecting, signon, map change, breaks,
 reconnects, leaving, the slot check), `net` (traffic started, stopped, resumed;
 with `--debug` also `lost: seq A -> B (N)` with `seq_from`, `seq_to`, `lost`),
 `play` (replay started), `tvd` (a line of the network client's log, live only),
-`asr` (the recognizer loaded, failed to load, or failed on an utterance),
+`asr` (the recognizer loaded, failed to load, or failed on an utterance; with
+`--live-asr` also the live recognizer: `nemotron live ready in ...`, `... live
+failed: ...`, `... live error: ...`, or `... live off` when the run has no
+screen to show its text on),
 `done` (the last line: why the run ended and where its files are).
 
 ## feed.log
@@ -188,7 +191,10 @@ voice check), `conn` (last connection state; `state_utc` and `full_utc` are
 when it was entered and when it reached FULL), `game_events` (counts per type,
 shown or not), `speakers` (per SteamID64: `nick`, `audio_ms`, Opus `frames`,
 `utterances`, `phrases`). With `--asr` also `asr`: `state`, `error`, `load_ms`,
-`audio_ms` and `compute_ms` recognized, `jobs`. Every duration is whole
+`audio_ms` and `compute_ms` recognized, `jobs`. With `--live-asr` on a screen
+also `live_asr`: `engine`, `state`, `error`, `load_ms`, `audio_ms` and
+`compute_ms` decoded, `dropped_ms` of audio dropped when it fell behind and
+`drops`. Its partial text is in no file. Every duration is whole
 milliseconds named `*_ms`; `args` holds the options under their names
 (`duration_ms`, `skip_ms`, ...).
 Live runs also have `slot_released`, `relay_before`, `relay_with_us` and
