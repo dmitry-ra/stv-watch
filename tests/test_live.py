@@ -45,6 +45,13 @@ def started(engine, **kw):
     return r, out
 
 
+def until(cond, timeout=5.0):
+    end = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < end, "timed out"
+        time.sleep(0.001)
+
+
 def take(out, n):
     return [out.get(timeout=5) for _ in range(n)]
 
@@ -57,8 +64,7 @@ def test_partials_by_key_and_one_engine_call_for_all_that_queued():
     assert take(out, 1) == [("partial", "a", "1600")]
     e.gate.clear()
     r.push("a", pcm(0.1))  # the call that holds the worker
-    while len(e.calls) < 2:
-        time.sleep(0.001)
+    until(lambda: len(e.calls) == 2)
     r.open("b")
     r.push("b", pcm(0.2))
     r.open("c")
@@ -89,8 +95,7 @@ def test_falling_behind_drops_the_queue_and_the_open_utterances_partials():
     r.open("a")
     e.gate.clear()
     r.push("a", pcm(0.1))
-    while not e.calls:
-        time.sleep(0.001)
+    until(lambda: e.calls)
     r.push("a", pcm(0.5))
     r.open("b")  # opened in what is dropped: starts without its beginning, so never
     r.push("b", pcm(0.25))
@@ -98,8 +103,7 @@ def test_falling_behind_drops_the_queue_and_the_open_utterances_partials():
     r.push("b", pcm(0.01))  # the oldest audio decides, not the newest
     e.gate.set()
     assert take(out, 1) == [("partial", "a", "1600")]
-    while r.drops == 0:
-        time.sleep(0.001)
+    until(lambda: r.drops)
     assert r.dropped_s == pytest.approx(0.76)
     r.push("a", pcm(0.1))
     r.push("b", pcm(0.1))
@@ -117,8 +121,7 @@ def test_the_main_loop_never_waits_on_the_engine():
     r.open("a")
     e.gate.clear()
     r.push("a", pcm(0.02))
-    while not e.calls:
-        time.sleep(0.001)
+    until(lambda: e.calls)
     took = []
 
     def main_loop():
