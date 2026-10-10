@@ -8,7 +8,10 @@ call (engine.push_all); partials go to `out` as ("partial", key, text).
 
 Falling behind: when the oldest queued audio has waited longer than
 max_lag_s, all of it is dropped and the utterances open at that moment get no
-more partials; utterances opened later start afresh. The worker runs at the
+more partials; utterances opened later start afresh. The age is checked on
+every push as well as by the worker, so audio cannot pile up behind an engine
+call that does not return. An engine error ends the open utterances' partials
+the same way and is reported; the worker goes on. The worker runs at the
 process's priority plus `nice` and loads the engine itself, so the threads of
 the engine's runtime inherit that priority too.
 """
@@ -39,6 +42,7 @@ class LiveRecognizer:
         self.dropped_s = 0.0
         self.drops = 0
         self.ops = []
+        self.reset = False  # audio was dropped: the worker's streams are stale
         self.cv = threading.Condition()
         self.stopping = False
         self.thread = threading.Thread(target=self._run, daemon=True, name="asr-live")
@@ -46,12 +50,13 @@ class LiveRecognizer:
 
     # ---- main loop
     def _put(self, op):
-        if self.state == "failed":
-            return
         with self.cv:
-            if not self.stopping:
-                self.ops.append(op)
-                self.cv.notify()
+            if self.stopping or self.state == "failed":
+                return
+            if op[0] == "push":
+                self._drop_stale(op[3])
+            self.ops.append(op)
+            self.cv.notify()
 
     def open(self, key):
         self._put(("open", key))
@@ -70,6 +75,20 @@ class LiveRecognizer:
             self.cv.notify()
         self.thread.join()
 
+    # ---- under cv
+    def _drop_stale(self, now):
+        """Queued audio older than max_lag_s goes, and the opens queued with
+        it: those utterances would start without their beginning. -> the age
+        of the oldest queued audio."""
+        pushes = [op for op in self.ops if op[0] == "push"]
+        lag = now - pushes[0][3] if pushes else 0.0
+        if lag > self.max_lag_s:
+            self.drops += 1
+            self.dropped_s += sum(len(op[2]) for op in pushes) / SR
+            self.ops = [op for op in self.ops if op[0] == "close"]
+            self.reset = True
+        return lag
+
     # ---- worker
     def _run(self):
         self.tid = threading.get_native_id()
@@ -78,10 +97,13 @@ class LiveRecognizer:
         t0 = time.monotonic()
         try:
             self.engine = self.load()
-            self.state = "ready"
+            state, error = "ready", ""
         except Exception as e:  # noqa: BLE001
-            self.state = "failed"
-            self.error = f"{type(e).__name__}: {e}"
+            state, error = "failed", f"{type(e).__name__}: {e}"
+        with self.cv:
+            self.state, self.error = state, error
+            if state == "failed":
+                self.ops = []
         self.load_s = time.monotonic() - t0
         self.out.put(("live_loaded", self.state, self.error, self.load_s))
         streams = {}
@@ -91,24 +113,23 @@ class LiveRecognizer:
                     self.cv.wait()
                 if self.stopping:
                     return
+                lag = self._drop_stale(time.monotonic())
                 ops, self.ops = self.ops, []
-            self._step(ops, streams)
+                reset, self.reset = self.reset, False
+            if reset:
+                streams.clear()
+            try:
+                self._step(ops, streams, lag)
+            except Exception as e:  # noqa: BLE001
+                self.out.put(("live_error", f"{type(e).__name__}: {e}"))
+                streams.clear()
 
-    def _step(self, ops, streams):
-        pushes = [op for op in ops if op[0] == "push"]
-        lag = time.monotonic() - pushes[0][3] if pushes else 0.0
-        late = lag > self.max_lag_s
-        if late:
-            self.drops += 1
-            self.dropped_s += sum(len(op[2]) for op in pushes) / SR
-            self.stats.add(time.monotonic_ns(), 0.0, 0.0, lag)
-            streams.clear()
+    def _step(self, ops, streams, lag):
         pending = {}
         for op in ops:
             kind, key = op[0], op[1]
             if kind == "open":
-                if not late:
-                    streams[key] = self.engine.open()
+                streams[key] = self.engine.open()
             elif kind == "close":
                 streams.pop(key, None)
                 pending.pop(key, None)
@@ -118,12 +139,7 @@ class LiveRecognizer:
             return
         pairs = [(streams[k], np.concatenate(p)) for k, p in pending.items()]
         t0 = time.monotonic()
-        try:
-            done = self.engine.push_all(pairs)
-        except Exception as e:  # noqa: BLE001
-            self.out.put(("live_error", f"{type(e).__name__}: {e}"))
-            streams.clear()
-            return
+        done = self.engine.push_all(pairs)
         audio = sum(len(pcm) for _st, pcm in pairs) / SR
         self.stats.add(time.monotonic_ns(), audio, time.monotonic() - t0, lag)
         for key, (_st, events) in zip(pending, done, strict=True):
