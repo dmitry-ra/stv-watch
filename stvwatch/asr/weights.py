@@ -188,8 +188,14 @@ def fetch(url, dest, want, timeout=60.0):
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             store(r, dest, want)
-    except OSError as e:
-        raise WeightsError(f"{want.name}: {e}") from e
+    except BaseException as e:
+        # store() cleans up after itself; a .part left by a killed earlier run
+        # is still here when the request fails before store() starts
+        if os.path.exists(dest + ".part"):
+            os.remove(dest + ".part")
+        if isinstance(e, OSError):
+            raise WeightsError(f"{want.name}: {e}") from e
+        raise
 
 
 def store(src, dest, want):

@@ -69,6 +69,10 @@ def test_files_are_fetched_checked_and_named_once(server, tmp_path):
 )
 def test_a_file_failing_its_check_is_refused_and_not_kept(server, tmp_path, wrong, why):
     base, _src, _seen = server
+    # a .part left by a killed earlier run goes too, also when the request itself fails
+    path = tmp_path / "m" / "t-0123456"
+    path.mkdir(parents=True)
+    (path / (wrong.get("name", "model.onnx") + ".part")).write_bytes(b"stale")
     with pytest.raises(weights.WeightsError, match=why):
         weights.ensure(pin(base, **{"model.onnx": wrong}), str(tmp_path / "m"), log=print)
     assert os.listdir(tmp_path / "m" / "t-0123456") == ["config.json"]
