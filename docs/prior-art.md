@@ -87,5 +87,3 @@ update (2023) did change the class tables:
   anniversary update
   ([archived copy](http://web.archive.org/web/20250226172055/https://forums.alliedmods.net/showthread.php?t=349608));
   it names the older builds 6630498 and 9333546 but no CRC.
-- [ValveSoftware/Source-1-Games #6773](https://github.com/ValveSoftware/Source-1-Games/issues/6773):
-  class table fixes of the anniversary update.
