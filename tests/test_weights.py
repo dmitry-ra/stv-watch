@@ -3,7 +3,9 @@ after its size and sha256 check out; a failed check leaves nothing behind."""
 
 import hashlib
 import http.server
+import io
 import os
+import tarfile
 import threading
 
 import pytest
@@ -114,3 +116,73 @@ def test_a_models_dir_that_cannot_be_made_is_a_weights_error_and_exit_2(tmp_path
         weights.ensure(pin("http://127.0.0.1:9"), under, log=print)
     assert cli.main(["--replay", "x.tvd", "--asr", "parakeet", "--models-dir", under]) == 2
     assert "parakeet weights not available" in capsys.readouterr().err
+
+
+STEM = "model-2026"
+MEMBERS = {f"{STEM}/{n}": d for n, d in FILES.items()}
+
+
+def archive(src, members):
+    """STEM.tar.bz2 in `src` from {name: bytes}; a str value is a symlink target."""
+    name = STEM + ".tar.bz2"
+    with tarfile.open(src / name, "w:bz2") as t:
+        for n, d in members.items():
+            info = tarfile.TarInfo(n)
+            if isinstance(d, str):
+                info.type, info.linkname = tarfile.SYMTYPE, d
+                t.addfile(info)
+            else:
+                info.size = len(d)
+                t.addfile(info, io.BytesIO(d))
+    d = (src / name).read_bytes()
+    return weights.WeightFile(name, len(d), hashlib.sha256(d).hexdigest())
+
+
+def packed(base, arc, **wrong):
+    return weights.Pin("t", "test", base, "rel", "CC0", pin(base, **wrong).files, "t", arc)
+
+
+def test_an_archive_gives_its_pinned_files_only_and_is_removed(server, tmp_path):
+    base, src, seen = server
+    p = packed(base, archive(src, {**MEMBERS, f"{STEM}/README.md": b"x"}))
+    said = []
+    path = weights.ensure(p, str(tmp_path / "m"), log=said.append)
+    assert {n: open(os.path.join(path, n), "rb").read() for n in FILES} == FILES
+    assert sorted(os.listdir(path)) == sorted(FILES)
+    assert seen == [f"/{STEM}.tar.bz2"] and "revision rel " in said[0]
+    assert weights.ensure(p, str(tmp_path / "m"), log=said.append) == path
+    assert len(seen) == 1
+
+
+def test_names_in_an_archive_choose_nothing_outside_the_model_directory(server, tmp_path):
+    base, src, _seen = server
+    arc = archive(src, {**MEMBERS, f"{STEM}/../../escaped": b"x", "../escaped": b"x"})
+    path = weights.ensure(packed(base, arc), str(tmp_path / "m" / "deep"), log=print)
+    assert sorted(os.listdir(path)) == sorted(FILES)
+    assert [f for _d, _s, fs in os.walk(tmp_path / "m") for f in fs if "escaped" in f] == []
+
+
+@pytest.mark.parametrize(
+    "case, why",
+    [
+        ("archive sha256", f"{STEM}.tar.bz2: sha256"),
+        ("file sha256", "model.onnx: sha256"),
+        ("symlink", "model.onnx: not a regular file"),
+        ("absent", f"{STEM}.tar.bz2: no model.onnx"),
+    ],
+)
+def test_an_archive_failing_a_check_is_refused_and_not_kept(server, tmp_path, case, why):
+    base, src, _seen = server
+    model = f"{STEM}/model.onnx"
+    members = {
+        "symlink": {**MEMBERS, model: "../../../outside"},
+        "absent": {n: d for n, d in MEMBERS.items() if n != model},
+    }.get(case, MEMBERS)
+    arc = archive(src, members)
+    if case == "archive sha256":
+        arc = weights.WeightFile(arc.name, arc.size, "0" * 64)
+    wrong = {"model.onnx": {"sha256": "0" * 64}} if case == "file sha256" else {}
+    with pytest.raises(weights.WeightsError, match=why):
+        weights.ensure(packed(base, arc, **wrong), str(tmp_path / "m"), log=print)
+    left = os.listdir(tmp_path / "m" / "t")
+    assert "model.onnx" not in left and not any(n.endswith((".bz2", ".part")) for n in left)

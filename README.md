@@ -119,16 +119,16 @@ failed, an error) in `events.jsonl` and `feed.log`, and `live_asr` in
 uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --live-asr nemotron
 ```
 
-Its weights (0.68 GB) are fetched and checked like the others. It decodes 560 ms
-of audio at a time on one CPU thread (`--live-asr-threads`), about half a core
-per player talking; its threads run at a lower priority (nice + 10) than the
-`--asr` recognizer, and when it falls more than 1.5 s behind, it drops what is
-queued: the utterances open at that moment get no more live text, their final
-text comes as always. The model needs some speech before it says anything:
-under 1.5 s most utterances get no live text, from 3 s on it usually shows up
-in the first half. It runs on any x86-64; on a CPU without AVX2 it is slower
-(not measured). A model that fails to load is named in a red `asr` line and the
-run goes on without it.
+Its weights (0.68 GB, a 0.48 GB archive to download) are fetched and checked
+like the others. It decodes 560 ms of audio at a time on one CPU thread
+(`--live-asr-threads`), about half a core per player talking; its threads run at
+a lower priority (nice + 10) than the `--asr` recognizer, and when it falls more
+than 1.5 s behind, it drops what is queued: the utterances open at that moment
+get no more live text, their final text comes as always. The model needs some
+speech before it says anything: under 1.5 s most utterances get no live text,
+from 3 s on it usually shows up in the first half. It runs on any x86-64; on a
+CPU without AVX2 it is slower (not measured). A model that fails to load is
+named in a red `asr` line and the run goes on without it.
 
 The SteamID a voice line names comes from the voice data, which the speaker's
 own game writes; the slot the data came from is the server's, and the server's
@@ -268,7 +268,8 @@ The tests need no network beyond loopback, no game server and no model weights;
 they use synthetic tones and noise, never speech. The tests with the real models
 run on their own: `uv run pytest -m model` (they use the weights in the default
 place, or the directory in `STV_WATCH_MODELS`; the Nemotron test also fetches the
-English sample of its export, 229 KB).
+English sample of its export from Hugging Face, 229 KB, as the k2-fsa archive
+has none).
 `tools/local_srcds.py` starts a loopback dedicated server with SourceTV for
 manual checks, `tools/tmux_check.sh` checks the screen in a real terminal.
 How the protocol works: [docs/protocol.md](docs/protocol.md).
@@ -292,6 +293,7 @@ it uses, `silero_vad.onnx` (v4), is the ONNX export published by k2-fsa in the
 `asr-models` release of [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
 Nemotron 3.5 ASR Streaming 0.6B is by NVIDIA
 ([nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b),
-OpenMDW-1.1); the ONNX int8 export it uses is
-[csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11](https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11),
-by the author of sherpa-onnx.
+OpenMDW-1.1); the ONNX int8 export it uses,
+`sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2`, is
+published by k2-fsa in the same `asr-models` release of
+[k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).

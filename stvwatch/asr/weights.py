@@ -4,11 +4,16 @@ each file checked by size and sha256 before it takes its name.
 A file is written to NAME.part and renamed only after both checks pass; a
 failed check removes it. So a file under its own name has passed the check
 once, and a start only looks that every file is there with its size.
+
+A pin with an `archive` is a .tar.bz2 whose own size and sha256 are checked
+first; then only the pinned files are taken from it, each checked again, and
+the archive is removed.
 """
 
 import hashlib
 import os
 import sys
+import tarfile
 import urllib.request
 from dataclasses import dataclass
 
@@ -29,6 +34,8 @@ class Pin:
     license: str
     files: tuple
     dirname: str = ""  # under the models directory; ENGINE-REVISION[:7] if empty
+    # a .tar.bz2 at `source` holding the files under its own stem
+    archive: WeightFile | None = None
 
     @property
     def size(self):
@@ -36,7 +43,6 @@ class Pin:
 
 
 _PARAKEET_REV = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
-_NEMOTRON_REV = "ab43d895f5985b1bbab8b6eac8607fcdc05343f3"
 PINS = {
     "parakeet": Pin(
         engine="parakeet",
@@ -91,12 +97,16 @@ PINS = {
     "nemotron": Pin(
         engine="nemotron",
         title="Nemotron 3.5 ASR Streaming 0.6B, 560 ms chunks (ONNX int8 export of "
-        "nvidia/nemotron-3.5-asr-streaming-0.6b by the sherpa-onnx author)",
-        source="https://huggingface.co/csukuangfj2/"
-        "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11/resolve/"
-        + _NEMOTRON_REV,
-        revision=_NEMOTRON_REV,
+        "nvidia/nemotron-3.5-asr-streaming-0.6b by k2-fsa)",
+        source="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models",
+        revision="asr-models",
         license="OpenMDW-1.1",
+        archive=WeightFile(
+            "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2",
+            475271763,
+            "c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a",
+        ),
+        dirname="nemotron-560ms-int8-2026-06-11",
         files=(
             WeightFile(
                 "tokens.txt",
@@ -154,7 +164,7 @@ def ensure(pin, models_dir, log=None, timeout=60.0):
     need = missing(pin, path)
     if not need:
         return path
-    size = sum(f.size for f in need)
+    size = pin.archive.size if pin.archive else sum(f.size for f in need)
     amount = f"{size / 1e9:.2f} GB" if size >= 1e8 else f"{size / 1e6:.2f} MB"
     rev = pin.revision[:7] if len(pin.revision) == 40 else pin.revision
     log(
@@ -165,20 +175,33 @@ def ensure(pin, models_dir, log=None, timeout=60.0):
         os.makedirs(path, exist_ok=True)
     except OSError as e:
         raise WeightsError(f"cannot create {path}: {e.strerror}") from e
-    for f in need:
-        fetch(f"{pin.source}/{f.name}", os.path.join(path, f.name), f, timeout)
+    if pin.archive:
+        unpack(pin, path, need, timeout)
+    else:
+        for f in need:
+            fetch(f"{pin.source}/{f.name}", os.path.join(path, f.name), f, timeout)
     log(f"stv-watch: {pin.engine} weights verified ({len(need)} files)")
     return path
 
 
 def fetch(url, dest, want, timeout=60.0):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            store(r, dest, want)
+    except OSError as e:
+        raise WeightsError(f"{want.name}: {e}") from e
+
+
+def store(src, dest, want):
+    """Copy the stream `src` to `dest` through dest.part, renamed only once
+    the size and sha256 match `want`."""
     part = dest + ".part"
     h = hashlib.sha256()
     got = 0
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r, open(part, "wb") as out:
+        with open(part, "wb") as out:
             while True:
-                chunk = r.read(1 << 20)
+                chunk = src.read(1 << 20)
                 if not chunk:
                     break
                 h.update(chunk)
@@ -189,9 +212,35 @@ def fetch(url, dest, want, timeout=60.0):
         if h.hexdigest() != want.sha256:
             raise WeightsError(f"{want.name}: sha256 {h.hexdigest()}, want {want.sha256}")
         os.replace(part, dest)
-    except BaseException as e:
+    except BaseException:
         if os.path.exists(part):
             os.remove(part)
-        if isinstance(e, OSError):
-            raise WeightsError(f"{want.name}: {e}") from e
         raise
+
+
+def unpack(pin, path, need, timeout):
+    """Fetch the archive of `pin` into `path`, take the files in `need` out of
+    it, remove it. Members are matched by the pinned names and written under
+    them, so no name inside the archive chooses where anything lands."""
+    tar = os.path.join(path, pin.archive.name)
+    stem = pin.archive.name.removesuffix(".tar.bz2")
+    want = {f"{stem}/{f.name}": f for f in need}
+    try:
+        fetch(f"{pin.source}/{pin.archive.name}", tar, pin.archive, timeout)
+        # one pass: a bz2 stream cannot seek back without decoding it again
+        with tarfile.open(tar, "r:bz2") as t:
+            for m in t:
+                f = want.pop(m.name, None)
+                if f is None:
+                    continue
+                if not m.isfile():
+                    raise WeightsError(f"{f.name}: not a regular file in {pin.archive.name}")
+                store(t.extractfile(m), os.path.join(path, f.name), f)
+    except (OSError, tarfile.TarError) as e:
+        raise WeightsError(f"{pin.archive.name}: {e}") from e
+    finally:
+        if os.path.exists(tar):
+            os.remove(tar)
+    if want:
+        names = ", ".join(f.name for f in want.values())
+        raise WeightsError(f"{pin.archive.name}: no {names}")

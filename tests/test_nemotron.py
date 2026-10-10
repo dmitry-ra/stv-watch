@@ -118,17 +118,23 @@ def test_nemotron_is_a_live_engine_only():
         asr.build_live("parakeet", 1, "models")
 
 
-def test_the_nemotron_pin_is_the_measured_revision():
+def test_the_nemotron_pin_is_the_measured_archive():
     p = weights.PINS["nemotron"]
-    assert p.revision == "ab43d895f5985b1bbab8b6eac8607fcdc05343f3" and p.source.endswith(
-        p.revision
-    )
+    assert p.source == "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models"
+    assert (p.archive.size, p.archive.sha256[:12]) == (475_271_763, "c6bf5e0df765")
     assert sorted(f.name for f in p.files) == sorted(nemotron.FILES.values())
     assert p.size == 682_215_356
+    assert weights.model_dir(p, "/m") == "/m/nemotron-560ms-int8-2026-06-11"
 
 
 MODELS = os.environ.get("STV_WATCH_MODELS") or weights.default_dir()
-# the English sample the export ships with, at the pinned revision
+# The k2-fsa archive ships no English sample; this one comes with the same
+# export on Hugging Face, at a pinned revision.
+SAMPLE_SOURCE = (
+    "https://huggingface.co/csukuangfj2/"
+    "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11/resolve/"
+    "ab43d895f5985b1bbab8b6eac8607fcdc05343f3"
+)
 SAMPLE = weights.WeightFile(
     "test_wavs/en.wav", 228908, "eb1eb008904465b74c304aad8342e8c7d3c6e61ffe9f66adcaca9cf0f76a93f4"
 )
@@ -140,11 +146,10 @@ def sample(*engines):
         pin = weights.PINS[name]
         if weights.missing(pin, weights.model_dir(pin, MODELS)):
             pytest.skip(f"no {name} weights in {MODELS}")
-    pin = weights.PINS["nemotron"]
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "en.wav")
         try:
-            weights.fetch(f"{pin.source}/{SAMPLE.name}", path, SAMPLE)
+            weights.fetch(f"{SAMPLE_SOURCE}/{SAMPLE.name}", path, SAMPLE)
         except weights.WeightsError as e:
             pytest.skip(f"no sample: {e}")
         with wave.open(path) as w:
