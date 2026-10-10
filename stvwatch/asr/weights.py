@@ -161,6 +161,7 @@ def ensure(pin, models_dir, log=None, timeout=60.0):
     there. Raises WeightsError when a file cannot be fetched or fails a check."""
     log = log or (lambda text: print(text, file=sys.stderr, flush=True))
     path = model_dir(pin, models_dir)
+    sweep(pin, path)
     need = missing(pin, path)
     if not need:
         return path
@@ -184,18 +185,25 @@ def ensure(pin, models_dir, log=None, timeout=60.0):
     return path
 
 
+def sweep(pin, path):
+    """Remove what a killed earlier download can leave: a .part of any file and
+    the archive with its .part. A clean exit removes them itself; a SIGKILL or a
+    power cut does not, and a cache with every file present never gets that far."""
+    names = [f.name + ".part" for f in pin.files]
+    if pin.archive:
+        names += [pin.archive.name, pin.archive.name + ".part"]
+    for n in names:
+        p = os.path.join(path, n)
+        if os.path.isfile(p):
+            os.remove(p)
+
+
 def fetch(url, dest, want, timeout=60.0):
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             store(r, dest, want)
-    except BaseException as e:
-        # store() cleans up after itself; a .part left by a killed earlier run
-        # is still here when the request fails before store() starts
-        if os.path.exists(dest + ".part"):
-            os.remove(dest + ".part")
-        if isinstance(e, OSError):
-            raise WeightsError(f"{want.name}: {e}") from e
-        raise
+    except OSError as e:
+        raise WeightsError(f"{want.name}: {e}") from e
 
 
 def store(src, dest, want):
@@ -242,6 +250,8 @@ def unpack(pin, path, need, timeout):
                 if not m.isfile():
                     raise WeightsError(f"{f.name}: not a regular file in {pin.archive.name}")
                 store(t.extractfile(m), os.path.join(path, f.name), f)
+                if not want:
+                    break
     except (OSError, tarfile.TarError) as e:
         raise WeightsError(f"{pin.archive.name}: {e}") from e
     finally:

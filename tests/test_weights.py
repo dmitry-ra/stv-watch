@@ -154,8 +154,11 @@ def test_an_archive_gives_its_pinned_files_only_and_is_removed(server, tmp_path)
     assert {n: open(os.path.join(path, n), "rb").read() for n in FILES} == FILES
     assert sorted(os.listdir(path)) == sorted(FILES)
     assert seen == [f"/{STEM}.tar.bz2"] and "revision rel " in said[0]
+    # what a SIGKILL after the last file can leave: the cache hit removes it
+    for n in (f"{STEM}.tar.bz2", f"{STEM}.tar.bz2.part", "model.onnx.part"):
+        open(os.path.join(path, n), "wb").close()
     assert weights.ensure(p, str(tmp_path / "m"), log=said.append) == path
-    assert len(seen) == 1
+    assert len(seen) == 1 and sorted(os.listdir(path)) == sorted(FILES)
 
 
 def test_names_in_an_archive_choose_nothing_outside_the_model_directory(server, tmp_path):
