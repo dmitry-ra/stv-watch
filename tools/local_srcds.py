@@ -27,11 +27,16 @@ from stvwatch.net import a2s
 def _pidfd_works():
     """CPython compiles the wrappers only when the build's kernel headers
     define the syscalls (uv's standalone builds lack them on every version),
-    and the running kernel may still answer ENOSYS."""
+    the running kernel may still answer ENOSYS, and a seccomp filter may allow
+    one call and refuse the other."""
     if not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")):
         return False
     try:
-        os.close(os.pidfd_open(os.getpid()))
+        fd = os.pidfd_open(os.getpid())
+        try:
+            signal.pidfd_send_signal(fd, 0)
+        finally:
+            os.close(fd)
     except OSError:
         return False
     return True
@@ -49,16 +54,21 @@ def _started(pid):
         return None
 
 
-def _pin(pid):
+def _pin(pid, born):
     """A handle that cannot come to mean whoever gets the PID next: a pidfd,
-    else the PID with its start time. None once the process is gone."""
-    if PIDFD:
-        try:
-            return os.pidfd_open(pid)
-        except ProcessLookupError:
-            return None
-    born = _started(pid)
-    return None if born is None else (pid, born)
+    else the PID with its start time `born`. None once `pid` no longer names
+    the process started at `born`."""
+    if not PIDFD:
+        return (pid, born)
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return None
+    # Checked after opening: the PID may have changed hands since `born` was read.
+    if _started(pid) != born:
+        os.close(fd)
+        return None
+    return fd
 
 
 def _kill(handle):
@@ -196,7 +206,7 @@ class LocalSrcds:
                 continue
             for kid in kids:
                 kid_born = _started(kid)
-                handle = None if kid_born is None else _pin(kid)
+                handle = None if kid_born is None else _pin(kid, kid_born)
                 if handle is not None:
                     out.append(handle)
                     todo.append((kid, kid_born))
