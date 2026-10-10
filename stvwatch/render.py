@@ -50,6 +50,10 @@ STYLES = {
     "inv": "\x1b[7m",
     "rule": "\x1b[34m",
     "rulelabel": "\x1b[1;34m",
+    # an --attach screen's rule: q there closes the screen, not the engine
+    "arule": "\x1b[35m",
+    "arulelabel": "\x1b[1;35m",
+    "quit": "\x1b[2m",
     # feed lines by weight: joins and leaves in 256-colour shades of their
     # own, apart from the plain green and red of our connection lines
     "boldyellow": "\x1b[1;33m",
@@ -141,23 +145,23 @@ def tail(text, cols):
 
 
 RULE = "\u2500"  # box drawing light horizontal
+BARS = {"bar": ("rule", "rulelabel"), "abar": ("arule", "arulelabel")}
 
 
 def bar_line(spans, cols, color=True):
-    """The separator from a line whose last span has style "bar": its text as
-    a label in colour on the normal background, then a thin coloured rule to
+    """The separator from a line whose last span has a style of BARS: its text
+    as a label in colour on the normal background, then a thin coloured rule to
     cols - 1. Without colour the rule is '-'."""
     label = "".join(t for t, _s in spans)
     rest = max(0, cols - 1 - width(label) - 2)
     if not color:
         return ("--" + label + "-" * rest)[: max(0, cols - 1)]
-    return to_ansi(
-        fit([(RULE * 2, "rule"), (label, "rulelabel"), (RULE * rest, "rule")], cols - 1)[0], True
-    )
+    rule, lab = BARS[spans[-1][1]]
+    return to_ansi(fit([(RULE * 2, rule), (label, lab), (RULE * rest, rule)], cols - 1)[0], True)
 
 
 def is_bar(spans):
-    return bool(spans) and spans[-1][1] == "bar"
+    return bool(spans) and spans[-1][1] in BARS
 
 
 def rows_for(spans, cols):

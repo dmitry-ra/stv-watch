@@ -399,6 +399,42 @@ def test_q_closes_the_attached_screen(sock):
     eng.stop()
 
 
+def test_an_attached_screen_is_marked_and_says_q_leaves_the_engine_running(sock, tmp_path):
+    """The block of a local run and the same block on an --attach screen: the
+    rule there is labelled and has a colour of its own, the hint says q
+    closes the screen only; the status line with its source word is as sent."""
+    from stvwatch import version
+    from stvwatch.source import Pacer
+
+    app = App(parse_args(["--replay", "x.tvd", "--out", str(tmp_path)]))
+    app.pacer = Pacer(False)
+    block = app.block()
+    eng = served_screen(sock)
+    c = serve.Attached(sock, tty_screen())
+    assert c.connect()
+    eng.draw(block)
+    until(lambda: (c.step(0.01), c.block)[1])
+
+    def drawn(lines):
+        out = FakeTty()
+        Screen(out=out, color=True, size=lambda: (120, 20)).draw(lines)
+        return out.getvalue()
+
+    v = version.version()
+    local, att = drawn(block), drawn(c.view())
+    assert f"\x1b[1;34m stv-watch {v} \x1b[0m\x1b[34m\u2500" in local
+    assert "q quit - stops the engine  " in local
+    assert "\u00b7 attached" not in local and "keeps running" not in local
+    assert f"\x1b[1;35m stv-watch {v} \u00b7 attached \x1b[0m\x1b[35m\u2500" in att
+    assert "q close screen - engine keeps running  " in att
+    assert "\x1b[1;34m" not in att and "stops the engine" not in att
+    view = c.view()
+    assert view[1] == [("attach ", "blue"), (sock, ""), ("  engine pid 1", "")]
+    assert view[2] == block[1] and view[2][0] == ("REPLAY ", "bold")
+    c.close()
+    eng.stop()
+
+
 def test_attached_plain_screen_prints_the_lines_of_a_local_plain_run(sock, tmp_path, monkeypatch):
     """The sample through --serve and an --attach --plain process."""
     hold_start(monkeypatch, 1)

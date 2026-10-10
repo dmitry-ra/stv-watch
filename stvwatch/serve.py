@@ -31,13 +31,15 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .render import Screen, clean
+from .render import Screen, clean, is_bar
 
 PROTO = 1
 HISTORY = 200
 CLIENT_BUF = 1 << 20
 DRAIN_S = 1.0  # at exit, how long the last bytes may take to reach the clients
 RETRY_S = 0.5
+ATTACHED = "\u00b7 attached "  # after the engine's version in the rule
+CLOSE_HINT = "q close screen - engine keeps running  "
 
 
 class ServeError(Exception):
@@ -514,10 +516,10 @@ class Attached:
         if self.sock is None:
             secs = int(time.monotonic() - self.lost_at)
             return line + [(f"  engine gone, reconnecting {secs}s", "yellow")]
-        return line + [(f"  engine pid {pid}", ""), ("  q closes this screen only", "dim")]
+        return line + [(f"  engine pid {pid}", "")]
 
     def view(self):
-        block = self.block or [[(" stv-watch ", "bar")]]
+        block = [_as_attached(spans) for spans in self.block or [[(" stv-watch ", "bar")]]]
         return block[:1] + [self.attach_line()] + block[1:]
 
     def _draw(self, status=False):
@@ -539,6 +541,14 @@ class Attached:
             return []
         v = self.view()
         return v if self.ended else v[:-1]
+
+
+def _as_attached(spans):
+    """An engine's block line as an --attach screen shows it: the rule marked
+    and in a colour of its own, the quit hint saying what q does here."""
+    if is_bar(spans):
+        return spans[:-1] + [(spans[-1][0] + ATTACHED, "abar")]
+    return [(CLOSE_HINT, s) if s == "quit" else (t, s) for t, s in spans]
 
 
 def attach(a):

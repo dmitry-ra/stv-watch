@@ -45,7 +45,7 @@ uv run stv-watch --relay RELAY_IP:27020
 ```
 
 The feed scrolls above a status block pinned to the bottom of the terminal; `q`
-quits. Before connecting, stv-watch asks the relay (A2S_INFO) whether it can take
+quits, which stops receiving and recording. Before connecting, stv-watch asks the relay (A2S_INFO) whether it can take
 a spectator and refuses when it should not (see Responsible use).
 
 Replay a recording, as fast as possible or at its own pace:
@@ -171,10 +171,20 @@ uv run stv-watch --attach noob                                         # in any 
 uv run stv-watch --attach noob --plain                                 # finished lines only
 ```
 
-The attached screen looks like a local run, with one more line in the block:
-`attach SOCKET  engine pid N`. On connect it gets the last 200 feed lines, the
-voice lines still open and the block, then follows the engine. `q` closes only
-that screen. When the engine goes away the screen waits for it, and when an
+The attached screen is the engine's screen, marked so that it is not taken for
+the engine itself, since `q` does different things there:
+
+| | local run | `--attach` screen |
+|---|---|---|
+| label of the rule over the block | `stv-watch 0.4.0`, blue | `stv-watch 0.4.0`, a middle dot, `attached`; magenta |
+| hint line | `q quit - stops the engine` | `q close screen - engine keeps running` |
+| one more block line | | `attach SOCKET  engine pid N` |
+
+The source word of the status line (`LIVE`, `REPLAY`, `FOLLOW`) is the engine's
+and stays as it is. In a local run `q` stops receiving and recording; on an
+attached screen it closes only that screen. On connect the screen gets the last
+200 feed lines, the voice lines still open and the block, then follows the
+engine. When the engine goes away the screen waits for it, and when an
 engine serves the socket again it reconnects by itself and says so in one feed
 line. A client that does not keep up is dropped and reconnects; the engine never
 waits for a screen. The engine's stdout gets its finished feed lines (as
