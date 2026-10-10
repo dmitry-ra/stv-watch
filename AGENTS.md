@@ -72,8 +72,9 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
 - The same lines are in `events.jsonl` of the session directory, whose path is at
   the end of the `done` line's text (`... -> DIR`).
 - The first line also has `version`, the stv-watch build that wrote the
-  session (`stv-watch --version`; `0.1.0+g976b9ae` from a git checkout, with
-  `.dirty` for uncommitted changes). Quote it when you report a problem.
+  session (`stv-watch --version`; `0.1.0+g976b9ae` from a git checkout off the
+  release tag, with `.dirty` for uncommitted changes). Quote it when you report
+  a problem.
 
 ## Exit codes
 

@@ -2,6 +2,7 @@
 whatever git does, the start goes on."""
 
 import os
+import shutil
 import subprocess
 import tomllib
 
@@ -47,6 +48,36 @@ def test_the_commit_is_added_only_when_git_names_one(tmp_path, checkout, run, wa
     assert b["version"] == want
     assert (b["commit"] is None) == (want == "0.1.0")
     assert len(run.calls) == checkout
+
+
+@pytest.mark.skipif(not shutil.which("git"), reason="needs git")
+@pytest.mark.parametrize(
+    "tag, edit, want",
+    [
+        ("v0.1.0", False, "0.1.0"),
+        ("v0.1.0", True, "0.1.0+g{}.dirty"),
+        ("v0.0.9", False, "0.1.0+g{}"),
+    ],
+    ids=["at-the-tag", "at-the-tag-edited", "another-release-tag"],
+)
+def test_at_the_release_tag_the_release_stands_alone(tmp_path, monkeypatch, tag, edit, want):
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+    def sh(*args):
+        cmd = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *args]
+        return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout.strip()
+
+    sh("init", "-q")
+    (tmp_path / "f").write_text("1\n")
+    sh("add", "f")
+    sh("commit", "-q", "-m", "c")
+    sh("tag", "-a", tag, "-m", tag)
+    if edit:
+        (tmp_path / "f").write_text("2\n")
+    head = sh("rev-parse", "HEAD")
+    b = version.describe("0.1.0", version.git_state(str(tmp_path), release="0.1.0"))
+    assert (b["version"], b["commit"]) == (want.format(head[:7]), head)
 
 
 def test_version_prints_the_package_version_from_pyproject(capsys):

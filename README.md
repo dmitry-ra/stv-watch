@@ -46,7 +46,7 @@ uv run stv-watch --relay RELAY_IP:27020
 ```
 
 The feed scrolls above a status block pinned to the bottom of the terminal; `q`
-quits. Before connecting, stv-watch asks the relay (A2S_INFO) whether it can take
+quits, which stops receiving and recording. Before connecting, stv-watch asks the relay (A2S_INFO) whether it can take
 a spectator and refuses when it should not (see Responsible use).
 
 Replay a recording, as fast as possible or at its own pace:
@@ -172,15 +172,27 @@ uv run stv-watch --attach noob                                         # in any 
 uv run stv-watch --attach noob --plain                                 # finished lines only
 ```
 
-The attached screen looks like a local run, with one more line in the block:
-`attach SOCKET  engine pid N`. On connect it gets the last 200 feed lines, the
-voice lines still open and the block, then follows the engine. `q` closes only
-that screen. When the engine goes away the screen waits for it, and when an
+The attached screen is the engine's screen, marked so that it is not taken for
+the engine itself, since `q` does different things there:
+
+| | local run | `--attach` screen |
+|---|---|---|
+| label of the rule over the block | `stv-watch 0.4.0`, blue | `stv-watch 0.4.0`, a middle dot, `attached`; magenta |
+| hint line | `q quit - stops the engine` | `q close screen - engine keeps running` |
+| one more block line | | `attach SOCKET  engine pid N` |
+
+The source word of the status line (`LIVE`, `REPLAY`, `FOLLOW`) is the engine's
+and stays as it is. In a local run `q` stops receiving and recording; on an
+attached screen it closes only that screen. On connect the screen gets the last
+200 feed lines, the voice lines still open and the block, then follows the
+engine. When the engine goes away the screen waits for it, and when an
 engine serves the socket again it reconnects by itself and says so in one feed
 line. A client that does not keep up is dropped and reconnects; the engine never
 waits for a screen. The engine's stdout gets its finished feed lines (as
 `--plain` without status lines); a socket file left by an engine that died is
-taken over, one that a live engine serves is refused.
+taken over, one that a live engine serves is refused. A screen and an engine of
+different socket protocol versions (0.4.0 brought protocol 2) do not work
+together: the screen names both versions and exits.
 
 ### For scripts and agents
 
@@ -207,21 +219,23 @@ as plain text lines. [AGENTS.md](AGENTS.md) is a guide for agents that run it.
 
 Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording),
 2 when the relay was refused before connecting, the command line is wrong, no
-engine serves the socket given to `--attach`, the socket of `--serve` is taken or the
-recognizer could not start (its weights could not be fetched or checked, or the
-model failed to load), 3 when the network client stopped on its own (the relay
-refuses us for a reason retrying will not change).
+engine serves the socket given to `--attach` or it speaks another protocol version,
+the socket of `--serve` is taken or the recognizer could not start (its weights
+could not be fetched or checked, or the model failed to load), 3 when the network
+client stopped on its own (the relay refuses us for a reason retrying will not
+change).
 
 ## Version
 
 `uv run stv-watch --version` prints the version: the release from
 `pyproject.toml`, and when run from a git checkout also the commit, as a PEP 440
 local label: `0.1.0+g976b9ae`, or `0.1.0+g976b9ae.dirty` when tracked files
-differ from that commit. Without git, or outside a checkout, it is the release
-alone (`0.1.0`). Every run names the same string in the status block, at the end
-of its first feed line (screen, `--plain`, `--monitor` and `feed.log`), as the
-`version` field of its first JSON line, in `meta.json` and in each session
-start record of `capture.tvd`.
+differ from that commit. Without git, outside a checkout, or at the release's
+own tag (`v0.1.0`) with no changes, it is the release alone (`0.1.0`). Every run
+names the same string in the status block, at the end of its first feed line
+(screen, `--plain`, `--monitor` and `feed.log`), as the `version` field of its
+first JSON line, in `meta.json` and in each session start record of
+`capture.tvd`.
 
 ## Session files
 

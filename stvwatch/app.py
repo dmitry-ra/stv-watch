@@ -95,6 +95,7 @@ LINE_STYLE = {
     "done": "",
 }
 HUD_PRINTTALK = 3
+QUIT_HINT = "q quit - stops the engine  "  # an --attach screen shows its own (serve.py)
 
 
 def line_style(typ, state=None):
@@ -1065,7 +1066,7 @@ class App:
                 L.append([("asr  ", "blue"), (self.model, ""), st_span, lag])
             L[-1] += self.live_block(dbg)
 
-        L.append([("q quit  ", "dim"), (self.dir, "dim")])
+        L.append([(QUIT_HINT, "quit"), (self.dir, "dim")])
         return L
 
     def live_block(self, dbg):

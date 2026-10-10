@@ -20,8 +20,9 @@ Every run of stv-watch writes one directory:
 
 `events.jsonl`, `feed.log`, `meta.json` and `capture.tvd` name the stv-watch
 version that wrote them, as `stv-watch --version` prints it:
-`0.1.0` for a plain release, `0.1.0+g976b9ae` when run from a git checkout at
-that commit, `0.1.0+g976b9ae.dirty` when tracked files differ from it.
+`0.1.0` for a plain release (also from a git checkout at the tag `v0.1.0` with
+no changes), `0.1.0+g976b9ae` when run from a git checkout at that commit,
+`0.1.0+g976b9ae.dirty` when tracked files differ from it.
 `transcript.tsv` and `audio/` go by the session's version and carry none of
 their own.
 
