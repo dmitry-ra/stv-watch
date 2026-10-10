@@ -1,8 +1,9 @@
 # How stv-watch talks to a relay
 
 A short map of the protocol as stv-watch uses it, for whoever changes the client.
-It was worked out from the public Source SDK 2013 headers and from observing
-relays; no SDK code is included here. Module names are under `stvwatch/`.
+It was worked out from the public Source SDK 2013 headers, from public analyses
+of how the engine behaves and from observing relays; no engine or SDK code is
+included here. Module names are under `stvwatch/`.
 Earlier public work it builds on: [prior-art.md](prior-art.md).
 
 ## Processes

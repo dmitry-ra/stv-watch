@@ -92,9 +92,11 @@ def test_a_killed_viewer_still_leaves_the_relay(tmp_path):
 
 
 def test_q_on_the_normal_screen_leaves_the_relay(tmp_path):
+    """q waits for the connection: the screen draws before the client's first
+    attempt, and a stop that early rightly leaves with nothing to free."""
     with FakeRelay() as r:
         cmd = STV + ["--relay", r.addr, "--out", str(tmp_path)]
-        rc, drawn = run_on_tty(cmd, ENV, keys=b"q")
+        rc, drawn = run_on_tty(cmd, ENV, keys=b"q", ready=lambda: r.connected() == 1)
         assert rc == 0 and b"LIVE" in drawn
         assert r.wait(lambda: len(r.disconnects) == 2)
         assert r.disconnects == [(1, LEAVE), (1, LEAVE)]

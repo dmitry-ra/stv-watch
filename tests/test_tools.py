@@ -1,8 +1,11 @@
 """The developer tools: tools/local_srcds.py stops only what it started, and
 tools/tmux_check.sh never takes over a tmux session it did not create."""
 
+import errno
+import importlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -42,10 +45,7 @@ def tree(pid):
     return out
 
 
-@pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
-def test_stopping_the_local_server_signals_only_processes_still_its_own(tmp_path, monkeypatch):
-    """srcds exits on `quit`; a signal sent afterwards by its PID number
-    would reach whatever process got that number next."""
+def start_stand_in(tmp_path):
     exe = tmp_path / "srcds_linux"
     exe.write_text(STAND_IN)
     exe.chmod(0o755)
@@ -53,6 +53,11 @@ def test_stopping_the_local_server_signals_only_processes_still_its_own(tmp_path
     end = time.monotonic() + 10
     while len(tree(s.proc.pid)) < 2 and time.monotonic() < end:
         time.sleep(0.05)
+    return s
+
+
+def stop_and_check(s, monkeypatch):
+    """(processes in the tree, signals that would hit a reused PID, survivors)"""
     born = {p: started(p) for p in tree(s.proc.pid)}
     stale = []
     real = os.kill
@@ -66,7 +71,117 @@ def test_stopping_the_local_server_signals_only_processes_still_its_own(tmp_path
     monkeypatch.setattr(local_srcds.os, "kill", kill)
     s.stop()
     alive = [p for p in born if started(p) == born[p]]
-    assert (len(born), stale, alive) == (2, [], [])
+    return len(born), stale, alive
+
+
+@pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
+@pytest.mark.parametrize(
+    "pidfd",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(not local_srcds.PIDFD, reason="this Python has no pidfd"),
+        ),
+    ],
+)
+def test_stopping_the_local_server_signals_only_processes_still_its_own(
+    tmp_path, monkeypatch, pidfd
+):
+    """srcds exits on `quit`; a signal sent afterwards by its PID number
+    would reach whatever process got that number next."""
+    monkeypatch.setattr(local_srcds, "PIDFD", pidfd)
+    s = start_stand_in(tmp_path)
+    assert stop_and_check(s, monkeypatch) == (2, [], [])
+
+
+@pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
+@pytest.mark.parametrize(
+    "refused",
+    [(os, "pidfd_open", errno.ENOSYS), (signal, "pidfd_send_signal", errno.EPERM)],
+    ids=["kernel-enosys", "seccomp-send"],
+)
+def test_a_kernel_without_pidfd_falls_back_to_start_times(tmp_path, monkeypatch, refused):
+    """The wrappers can exist while the kernel answers ENOSYS, or a seccomp
+    filter lets pidfd_open through and refuses pidfd_send_signal."""
+    module, name, code = refused
+
+    def refuse(*_):
+        raise OSError(code, os.strerror(code))
+
+    monkeypatch.setattr(local_srcds, "PIDFD", local_srcds.PIDFD)  # undone after reload
+    monkeypatch.setattr(module, name, refuse, raising=False)
+    importlib.reload(local_srcds)
+    assert local_srcds.PIDFD is False
+    s = start_stand_in(tmp_path)
+    assert stop_and_check(s, monkeypatch) == (2, [], [])
+
+
+@pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
+def test_children_of_a_reused_pid_are_not_taken(tmp_path, monkeypatch):
+    """The PID changes hands between queueing it and reading its children."""
+    monkeypatch.setattr(local_srcds, "PIDFD", False)
+    s = start_stand_in(tmp_path)
+    try:
+        middle = tree(s.proc.pid)[0]
+        seen = []
+        real = local_srcds._started
+
+        def started_once(pid):
+            if pid != middle:
+                return real(pid)
+            seen.append(pid)
+            return real(pid) if len(seen) == 1 else "someone else"
+
+        with monkeypatch.context() as m:
+            m.setattr(local_srcds, "_started", started_once)
+            taken = [pid for pid, _ in s._descendants()]
+        assert taken == [middle]
+    finally:
+        s.stop()
+
+
+@pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
+@pytest.mark.parametrize(
+    "pidfd",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(not local_srcds.PIDFD, reason="this Python has no pidfd"),
+        ),
+    ],
+)
+def test_a_child_whose_pid_changes_hands_before_pinning_is_not_signalled(
+    tmp_path, monkeypatch, pidfd
+):
+    """The child dies and its PID is reused between reading its start time
+    and pinning it."""
+    monkeypatch.setattr(local_srcds, "PIDFD", pidfd)
+    s = start_stand_in(tmp_path)
+    try:
+        middle = tree(s.proc.pid)[0]
+        seen, signalled = [], []
+        real = local_srcds._started
+
+        def started_once(pid):
+            if pid != middle:
+                return real(pid)
+            seen.append(pid)
+            return real(pid) if len(seen) == 1 else "someone else"
+
+        def pidfd_signal(fd, sig):
+            with open(f"/proc/self/fdinfo/{fd}") as f:
+                signalled.extend(int(x.split()[1]) for x in f if x.startswith("Pid:"))
+
+        with monkeypatch.context() as m:
+            m.setattr(local_srcds, "_started", started_once)
+            m.setattr(local_srcds.os, "kill", lambda pid, sig: signalled.append(pid))
+            m.setattr(local_srcds.signal, "pidfd_send_signal", pidfd_signal, raising=False)
+            local_srcds.LocalSrcds._kill_all(s._descendants())
+        assert middle not in signalled
+    finally:
+        s.stop()
 
 
 @pytest.mark.skipif(not shutil.which("tmux"), reason="needs tmux")
