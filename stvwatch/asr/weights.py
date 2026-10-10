@@ -36,6 +36,7 @@ class Pin:
 
 
 _PARAKEET_REV = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
+_NEMOTRON_REV = "ab43d895f5985b1bbab8b6eac8607fcdc05343f3"
 PINS = {
     "parakeet": Pin(
         engine="parakeet",
@@ -86,6 +87,38 @@ PINS = {
             ),
         ),
         dirname="silero-vad-v4",
+    ),
+    "nemotron": Pin(
+        engine="nemotron",
+        title="Nemotron 3.5 ASR Streaming 0.6B, 560 ms chunks (ONNX int8 export of "
+        "nvidia/nemotron-3.5-asr-streaming-0.6b by the sherpa-onnx author)",
+        source="https://huggingface.co/csukuangfj2/"
+        "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11/resolve/"
+        + _NEMOTRON_REV,
+        revision=_NEMOTRON_REV,
+        license="OpenMDW-1.1",
+        files=(
+            WeightFile(
+                "tokens.txt",
+                131440,
+                "729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a",
+            ),
+            WeightFile(
+                "encoder.int8.onnx",
+                657601403,
+                "012e9321373af99021415e0b0eb3ec827b4be3153be6f30d9b448fe65e896e68",
+            ),
+            WeightFile(
+                "decoder.int8.onnx",
+                14978075,
+                "19f9c98fc6d0a2c33a65a43b36fdb2e914c26c0aa9764be3aebc502a1e982fb0",
+            ),
+            WeightFile(
+                "joiner.int8.onnx",
+                9504438,
+                "4101c7c679a0bc30483794b27a059e34e79232aa2068d78d51231a22c8b0d7ce",
+            ),
+        ),
     ),
 }
 

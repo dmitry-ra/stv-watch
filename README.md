@@ -18,9 +18,9 @@ that recording gives the same lines the live run printed.
 - Python 3.12 to 3.14, x86-64. onnxruntime publishes wheels up to CPython
   3.14; on a newer Python the install stops at it with no matching wheel.
 - [uv](https://docs.astral.sh/uv/). uv provides the interpreter and the
-  environment with the dependencies, all wheels from PyPI (about 45 MB of
+  environment with the dependencies, all wheels from PyPI (about 60 MB of
   downloads): numpy, opuslib-next-bundled (the Opus decoder, libopus inside),
-  onnxruntime and onnx-asr (speech recognition).
+  onnxruntime, onnx-asr and sherpa-onnx (speech recognition).
 - For `--asr parakeet`: 2.55 GB of disk for the model weights (Parakeet and
   Silero VAD) and about 2.6 GB of memory while it runs.
 
@@ -236,9 +236,10 @@ uv run ruff check .
 ```
 
 The tests need no network beyond loopback, no game server and no model weights;
-they use synthetic tones and noise, never speech. The test with the real model
-runs on its own: `uv run pytest -m model` (it uses the weights in the default
-place, or the directory in `STV_WATCH_MODELS`).
+they use synthetic tones and noise, never speech. The tests with the real models
+run on their own: `uv run pytest -m model` (they use the weights in the default
+place, or the directory in `STV_WATCH_MODELS`; the Nemotron test also fetches the
+English sample of its export, 229 KB).
 `tools/local_srcds.py` starts a loopback dedicated server with SourceTV for
 manual checks, `tools/tmux_check.sh` checks the screen in a real terminal.
 How the protocol works: [docs/protocol.md](docs/protocol.md).
@@ -260,3 +261,8 @@ both are under CC-BY-4.0. Silero VAD is by the Silero team
 ([snakers4/silero-vad](https://github.com/snakers4/silero-vad), MIT); the file
 it uses, `silero_vad.onnx` (v4), is the ONNX export published by k2-fsa in the
 `asr-models` release of [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
+Nemotron 3.5 ASR Streaming 0.6B is by NVIDIA
+([nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b),
+OpenMDW-1.1); the ONNX int8 export it uses is
+[csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11](https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11),
+by the author of sherpa-onnx.
