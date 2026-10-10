@@ -43,9 +43,22 @@ def tree(pid):
 
 
 @pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
-def test_stopping_the_local_server_signals_only_processes_still_its_own(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "pidfd",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(not local_srcds.PIDFD, reason="this Python has no pidfd"),
+        ),
+    ],
+)
+def test_stopping_the_local_server_signals_only_processes_still_its_own(
+    tmp_path, monkeypatch, pidfd
+):
     """srcds exits on `quit`; a signal sent afterwards by its PID number
     would reach whatever process got that number next."""
+    monkeypatch.setattr(local_srcds, "PIDFD", pidfd)
     exe = tmp_path / "srcds_linux"
     exe.write_text(STAND_IN)
     exe.chmod(0o755)
