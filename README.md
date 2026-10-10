@@ -108,10 +108,12 @@ the speech the VAD found, `speech_ms`.
 Streaming 0.6B, next to the one of `--asr`: the `talking` line shows what it
 hears while the player is still speaking, and the end of the text stays in
 view when the line is wider than the terminal. When the utterance ends, the
-`--asr` text replaces it. Only the screen shows it (a terminal, or `--serve`
-and its `--attach` screens): `events.jsonl`, `transcript.tsv`, `feed.log` and
-the WAV files are the same with it or without it, and with `--plain`,
-`--monitor` or `--json` it is not loaded at all.
+`--asr` text replaces it. Only the screen shows that text (a terminal, or
+`--serve` and its `--attach` screens) and no file keeps it: the voice lines,
+`transcript.tsv` and the WAV files are the same with it or without it. The
+session records only the live recognizer's own state: its `asr` lines (loaded,
+failed, an error) in `events.jsonl` and `feed.log`, and `live_asr` in
+`meta.json`. With `--plain`, `--monitor` or `--json` it is not loaded at all.
 
 ```sh
 uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --live-asr nemotron
