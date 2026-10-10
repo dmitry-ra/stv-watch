@@ -15,17 +15,21 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.10.8"
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - run: uv run black --check .
       - run: uv run ruff check .
       - run: uv run pytest -q
-        timeout-minutes: 8
+        timeout-minutes: 4
 
   version:
     if: github.event_name == 'pull_request'
