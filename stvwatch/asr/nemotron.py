@@ -26,7 +26,8 @@ FILES = {
 class Level:
     """Streaming peak gain toward `target` full scale, at most +30 dB. The gain
     drops at once and rises at most 6 dB per 160 ms; the peak is that of the
-    last 2 s."""
+    last 2 s. A push is leveled in slices of at most 160 ms, so the gain moves
+    at the same moments whatever the size of the push."""
 
     def __init__(self, target=0.3, max_gain=31.6, span=2 * SR, rise=int(0.16 * SR)):
         self.target, self.max_gain, self.span, self.rise = target, max_gain, span, rise
@@ -35,6 +36,13 @@ class Level:
         self.gain = 1.0
 
     def __call__(self, pcm):
+        if len(pcm) <= self.rise:
+            return self._slice(pcm)
+        return np.concatenate(
+            [self._slice(pcm[i : i + self.rise]) for i in range(0, len(pcm), self.rise)]
+        )
+
+    def _slice(self, pcm):
         if not len(pcm):
             return pcm
         self.peaks.append((len(pcm), float(np.abs(pcm).max())))

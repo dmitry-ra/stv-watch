@@ -98,6 +98,18 @@ def test_the_level_lifts_at_most_30_db_rising_6_db_per_160_ms_and_drops_at_once(
     assert lv(np.zeros(0, np.float32)).size == 0
 
 
+def test_the_level_works_in_160_ms_slices_whatever_the_size_of_a_push():
+    """A push of 3 s after a loud piece: its first 2 s stay down, the gain
+    rises only after the loud peak leaves the window, as with short pushes."""
+    lv = nemotron.Level()
+    lv(tone(0.02, 0.9))
+    out = lv(tone(3.0, 0.01))
+    pieces = [float(np.abs(out[i : i + 320]).max()) for i in range(0, len(out), 320)]
+    # the loud peak leaves the window within one slice of 2 s
+    assert max(pieces[: (2 * SR - 2560) // 320]) == pytest.approx(0.01 * 0.3 / 0.9, rel=0.01)
+    assert pieces[-1] == pytest.approx(0.3, rel=0.01)
+
+
 def test_nemotron_is_a_live_engine_only():
     assert asr.LIVE_ENGINES == ("nemotron",) and "nemotron" not in asr.ENGINES
     with pytest.raises(SystemExit):
