@@ -4,6 +4,7 @@ the test with the real weights is marked `model`."""
 
 import os
 import tempfile
+import threading
 import wave
 
 import numpy as np
@@ -121,11 +122,13 @@ SAMPLE = weights.WeightFile(
 )
 
 
-@pytest.mark.model
-def test_the_real_model_grows_its_text_while_the_speech_goes_on():
+def sample(*engines):
+    """The sample as float32, or a skip when weights or network are missing."""
+    for name in engines:
+        pin = weights.PINS[name]
+        if weights.missing(pin, weights.model_dir(pin, MODELS)):
+            pytest.skip(f"no {name} weights in {MODELS}")
     pin = weights.PINS["nemotron"]
-    if weights.missing(pin, weights.model_dir(pin, MODELS)):
-        pytest.skip(f"no nemotron weights in {MODELS}")
     with tempfile.TemporaryDirectory() as d:
         path = os.path.join(d, "en.wav")
         try:
@@ -134,9 +137,35 @@ def test_the_real_model_grows_its_text_while_the_speech_goes_on():
             pytest.skip(f"no sample: {e}")
         with wave.open(path) as w:
             pcm = np.frombuffer(w.readframes(w.getnframes()), np.int16) / 32768
-    e = asr.build_live("nemotron", 1, MODELS)
-    st = e.open()
-    clip = np.concatenate([pcm, np.zeros(SR, np.float32)]).astype(np.float32)
-    texts = [t for i in range(0, len(clip), 320) for _k, t in st.push(clip[i : i + 320])]
+    return np.concatenate([pcm, np.zeros(SR)]).astype(np.float32)
+
+
+def stream(engine, clip):
+    st = engine.open()
+    return [t for i in range(0, len(clip), 320) for _k, t in st.push(clip[i : i + 320])]
+
+
+@pytest.mark.model
+def test_the_real_model_grows_its_text_while_the_speech_goes_on():
+    texts = stream(asr.build_live("nemotron", 1, MODELS), sample("nemotron"))
     assert len(texts) >= 3 and len(texts[-1].split()) > len(texts[0].split())
     assert "gold" in texts[-1].lower()
+
+
+@pytest.mark.model
+def test_parakeet_and_nemotron_run_at_once_in_one_process():
+    """Each brings its own onnxruntime (the onnxruntime wheel; the library
+    inside sherpa-onnx-core): both load, and running together changes
+    neither result."""
+    clip = sample("nemotron", *asr.WEIGHTS["parakeet"])
+    p = asr.build("parakeet", 2, MODELS, 0)
+    alone = p.transcribe(clip)
+    n = asr.build_live("nemotron", 1, MODELS)
+    live_alone = stream(n, clip)
+    got = {}
+    t = threading.Thread(target=lambda: got.update(live=stream(n, clip)))
+    t.start()
+    together = [p.transcribe(clip) for _ in range(3)]
+    t.join(60)
+    assert "gold" in alone[0].lower() and together == [alone] * 3
+    assert got["live"] == live_alone

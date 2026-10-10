@@ -18,7 +18,7 @@
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$"
     },
     "type": {
-      "description": "voice: one utterance of a player (or one piece of a monologue). Game events: chat, console, connect, join, leave, death, team, name, server, sourcemod (filtered by --events). The viewer's own lines: conn (connection), net (traffic), play (replay), tvd (network client log), asr (recognizer loaded or failed), done (exit).",
+      "description": "voice: one utterance of a player (or one piece of a monologue). Game events: chat, console, connect, join, leave, death, team, name, server, sourcemod (filtered by --events). The viewer's own lines: conn (connection), net (traffic), play (replay), tvd (network client log), asr (a recognizer loaded or failed, the live one too), done (exit).",
       "type": "string",
       "enum": ["voice", "chat", "console", "connect", "join", "leave", "death", "team", "name",
                "server", "sourcemod", "conn", "net", "play", "tvd", "asr", "done"]

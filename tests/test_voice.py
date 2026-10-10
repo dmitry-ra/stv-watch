@@ -1004,7 +1004,14 @@ def test_live_asr_changes_no_session_file_and_needs_a_screen(tmp_path, engine, m
 
     live = LiveEngine()
     built = []
-    monkeypatch.setattr(appmod, "build_live", lambda *a: built.append(a) or live)
+
+    def slow(*a):
+        # reading waits for the load, or the first utterances would be dropped
+        built.append(a)
+        time.sleep(0.5)
+        return live
+
+    monkeypatch.setattr(appmod, "build_live", slow)
     fetched = []
     monkeypatch.setattr(weights, "ensure", lambda pin, d: fetched.append(pin.engine))
     rec = str(tmp_path / "demo.tvd")
