@@ -77,15 +77,16 @@ class LiveRecognizer:
 
     # ---- under cv
     def _drop_stale(self, now):
-        """Queued audio older than max_lag_s goes, and the opens queued with
-        it: those utterances would start without their beginning. -> the age
-        of the oldest queued audio."""
+        """Queued audio older than max_lag_s goes, and everything queued with
+        it: the worker drops all its streams, so the opens would start without
+        their beginning and the closes have nothing to close. -> the age of
+        the oldest queued audio."""
         pushes = [op for op in self.ops if op[0] == "push"]
         lag = now - pushes[0][3] if pushes else 0.0
         if lag > self.max_lag_s:
             self.drops += 1
             self.dropped_s += sum(len(op[2]) for op in pushes) / SR
-            self.ops = [op for op in self.ops if op[0] == "close"]
+            self.ops = []
             self.reset = True
         return lag
 
