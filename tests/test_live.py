@@ -100,11 +100,11 @@ def test_falling_behind_drops_the_queue_and_the_open_utterances_partials():
     r.open("b")  # opened in what is dropped: starts without its beginning, so never
     r.push("b", pcm(0.25))
     time.sleep(0.3)
-    r.push("b", pcm(0.01))  # the oldest audio decides, not the newest
+    r.push("b", pcm(0.01))  # the oldest audio decides: it goes, this one stays
     e.gate.set()
     assert take(out, 1) == [("partial", "a", "1600")]
     until(lambda: r.drops)
-    assert r.dropped_s == pytest.approx(0.76)
+    assert r.dropped_s == pytest.approx(0.75)
     r.push("a", pcm(0.1))
     r.push("b", pcm(0.1))
     r.open("c")
@@ -204,6 +204,55 @@ def test_an_engine_error_is_reported_and_ends_the_open_utterances_partials():
     assert take(out, 1) == [("live_error", "ZeroDivisionError: division by zero")]
     del e.push_all
     r.push("a", pcm(0.1))
+    r.open("b")
+    r.push("b", pcm(0.1))
+    assert take(out, 1) == [("partial", "b", "1600")]
+    r.stop()
+
+
+def test_audio_queued_behind_a_stuck_engine_stays_bounded():
+    """The engine does not return: what queues behind it is dropped by age
+    when it is queued, not when the engine comes back."""
+    e = Engine()
+    r, out = started(e, max_lag_s=0.2)
+    r.open("a")
+    e.gate.clear()
+    r.push("a", pcm(0.02))
+    until(lambda: e.calls)
+    for _ in range(100):
+        r.push("a", pcm(0.02))
+        time.sleep(0.01)
+    queued = sum(len(op[2]) for op in r.ops if op[0] == "push") / SR
+    assert queued < 0.5 and r.drops >= 3
+    e.gate.set()
+    r.stop()
+
+
+def test_a_failed_load_lets_go_of_what_queued_while_it_loaded():
+    go = threading.Event()
+
+    def broken():
+        assert go.wait(5)
+        raise OSError("no weights")
+
+    out = queue.Queue()
+    r = live.LiveRecognizer(broken, out)
+    r.open("a")
+    r.push("a", pcm(0.1))
+    go.set()
+    assert out.get(timeout=5)[1] == "failed"
+    r.thread.join(5)
+    assert r.ops == []
+
+
+def test_an_engine_that_fails_to_open_a_stream_is_reported_and_the_worker_goes_on():
+    e = Engine()
+    r, out = started(e)
+    e.open = lambda: 1 / 0
+    r.open("a")
+    r.push("a", pcm(0.1))
+    assert take(out, 1) == [("live_error", "ZeroDivisionError: division by zero")]
+    del e.open
     r.open("b")
     r.push("b", pcm(0.1))
     assert take(out, 1) == [("partial", "b", "1600")]
