@@ -3,6 +3,7 @@
 A short map of the protocol as stv-watch uses it, for whoever changes the client.
 It was worked out from the public Source SDK 2013 headers and from observing
 relays; no SDK code is included here. Module names are under `stvwatch/`.
+Earlier public work it builds on: [prior-art.md](prior-art.md).
 
 ## Processes
 
@@ -35,6 +36,11 @@ build) -> `B` accepted. A relay may send in-band packets before or instead of
 `B`; one is taken as proof that the channel is up. If nothing answers the
 connect, a `net_Disconnect` is sent anyway, in case the relay opened a channel
 whose answer was lost.
+
+The anonymous login works on the relay port only. The game server's own port
+wants a Steam session; a relay that offers authentication protocol 2 checks
+nothing but `tv_password`, so with no password it takes the hashed-cdkey login
+(a dummy MD5 of the name) and no Steam ticket.
 
 ## Netchannel
 
@@ -82,12 +88,47 @@ data flows. A map change starts the ladder again; the supervisor
 (`net/supervisor.py`) reconnects with a growing delay after a break, and polls
 slowly after a refusal that retrying will not change.
 
+The first packet is the one a real game client sends after `B`, recorded from
+one: `tests/data/connected_reply.bin`, 480 bytes, sequence 1, flags
+RELIABLE|CHALLENGE, holding `net_SetConVar` with the client's 27 userinfo
+variables and `net_SignonState(CONNECTED, -1)`. `messages.connected_reply_body`
+generates the same message stream and a test compares the two bit for bit.
+After it the game client sends only 16-byte acks (flags CHALLENGE, no messages)
+while the relay transfers the signon data, which takes tens of seconds on a
+server with hundreds of maps among its downloadables. A relay that feeds other
+relays also sends `tv_relay 1` in that userinfo; a spectator, stv-watch too,
+does not need it. A client that answers `B` with empty acks alone, without the
+CONNECTED packet, is never moved up: the relay keeps sending it empty
+keepalives and does not count it as a spectator.
+
+## Where voice comes from
+
+Voice reaches a viewer only in the per-frame broadcast that the relay sends to
+the clients it holds active, those at FULL. A client still on the ladder gets
+the reliable signon data, resent until it is acknowledged, and no voice even
+while players talk: a session stuck below FULL looks like a quiet server. The
+relay passes voice on only with the server variable `tv_relayvoice` at 1 (the
+default; `tools/local_srcds.py` sets it). Newer engines (CS2) add per-viewer
+voice filters such as `tv_listen_voice_indices`; Source 2013 has none.
+
+`svc_VoiceInit` names the codec. stv-watch decodes only `steam`, Opus frames in
+the Steam voice format (`voice/steamvoice.py`), the codec of the relays it was
+developed on. A server on `vaudio_celt` or `vaudio_speex` sends the same
+`svc_VoiceData` messages with another payload; stv-watch does not decode it,
+and those messages fail the Steam voice CRC check (`voice_crc_bad` in
+`meta.json`).
+
 ## Server builds
 
 The SendTable CRC depends on the server build and a wrong one is refused by the
 relay ("different class tables"). `net/builds.py` maps the build number from
-A2S_INFO `version` to its CRC. When Valve ships a new build, stv-watch refuses
-relays on it until its CRC is added. To get it:
+A2S_INFO `version` to its CRC. The server computes it over all its send tables
+when the game library loads; other client implementations found no practical
+way to compute it from what a client receives (see
+[prior-art.md](prior-art.md)), and 0 is refused like any other wrong value. It
+changes with game updates that touch the class tables, as the 2023 anniversary
+update of the game did. When Valve ships a new build, stv-watch refuses relays
+on it until its CRC is added. To get it:
 
 1. Install a dedicated server of that build with SteamCMD (app 232370):
    `steamcmd +force_install_dir /path/to/srcds +login anonymous +app_update 232370 +quit`
@@ -100,3 +141,29 @@ relays on it until its CRC is added. To get it:
 3. Add `"BUILD": 0xCRC,` to `CRC_BY_BUILD` in `stvwatch/net/builds.py`; the
    build number is what A2S_INFO reports as `version` for a server of that
    build (stv-watch's refusal names it).
+
+## Receive buffer
+
+The network client leaves the socket's receive buffer (`SO_RCVBUF`) at the
+system default, so a stall of its receive loop longer than that buffer holds
+drops datagrams; this is why the dump is fsynced at most once a second rather
+than per record (`net/dump.py`). If the buffer is ever enlarged: Linux doubles
+the requested size for its own bookkeeping and silently caps the request at
+`net.core.rmem_max` (212992 by default, so at most 425984 bytes). Read the size
+back with `getsockopt` instead of trusting the request.
+
+## Endurance
+
+In July 2026 the network client, then a separate program, ran 72 hours against
+19 public relays, one process each. No process crashed or was restarted by
+hand; resident memory stayed flat at 17 to 21 MB per process after the first
+hour and open file descriptors at 4 to 5. Together they held 10,295 sessions
+through nightly server restarts, hundreds of map changes and relay outages of
+several hours, and 9,414 of the sessions reached FULL. The run found four bugs,
+fixed since: the unreliable part of packets was not read, one reconnect path
+skipped the backoff, a duplicate fragment could complete a reliable transfer
+(a count of fragments instead of a bitmask), and reading bit by bit was too
+slow (shifts on whole integers, which replaced it, were 450 and 626 times
+faster where measured). One
+relay reached FULL in only 690 of its 1,538 sessions, while every other relay
+reached it in nearly all of them; the cause was not found.
