@@ -219,13 +219,16 @@ def test_audio_queued_behind_a_stuck_engine_stays_bounded():
     e.gate.clear()
     r.push("a", pcm(0.02))
     until(lambda: e.calls)
+    most = queued = 0
     for i in range(100):
         r.push("a", pcm(0.02))
         r.open(i)  # short utterances meanwhile: their closes must not pile up either
         r.close(i)
+        with r.cv:
+            most = max(most, len(r.ops))
+            queued = max(queued, sum(len(op[2]) for op in r.ops if op[0] == "push") / SR)
         time.sleep(0.01)
-    queued = sum(len(op[2]) for op in r.ops if op[0] == "push") / SR
-    assert queued < 0.5 and r.drops >= 3 and len(r.ops) < 3 * 40
+    assert queued < 0.5 and r.drops >= 3 and most < 3 * 40
     e.gate.set()
     r.stop()
 
