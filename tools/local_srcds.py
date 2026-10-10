@@ -23,9 +23,21 @@ import time
 
 from stvwatch.net import a2s
 
-# CPython compiles these only when the build's kernel headers define the
-# syscalls; uv's standalone builds lack them on every version.
-PIDFD = hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
+
+def _pidfd_works():
+    """CPython compiles the wrappers only when the build's kernel headers
+    define the syscalls (uv's standalone builds lack them on every version),
+    and the running kernel may still answer ENOSYS."""
+    if not (hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")):
+        return False
+    try:
+        os.close(os.pidfd_open(os.getpid()))
+    except OSError:
+        return False
+    return True
+
+
+PIDFD = _pidfd_works()
 
 
 def _started(pid):
@@ -170,19 +182,24 @@ class LocalSrcds:
         one is gone is dropped instead of reaching whoever got its PID next.
         (A process group would not do: `script` puts srcds in a session of
         its own.)"""
-        out, todo = [], [self.proc.pid]
+        out, todo = [], [(self.proc.pid, _started(self.proc.pid))]
         while todo:
-            pid = todo.pop()
+            pid, born = todo.pop()
             try:
                 with open(f"/proc/{pid}/task/{pid}/children") as f:
                     kids = [int(x) for x in f.read().split()]
             except OSError:
                 kids = []
+            # Read after the list: if the PID changed hands meanwhile, these
+            # are a stranger's children.
+            if _started(pid) != born:
+                continue
             for kid in kids:
-                handle = _pin(kid)
+                kid_born = _started(kid)
+                handle = None if kid_born is None else _pin(kid)
                 if handle is not None:
                     out.append(handle)
-                    todo.append(kid)
+                    todo.append((kid, kid_born))
         return out
 
     @staticmethod

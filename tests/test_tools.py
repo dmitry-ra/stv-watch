@@ -1,8 +1,11 @@
 """The developer tools: tools/local_srcds.py stops only what it started, and
 tools/tmux_check.sh never takes over a tmux session it did not create."""
 
+import errno
+import importlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -42,6 +45,35 @@ def tree(pid):
     return out
 
 
+def start_stand_in(tmp_path):
+    exe = tmp_path / "srcds_linux"
+    exe.write_text(STAND_IN)
+    exe.chmod(0o755)
+    s = local_srcds.LocalSrcds(str(tmp_path), log_path=str(tmp_path / "log")).start()
+    end = time.monotonic() + 10
+    while len(tree(s.proc.pid)) < 2 and time.monotonic() < end:
+        time.sleep(0.05)
+    return s
+
+
+def stop_and_check(s, monkeypatch):
+    """(processes in the tree, signals that would hit a reused PID, survivors)"""
+    born = {p: started(p) for p in tree(s.proc.pid)}
+    stale = []
+    real = os.kill
+
+    def kill(pid, sig):
+        if pid in born and started(pid) != born[pid]:
+            stale.append(pid)
+            raise ProcessLookupError
+        real(pid, sig)
+
+    monkeypatch.setattr(local_srcds.os, "kill", kill)
+    s.stop()
+    alive = [p for p in born if started(p) == born[p]]
+    return len(born), stale, alive
+
+
 @pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
 @pytest.mark.parametrize(
     "pidfd",
@@ -59,27 +91,48 @@ def test_stopping_the_local_server_signals_only_processes_still_its_own(
     """srcds exits on `quit`; a signal sent afterwards by its PID number
     would reach whatever process got that number next."""
     monkeypatch.setattr(local_srcds, "PIDFD", pidfd)
-    exe = tmp_path / "srcds_linux"
-    exe.write_text(STAND_IN)
-    exe.chmod(0o755)
-    s = local_srcds.LocalSrcds(str(tmp_path), log_path=str(tmp_path / "log")).start()
-    end = time.monotonic() + 10
-    while len(tree(s.proc.pid)) < 2 and time.monotonic() < end:
-        time.sleep(0.05)
-    born = {p: started(p) for p in tree(s.proc.pid)}
-    stale = []
-    real = os.kill
+    s = start_stand_in(tmp_path)
+    assert stop_and_check(s, monkeypatch) == (2, [], [])
 
-    def kill(pid, sig):
-        if pid in born and started(pid) != born[pid]:
-            stale.append(pid)
-            raise ProcessLookupError
-        real(pid, sig)
 
-    monkeypatch.setattr(local_srcds.os, "kill", kill)
-    s.stop()
-    alive = [p for p in born if started(p) == born[p]]
-    assert (len(born), stale, alive) == (2, [], [])
+@pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
+def test_a_kernel_without_pidfd_falls_back_to_start_times(tmp_path, monkeypatch):
+    """The wrappers can exist while the kernel answers ENOSYS."""
+
+    def enosys(*_):
+        raise OSError(errno.ENOSYS, "Function not implemented")
+
+    monkeypatch.setattr(local_srcds, "PIDFD", local_srcds.PIDFD)  # undone after reload
+    monkeypatch.setattr(os, "pidfd_open", enosys, raising=False)
+    monkeypatch.setattr(signal, "pidfd_send_signal", enosys, raising=False)
+    importlib.reload(local_srcds)
+    assert local_srcds.PIDFD is False
+    s = start_stand_in(tmp_path)
+    assert stop_and_check(s, monkeypatch) == (2, [], [])
+
+
+@pytest.mark.skipif(not shutil.which("script"), reason="needs script(1)")
+def test_children_of_a_reused_pid_are_not_taken(tmp_path, monkeypatch):
+    """The PID changes hands between queueing it and reading its children."""
+    monkeypatch.setattr(local_srcds, "PIDFD", False)
+    s = start_stand_in(tmp_path)
+    try:
+        middle = tree(s.proc.pid)[0]
+        seen = []
+        real = local_srcds._started
+
+        def started_once(pid):
+            if pid != middle:
+                return real(pid)
+            seen.append(pid)
+            return real(pid) if len(seen) == 1 else "someone else"
+
+        with monkeypatch.context() as m:
+            m.setattr(local_srcds, "_started", started_once)
+            taken = [pid for pid, _ in s._descendants()]
+        assert taken == [middle]
+    finally:
+        s.stop()
 
 
 @pytest.mark.skipif(not shutil.which("tmux"), reason="needs tmux")
