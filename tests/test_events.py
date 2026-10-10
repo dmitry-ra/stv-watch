@@ -640,9 +640,10 @@ def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     ]
 
 
-def run_on_tty(cmd, env, timeout=60, keys=None):
+def run_on_tty(cmd, env, timeout=60, keys=None, ready=lambda: True):
     """cmd with a 120x30 pseudo-terminal for stdin and stdout: the full screen.
-    `keys` (bytes) are typed once the screen has drawn. -> (exit code, what it drew)"""
+    `keys` (bytes) are typed once the screen has drawn and `ready()` holds.
+    -> (exit code, what it drew)"""
     import fcntl
     import pty
     import select
@@ -665,11 +666,11 @@ def run_on_tty(cmd, env, timeout=60, keys=None):
                 if not got:
                     break
                 drawn += got
-                if keys and b"q quit" in drawn:
-                    os.write(m, keys)
-                    keys = None
             elif p.poll() is not None:
                 break
+            if keys and b"q quit" in drawn and ready():
+                os.write(m, keys)
+                keys = None
     finally:
         os.close(m)
         if p.poll() is None:
