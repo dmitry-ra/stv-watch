@@ -474,18 +474,23 @@ def test_q_closes_the_attached_screen(sock):
 
 
 def test_a_screen_refuses_an_engine_of_the_previous_protocol(sock, monkeypatch):
-    """A 0.4 engine sends time labels drawn in its own zone only."""
+    """A 0.4 engine sends time labels drawn in its own zone only. The refusal
+    is stamped in the zone that engine's hello names."""
     from stvwatch import version
 
     with monkeypatch.context() as m:
         m.setattr(serve, "PROTO", 2)
-        eng = served_screen(sock)
+        eng = serve.ServedScreen(
+            sock, {"pid": 1, "version": "v", "tz": "Europe/Moscow", "engine": "e1"}
+        )
+        eng.start()
+    monkeypatch.setattr(serve.time, "time_ns", lambda: T0 + 9 * 10**9)
     c = serve.Attached(sock, tty_screen())
     assert c.connect()
     until(lambda: (c.step(0.01), c.quit)[1])
     assert c.rc == 2 and c.engine is None
-    assert texts(c.screen)[-1].endswith(
-        f"attach the engine (stv-watch v) speaks protocol 2, this stv-watch"
+    assert texts(c.screen)[-1] == (
+        f"12:40:09.000 attach the engine (stv-watch v) speaks protocol 2, this stv-watch"
         f" {version.version()} speaks 3: attach with the engine's version"
     )
     eng.stop()

@@ -323,8 +323,11 @@ class ServedScreen:
     def key(self):
         return None
 
-    def stderr_to(self, path):
-        self.log.stderr_to(path)
+    def stderr_open(self, path):
+        return self.log.stderr_open(path)
+
+    def stderr_to(self, fd):
+        self.log.stderr_to(fd)
 
     def feed(self, spans, t_ns=None):
         self.pending.append({"op": "line", "spans": spans, "t": t_ns})
@@ -469,12 +472,12 @@ class Attached:
             self.note("engine ended" if self.ended else "engine gone", ", waiting for it")
             self.screen.draw(())
 
-    def zone(self):
-        """Our --tz, else the engine's zone."""
+    def zone(self, engine=None):
+        """Our --tz, else the engine's zone (of `engine`, a hello not taken yet)."""
         if self.own_tz is not None:
             return self.own_tz
         try:
-            return zone((self.engine or {}).get("tz", "UTC"))
+            return zone((engine or self.engine or {}).get("tz", "UTC"))
         except ValueError:
             return zone("UTC")
 
@@ -522,7 +525,8 @@ class Attached:
             self.note(
                 f"the engine (stv-watch {m.get('version', '?')}) speaks protocol"
                 f" {m.get('proto')}, this stv-watch {version.version()} speaks {PROTO}:"
-                " attach with the engine's version"
+                " attach with the engine's version",
+                engine=m,
             )
             self.quit, self.rc = True, 2
             self.close()
@@ -540,9 +544,9 @@ class Attached:
             self.open, self.last_seq = {}, 0
             self.note(f"engine restarted: pid {old['pid']} -> {m['pid']}, {self.path}")
 
-    def note(self, text, more=""):
+    def note(self, text, more="", engine=None):
         """A feed line of our own, in the zone of our time labels."""
-        stamp = local(time.time_ns(), self.zone()) + " "
+        stamp = local(time.time_ns(), self.zone(engine)) + " "
         self.screen.feed([(stamp, "stamp"), ("attach ", "blue"), (text + more, "")])
 
     def attach_line(self):
