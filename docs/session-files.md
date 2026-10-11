@@ -12,17 +12,24 @@ schedule (5 fields, in the `--tz` zone, by the time of the recording's
 records), named the same way with the start of its period as `<UTC start>`
 (in a replay that is the recording's time, so those names sort before the
 first one's; follow `next_dir`). Every file below goes on there; the
-connection to the relay stays. The order is fixed: the new directory and its
-files are made and opened, then the old `events.jsonl` gets its last line (a
-`rotate` line naming the new one), then the old files are closed. An utterance
-still being spoken or waiting for its text goes to the new session whole, its
-WAV moved along; none is split between two. A period without any record gets
-no directory.
+connection to the relay stays. A rotation cuts the stream of events at its
+moment: every line before it is in the old session, every line from it on in
+the new one (see [events.jsonl](#eventsjsonl)). The order is fixed: the new
+directory and its files are made and opened, then the old `events.jsonl` gets
+its last line (a `rotate` line naming the new one), then the old files are
+closed; nothing is written to them after it. An utterance that starts before
+the cut and closes after it has its `talk` line in the old session and its
+`voice` line, `transcript.tsv` row and WAV in the new one. A period without any
+record gets no directory.
 
 With `--keep-trying` every network client after the first one of a session
 starts a new directory the same way, named by the time it starts: the `rotate`
 lines that link the two have `reason` `restart`, and so has the new
-`meta.json`. A new client never appends to the journal of a dead one.
+`meta.json`. A new client never appends to the journal of a dead one. A restart
+cuts the stream like a rotation, at the moment the new client is started: the
+old session keeps everything before it (the dead client's journal read to its
+end, the utterances in it closed there, the refusal or death and the `wait`
+line), the new one starts with its `rotate` line.
 
 | File | Live | Replay | Content |
 |---|---|---|---|
@@ -46,11 +53,28 @@ their own.
 ## events.jsonl
 
 Written and flushed line by line in every screen mode, so a reader can tail it.
-The schema is [events.schema.json](events.schema.json). Every line has:
+The schema is [events.schema.json](events.schema.json).
+
+Lines are in the order of `t_utc` (never earlier than the line before), in one
+file and across the sessions of a rotated run, and `--json` prints the same
+lines. The clock is the recording's: the lines of a recording's events are the
+same in the live run that made it and in a replay at any `--speed`, whatever
+the recognizer's pace, but for what depends on the wall clock (the recognition
+time in `details`, `asr_ms` and `lag_ms` in `transcript.tsv`, the load time and
+speed in `asr` and `play` lines, the directories). Lines a replay makes before
+its first record (`asr`, `play`) take that record's time. Live, while no
+network client runs (before the first one, between two under `--keep-trying`),
+the stream goes on the wall clock: a refusal, a `wait` line, a `done` line are
+stamped when they happen. `done` is always the last line, its `t_utc` that of
+the line before it or later. Without `--asr` each line is written as soon as the
+stream is past its moment. With `--asr` the stream also waits for the text of
+an utterance that has closed: nothing after its `voice` line is written until
+the recognizer has answered (live usually under a second), while nothing waits
+for an utterance still being spoken. Every line has:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `t_utc` | string | `YYYY-MM-DDTHH:MM:SS.mmmZ`, receive time of the packet that carried the event (voice: of the utterance's first frame) |
+| `t_utc` | string | `YYYY-MM-DDTHH:MM:SS.mmmZ`, the moment of the event on the recording's clock: the receive time of the packet that carried it (`talk`: of the utterance's first voice data; `voice`: when the utterance closed) |
 | `t_local` | string | `YYYY-MM-DD HH:MM:SS` in the `--tz` zone; only when `--tz` was given |
 | `type` | string | see below |
 | `steamid64` | integer | the player the line is about, 0 when none or unknown |
@@ -66,11 +90,27 @@ Players are named by the stream itself: the nick is the current entry of the
 `userinfo` string table, the SteamID64 comes from the same entry or from the
 game event; nothing is looked up elsewhere.
 
-Voice (always shown, not filtered by `--events`):
+Voice (always written, not filtered by `--events`): two lines per utterance,
+paired by `utt`.
 
 | type | extra fields | what |
 |---|---|---|
-| `voice` | `result`, `continued`, `spectator`, `details`, `t_end_utc`, `speech_ms`, `slot`, `verified`, `slot_steamid64` | one utterance, or one piece of a monologue; `text` is what was recognized |
+| `talk` | `utt`, `start_utc`, `continued`, `slot` | a player starts an utterance, or a piece of a monologue; `text` is empty |
+| `voice` | `utt`, `start_utc`, `end_utc`, `result`, `continued`, `spectator`, `details`, `speech_ms`, `slot`, `verified`, `slot_steamid64` | the utterance closed; `text` is what was recognized |
+
+- `utt`: the utterance's number in the run (1, 2, ...); every `talk` line has
+  exactly one `voice` line with the same `utt`, later in the same session or in
+  the next one.
+- `start_utc`: the utterance's first voice data. A `talk` line has it at its
+  `t_utc`, except for a later piece of a monologue: that piece starts where the
+  one before it was cut (its `end_utc`), and its `talk` line comes when the cut
+  is made, right after the `voice` line of the piece before.
+- `end_utc`: where the utterance's audio ends: its close, the same as `t_utc`;
+  for a monologue piece the pause it was cut at.
+- An utterance closes when a packet comes after more than a second without
+  voice data of the player (or a new key press, a new connection, the end of
+  the run); a monologue piece when it passes `--max-utt-ms`. The `voice` line's
+  `t_utc` is that packet's time.
 
 - `result`: `text` (`text` holds what was said), `no speech` (the voice
   activity detector found less speech than `--min-speech-ms`, or the model
@@ -92,9 +132,9 @@ Voice (always shown, not filtered by `--events`):
   the utterance closed when not by the clock (`max_len`, `pause`, `session`,
   `end`) and how long after its last frame; with `--asr` also the recognition
   time and how far the text was behind the speech.
-- `t_end_utc`: when the utterance closed.
 - `slot`: the server slot its voice messages came from (with a mismatch, the
-  slot of the first one that did not match).
+  slot of the first one that did not match); in a `talk` line, the slot of the
+  voice data that started it.
 - `verified`: whether the server's `userinfo` entry for that slot is the
   player whose SteamID the voice payload carries (`steamid64`). `true` when
   every message that could be checked matched; `false` when any did not;
@@ -104,10 +144,6 @@ Voice (always shown, not filtered by `--events`):
   transport numbers of every voice line (and so does `feed.log`).
 - `slot_steamid64`: only when `verified` is `false`: SteamID64 of the player
   in that slot (0 for a bot).
-
-A voice line is written when its utterance closes (without `--asr`) or when its
-recognition returns, so voice lines are not in time order with the rest; sort by
-`t_utc` if order matters.
 
 Game event types (filtered by `--events`) and their extra fields:
 
@@ -125,7 +161,8 @@ Game event types (filtered by `--events`) and their extra fields:
 | `sourcemod` | `via` | a notice of a SourceMod plugin |
 
 The viewer's own lines: `conn` (connecting, signon, map change, breaks,
-reconnects, leaving, the slot check), `net` (traffic started, stopped, resumed;
+reconnects, leaving, the slot check), `net` (traffic started, stopped (at the moment the silence passed the
+threshold the line names), resumed;
 with `--debug` also `lost: seq A -> B (N)` with `seq_from`, `seq_to`, `lost`),
 `play` (replay started), `tvd` (a line of the network client's log, live only),
 `rotate` (`--rotate`: the last line of a session, with `next_dir` and
@@ -175,18 +212,19 @@ still follows it.
 
 ## feed.log
 
-`<t_utc>\t<steamid64 or empty>\t<line>`, one line per event, UTF-8. The line is
-what the screen shows with `--debug`: a kill names both SteamIDs, the time is
-not repeated. The first line ends with `  [stv-watch VERSION]`.
+`<t_utc>\t<steamid64 or empty>\t<line>`, one line per event, UTF-8, in the order
+of `events.jsonl` (`talk` lines are not in it). The line is what the screen
+shows with `--debug`: a kill names both SteamIDs, the time is not repeated. The first line ends with `  [stv-watch VERSION]`.
 
 ## transcript.tsv
 
-Tab separated, UTF-8, a header line, then one row per utterance in the order
-they were finished (tabs and line breaks inside a field become spaces):
+Tab separated, UTF-8, a header line, then one row per utterance, written with
+its `voice` line and in the same order (tabs and line breaks inside a field
+become spaces):
 
 | Column | Meaning |
 |---|---|
-| `t_start_utc`, `t_end_utc` | first frame and close of the utterance (a monologue piece ends where the next begins), the format of `t_utc` |
+| `t_start_utc`, `t_end_utc` | `start_utc` and `end_utc` of the `voice` line: first frame and close of the utterance (a monologue piece ends where the next begins), the format of `t_utc` |
 | `steamid64`, `nick` | the speaker |
 | `model` | the recognizer (`parakeet`), empty without `--asr` |
 | `result` | as in the `voice` line: `text`, `no speech`, `asr off`, `not recognized before exit`, `not recognized, queue full`, `recognition failed` |
@@ -194,14 +232,14 @@ they were finished (tabs and line breaks inside a field become spaces):
 | `audio` | the WAV file, relative to the session directory; empty with `--no-audio` |
 | `speech_ms` | speech found by the VAD, as in the `voice` line; empty when not measured |
 | `asr_ms` | milliseconds the recognizer spent on it |
-| `lag_ms` | milliseconds from the close of the utterance (of a monologue piece: from its cut) to its line |
+| `lag_ms` | milliseconds of the recording's clock from the close of the utterance (of a monologue piece: from its cut) to its text |
 | `t_local` | only with `--tz`: the start in that zone, `YYYY-MM-DD HH:MM:SS` |
 | `slot`, `verified`, `slot_steamid64` | as in the `voice` line; `verified` is `true`, `false` or empty (null), `slot_steamid64` empty unless `verified` is `false` |
 
 ## audio/
 
-`HHMMSS_<steamid64>_<n>.wav`: 16 kHz mono 16-bit PCM of one utterance as
-decoded (lost frames concealed or filled with silence, loud peaks limited).
+`HHMMSS_<steamid64>_<n>.wav`, written with the utterance's `voice` line, in
+its session: 16 kHz mono 16-bit PCM of one utterance as decoded (lost frames concealed or filled with silence, loud peaks limited).
 `HHMMSS` is the start in UTC, or in the `--tz` zone; `<n>` counts the speaker's
 utterances in the run, so names do not repeat, across rotated sessions too.
 
@@ -230,8 +268,11 @@ written before it simply lack the field.
 
 Voice messages stay in the recorded datagrams: a replay shows and recognizes
 them as a live run does. A file cut by a crash is readable up to the cut.
-A rotated file starts in the middle of a connection, with no handshake or
-string tables of its own: `--replay` of it shows voice but not who is who
+With `--rotate` the network client cuts the file by the receive time of the
+packets, at the moment of the cut of the events: the voice data of an utterance
+that closes after the cut, and so has its `voice` line in a later session, is
+partly in a later file too. A rotated file starts in the middle of a
+connection, with no handshake or string tables of its own: `--replay` of it shows voice but not who is who
 before the next map change, and a replay ends with the file it was given;
 `--follow` goes on into the next file.
 `stv-watch --replay` also reads the older `.hcap` format (magic `HLTVCAP`,

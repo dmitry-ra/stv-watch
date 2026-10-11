@@ -151,7 +151,7 @@ class Recognizer:
                 events = st.push(pcm) + st.finish()
             except Exception as e:  # noqa: BLE001
                 events, meta = [], dict(meta, result="recognition failed")
-                self.out.put(("error", jkey, f"{type(e).__name__}: {e}"))
+                self.out.put(("error", jkey, f"{type(e).__name__}: {e}", meta))
             # Wall time, not thread CPU: engine threads do the work outside this one.
             compute = time.monotonic() - w0
             now = self.media_now()

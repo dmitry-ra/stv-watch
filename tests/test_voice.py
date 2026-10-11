@@ -175,6 +175,7 @@ def test_voice_lines_and_block_are_practical_by_default_and_full_with_debug(tmp_
     utt.audio_s, utt.state, utt.end_ns = 3.1, "recognizing", T0 + 3 * 10**9
     rec = text_of(app.progress(utt))
     app.finalize(utt, "a phrase as long as said in game", {})
+    app.out.release()
     final = app.screen.closed[0]
     logged = (next(tmp_path.iterdir()) / "feed.log").read_text().split("\t", 1)[1]
     assert logged.startswith(f"{sid}\t")
@@ -272,6 +273,7 @@ def test_the_lag_of_a_monologue_piece_runs_from_its_cut(tmp_path, engine):
     while first[0] != "final" or first[3]["why"] != "pause":
         first = app.q_out.get(timeout=5)
     app.handle_result(first)
+    app.out.release()
     row = (next(tmp_path.iterdir()) / "transcript.tsv").read_text().splitlines()[1].split("\t")
     assert (row[1][11:], row[10]) == ("09:40:25.548Z", "1000")
     assert app.asr.stats.done[0][3] == 1.0
@@ -324,6 +326,7 @@ def test_a_spectators_voice_is_marked_on_screen_and_in_json(tmp_path):
     app.finalize(app.utts[(sid, 1)], "hi", {})
     app.game.unheard = lambda s: False
     app.finalize(app.utts[(sid, 2)], "hi", {})
+    app.out.release()
     assert [" [spec]" in text_of(c) for c in app.screen.closed] == [True, False]
     lines = (next(tmp_path.iterdir()) / "events.jsonl").read_text().splitlines()
     assert [json.loads(ln)["spectator"] for ln in lines] == [True, False]
@@ -346,7 +349,9 @@ def test_the_speaker_is_as_of_the_utterance_end_not_the_recognizer_result(tmp_pa
     app.game.team[account(1)] = 1
     ch.nick = "Spectating"
     app.handle_result(("final", sid, "hi", app.asr.metas[0]))
-    (line,) = (next(tmp_path.iterdir()) / "events.jsonl").read_text().splitlines()
+    app.out.release()
+    talk, line = (next(tmp_path.iterdir()) / "events.jsonl").read_text().splitlines()
+    assert json.loads(talk)["nick"] == "Pensioner"
     rec = json.loads(line)
     assert (rec["nick"], rec["spectator"]) == ("Pensioner", False)
     assert text_of(app.screen.closed[0]).startswith("09:40:00.000 voice Pensioner: hi ")
@@ -364,7 +369,7 @@ def test_recognized_replay_texts_transcript_and_wavs(tmp_path, engine):
         rec, tmp_path / "o", "--asr", "parakeet", "--tz", "Asia/Tokyo"
     )
     assert rc == 0
-    voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["t_utc"])
+    voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["start_utc"])
     assert [(r["nick"], r["text"], r["result"], r["continued"]) for r in voice] == [
         ("alice", "heard 4.00s", "text", False),
         ("bob", "heard 1.50s", "text", False),
@@ -378,9 +383,13 @@ def test_recognized_replay_texts_transcript_and_wavs(tmp_path, engine):
         ("bob", "parakeet", "text", "heard 1.50s"),
         ("alice", "parakeet", "text", "heard 1.00s"),
     ]
-    assert [r[0] for r in rows] == [r["t_utc"] for r in voice]
-    assert [r[11] for r in rows] == [r["t_local"] for r in voice]
-    assert rows[0][11] == "2025-10-07 18:40:01"
+    assert [r[0] for r in rows] == [r["start_utc"] for r in voice]
+    assert [r[1] for r in rows] == [r["end_utc"] for r in voice] == [r["t_utc"] for r in voice]
+    assert [r[11] for r in rows] == [
+        "2025-10-07 18:40:01",
+        "2025-10-07 18:40:02",
+        "2025-10-07 18:40:09",
+    ]
     # every voice message came from its speaker's own slot
     assert [(r["slot"], r["verified"], "slot_steamid64" in r) for r in voice] == [
         (1, True, False),
@@ -420,7 +429,7 @@ def test_a_long_monologue_reaches_the_engine_in_pieces_marked_continued(tmp_path
         rec, tmp_path / "o", "--asr", "parakeet", "--no-audio", "--max-utt-ms", "30000"
     )
     assert rc == 0
-    voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["t_utc"])
+    voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["start_utc"])
     assert [(r["text"], r["continued"]) for r in voice] == [
         ("heard 27.38s", False),
         ("heard 8.62s", True),
@@ -428,7 +437,15 @@ def test_a_long_monologue_reaches_the_engine_in_pieces_marked_continued(tmp_path
     ]
     # the piece ends where the next begins, and each holds the frames and
     # messages of its own audio: 3 frames per message of 60 ms
-    assert voice[0]["t_end_utc"] == voice[1]["t_utc"] == "2025-10-07T09:40:27.416Z"
+    assert voice[0]["end_utc"] == voice[1]["start_utc"] == "2025-10-07T09:40:27.416Z"
+    # the piece is closed, and the next one's talk line made, where the limit
+    # cuts it: after the pause it ends at
+    cut = voice[0]["t_utc"]
+    assert cut > voice[0]["end_utc"]
+    talk = [r for r in lines if r["type"] == "talk"]
+    assert [(r["t_utc"], r["start_utc"], r["continued"]) for r in talk[1:2]] == [
+        (cut, voice[1]["start_utc"], True)
+    ]
     assert [r["details"].split(" arr ")[0].split("fr ")[1] for r in voice[:2]] == [
         "1368 plc 0 gap 0 32kb/s press 1 msg 456 -2 0%",
         "432 plc 0 gap 0 32kb/s press 0 msg 144 -2 0%",
@@ -717,9 +734,13 @@ def test_live_audio_over_the_queue_bound_is_named_not_waited_for(tmp_path, engin
         app.finish_utterance(sid, ca.start_ns + int(seconds * 10**9), "clock")
     assert time.monotonic() - t0 < 0.5
     app.asr.close()
+    for utt in list(app.utts.values()):
+        app.finalize(utt, "", dict(utt.meta, result="not recognized before exit"))
+    app.out.release()
     rows = (next(tmp_path.iterdir()) / "transcript.tsv").read_text().splitlines()[1:]
     assert [(r.split("\t")[5], r.split("\t")[7] != "") for r in rows] == [
-        ("not recognized, queue full", True)
+        ("not recognized before exit", True),
+        ("not recognized, queue full", True),
     ]
 
 
@@ -742,15 +763,19 @@ def test_an_utterance_the_engine_fails_on_is_named_and_not_counted_as_no_speech(
     demo(rec)
     rc, session, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet")
     assert rc == 0
-    voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["t_utc"])
+    voice = sorted((r for r in lines if r["type"] == "voice"), key=lambda r: r["start_utc"])
     assert [(r["nick"], r["result"], r["text"]) for r in voice] == [
         ("alice", "text", "heard 4.00s"),
         ("bob", "recognition failed", ""),
         ("alice", "text", "heard 1.00s"),
     ]
     assert sorted(r[5] for r in rows[1:]) == sorted(r["result"] for r in voice)
-    assert [r["text"] for r in lines if r["type"] == "asr"][-1].endswith(
-        ": RuntimeError: bad_alloc"
+    # right before the line of the utterance it failed on, at its moment
+    k = next(k for k, r in enumerate(lines) if r["type"] == "asr" and "bad_alloc" in r["text"])
+    assert lines[k]["text"].endswith(": RuntimeError: bad_alloc")
+    assert (lines[k + 1]["result"], lines[k + 1]["t_utc"]) == (
+        "recognition failed",
+        lines[k]["t_utc"],
     )
     meta = json.loads((session / "meta.json").read_text())
     assert (meta["counters"]["phrases"], meta["counters"]["nospeech"]) == (2, 0)

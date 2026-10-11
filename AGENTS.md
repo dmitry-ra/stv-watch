@@ -76,13 +76,20 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
 [docs/events.schema.json](docs/events.schema.json); fields per type:
 [docs/session-files.md](docs/session-files.md).
 
-- `voice`: one utterance (always on). `text` is what was recognized; `result`
-  says why it may be empty (`no speech`, `asr off`, `not recognized before
-  exit`, `not recognized, queue full`, `recognition failed`); `continued` marks a later piece of a monologue; `t_end_utc` is when
-  it closed. `verified` false means the voice data names a SteamID other
-  than the player the server has in the slot it came from (`slot`,
-  `slot_steamid64`): trust the slot, not `steamid64`. It is written when recognition returns, so it may come after
-  lines of later events: order by `t_utc`.
+- Lines come in the order of `t_utc`, the moment of the event on the
+  recording's clock (live, when its packet arrived); a replay writes the same
+  lines at any `--speed`. With `--asr` the output waits for the text of an
+  utterance that closed, so lines come up to a few seconds late; nothing needs
+  sorting.
+- Voice (always on) is two lines per utterance with the same `utt`: `talk`
+  when the player starts (`start_utc`, `slot`) and `voice` when it closes, a
+  second after his last voice data (`start_utc`, `end_utc`, the text).
+  `text` is what was recognized; `result` says why it may be empty (`no
+  speech`, `asr off`, `not recognized before exit`, `not recognized, queue
+  full`, `recognition failed`); `continued` marks a later piece of a
+  monologue. `verified` false means the voice data names a SteamID other than
+  the player the server has in the slot it came from (`slot`,
+  `slot_steamid64`): trust the slot, not `steamid64`.
 - Game events: `chat`, `console`, `connect`, `join`, `leave`, `death`, `team`,
   `name`, `server`, `sourcemod`. Pick them with `--events` (`all`, `default`,
   `none`, a comma list, `-type` to take one out).
@@ -119,8 +126,9 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
   `prev_dir`, `prev_events`, `version`). Follow `next_events`; never order
   sessions by directory name (in a replay the first is named by wall time, the
   rest by recording time). Each session has its own `meta.json` (`quit`
-  `rotated`, counters since the run started). A replay at `--speed 0` with
-  `--asr` carries voice still waiting for its text into later sessions.
+  `rotated`, counters since the run started). A rotation cuts the stream at
+  its moment: an utterance that spans it has its `talk` line in one session
+  and its `voice` line, row and WAV in the next; pair them by `utt`.
 
 ## Exit codes
 

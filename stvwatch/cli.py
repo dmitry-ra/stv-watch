@@ -240,7 +240,8 @@ def parse_args(argv=None):
     ap.add_argument(
         "--json",
         action="store_true",
-        help="like --monitor, one JSON object per line (t_utc, t_local with --tz, type, "
+        help="like --monitor, one JSON object per line in the order of t_utc (t_utc, "
+        "t_local with --tz, type, "
         "steamid64, nick, text, extra fields); the session's events.jsonl gets the same "
         "lines in any screen mode",
     )

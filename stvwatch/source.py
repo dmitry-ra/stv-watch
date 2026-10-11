@@ -100,6 +100,10 @@ class Reader(threading.Thread):
             except queue.Full:
                 continue
 
+    def waiting(self):
+        """Following: everything written so far is read."""
+        return self.rec.waiting
+
     def _event(self, t_ns, rtype, data):
         self._put(("ev", t_ns, rtype, data))
 
