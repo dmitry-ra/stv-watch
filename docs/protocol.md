@@ -57,6 +57,9 @@ with `+tv_password`), and on a live relay:
   `Bad spectator password` (its console: `Dropped NAME from server (Bad
   spectator password)`). `net/builds.py` classifies that reason as permanent.
 - A password sent to a relay without `tv_password` is ignored.
+- Every change is announced as a `server_cvar` event with the value
+  `***PROTECTED***` (a `server` line in stv-watch): players and spectators see
+  that it changed, not to what.
 - `tv_password` changed at runtime applies to the next connect at once, no
   restart; spectators already connected stay. A map change makes our client
   connect again (`net/session.py`, changelevel), so a password set while we
