@@ -198,7 +198,7 @@ def test_a_rotation_takes_along_the_voice_that_has_no_line_yet(rec, tmp_path, mo
         held_until_exit(engine, monkeypatch, 0.0)
         extra = ["--asr", "parakeet"]
     old, new = replay(rec, tmp_path / "o", "--rotate", EVERY_MINUTE, *extra)
-    files = ["events.jsonl", "feed.log", "meta.json", "transcript.tsv"]
+    files = ["events.jsonl", "feed.log", "meta.json", "stderr.log", "transcript.tsv"]
     assert ready == [sorted(files + (["audio"] if asr else []))]
     a, b = lines_of(old), lines_of(new)
     assert [r["type"] for r in a].count("rotate") == [r["type"] for r in b].count("rotate") == 1

@@ -292,13 +292,18 @@ class Screen:
         self.pending = []
         self.started = False
 
-    def stderr_to(self, path):
-        """What libraries print goes on in `path` (start() sent it to a file)."""
+    def stderr_open(self, path):
+        """The file for stderr_to(), made now; None if start() sent nothing to a file."""
         if self._saved is None:
+            return None
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+
+    def stderr_to(self, fd):
+        """What libraries print goes on in the file stderr_open() made."""
+        if fd is None:
             return
         sys.stdout.flush()
         sys.stderr.flush()
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         os.dup2(fd, 1)
         os.dup2(fd, 2)
         os.close(fd)

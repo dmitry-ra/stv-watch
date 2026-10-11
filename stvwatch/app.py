@@ -344,6 +344,7 @@ class App:
         old_abs, new_abs = os.path.abspath(old_dir), os.path.abspath(new_dir)
         os.makedirs(new_dir, exist_ok=True)
         files = self._open_files(new_dir)
+        err = self.screen.stderr_open(os.path.join(new_dir, "stderr.log"))
         self.meta = self._meta(new_dir, rotated_utc=utc_iso(t_ns), prev_dir=old_abs)
         self.write_meta(self.meta)
         self._move_voice(old_dir, new_dir)
@@ -361,7 +362,7 @@ class App:
             fh.close()
         self.dir = new_dir
         self.feed_fh, self.jsonl_fh, self.tsv_fh = files
-        self.screen.stderr_to(os.path.join(new_dir, "stderr.log"))
+        self.screen.stderr_to(err)
         # the new session's first line: where it came from and which build
         # wrote it; on the screen the old session's last line says it all
         v = self.build["version"]
