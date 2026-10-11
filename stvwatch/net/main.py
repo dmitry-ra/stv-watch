@@ -18,6 +18,7 @@ import signal
 import sys
 import time
 
+from .. import rotate, times
 from . import dump as dumpfmt
 from . import supervisor, wire
 
@@ -28,6 +29,36 @@ def _arm_parent_death(parent_pid):
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
     libc.prctl(1, signal.SIGTERM)
     return os.getppid() == parent_pid
+
+
+def _log_to(path):
+    """Our stdout and stderr (the log file the launcher gave us) go on in `path`."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.close(fd)
+
+
+def rotation(a):
+    """--rotate -> (next_path, on_next) for the dump writer, or (None, None)."""
+    if not a.rotate:
+        return None, None
+    sched = rotate.Schedule(a.rotate, times.zone(a.rotate_tz), time.time_ns())
+    name = os.path.basename(a.dump)
+
+    def next_path(t_ns):
+        start = sched.due(t_ns)
+        if start is None:
+            return None
+        return os.path.join(a.rotate_dir.replace("{stamp}", times.stamp(start)), name)
+
+    def on_next(path):
+        if a.rotate_log:
+            _log_to(os.path.join(os.path.dirname(path), a.rotate_log))
+
+    return next_path, on_next
 
 
 def cmd_run(a):
@@ -46,6 +77,11 @@ def cmd_run(a):
     if a.parent_pid and not _arm_parent_death(a.parent_pid):
         print("[tvdump] launcher already gone, not connecting")
         return 0
+    try:
+        next_path, on_next = rotation(a)
+    except ValueError as e:
+        print(f"[tvdump] --rotate: {e}")
+        return 2
     opt = supervisor.Options(
         ip=a.ip,
         port=a.port,
@@ -58,6 +94,8 @@ def cmd_run(a):
         silence_full_s=a.silence_full_ms / 1000,
         rerate=a.rerate,
         version=a.stv_version,
+        next_path=next_path,
+        on_next=on_next,
     )
     sup = supervisor.Supervisor(opt, a.dump)
     sup.stop = bool(stopping)
@@ -145,7 +183,7 @@ def cmd_read(a):
     return rc
 
 
-def main(argv=None):
+def parser():
     ap = argparse.ArgumentParser(description="SourceTV session client + dumper", allow_abbrev=False)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -183,6 +221,23 @@ def main(argv=None):
         default=None,
         help="version written into the dump (default: this package's own)",
     )
+    r.add_argument(
+        "--rotate",
+        default=None,
+        metavar="CRON",
+        help="go on in a new dump in a new directory at these times (5-field cron, record "
+        "time); the old dump ends with a NEXT_FILE record naming the new one",
+    )
+    r.add_argument("--rotate-tz", default="UTC", help="time zone of --rotate")
+    r.add_argument(
+        "--rotate-dir",
+        default=None,
+        metavar="TEMPLATE",
+        help="the new directory; {stamp} is the start of its period, YYYYMMDDTHHMMSSZ UTC",
+    )
+    r.add_argument(
+        "--rotate-log", default=None, metavar="NAME", help="our log goes on in this file there"
+    )
     r.set_defaults(fn=cmd_run)
 
     d = sub.add_parser("read", help="summarize a dump", allow_abbrev=False)
@@ -193,8 +248,14 @@ def main(argv=None):
     d.add_argument("--assert-max-breaks", type=int, default=None)
     d.add_argument("--assert-no-gaps-over-ms", type=int, default=None)
     d.set_defaults(fn=cmd_read)
+    return ap
 
+
+def main(argv=None):
+    ap = parser()
     a = ap.parse_args(argv)
+    if getattr(a, "rotate", None) and not a.rotate_dir:
+        ap.error("--rotate needs --rotate-dir")
     return a.fn(a)
 
 

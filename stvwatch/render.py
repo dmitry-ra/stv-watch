@@ -62,6 +62,10 @@ STYLES = {
     "gray": "\x1b[2;90m",
     # text still growing (the live recognizer's): white, never bold
     "partial": "\x1b[37m",
+    # the time at the start of a feed line and the clock of the block: dim,
+    # and found by their style where an --attach screen shows its own zone
+    "stamp": "\x1b[2m",
+    "clock": "\x1b[2m",
 }
 TAIL_FIRST = ("partial",)  # a line ending in a span of these keeps its end when cut
 MIN_TAIL = 12
@@ -244,7 +248,7 @@ class Screen:
         self.out.write("\x1b[?25l")
         self.out.flush()
 
-    def stop(self, final_block=()):
+    def stop(self, final_block=(), t_ns=None):
         """Leave the terminal as found: no scroll region, cursor shown, the feed
         on screen and the final status right under it, cursor below that."""
         if self.tty:
@@ -288,6 +292,17 @@ class Screen:
         self.pending = []
         self.started = False
 
+    def stderr_to(self, path):
+        """What libraries print goes on in `path` (start() sent it to a file)."""
+        if self._saved is None:
+            return
+        sys.stdout.flush()
+        sys.stderr.flush()
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+        os.close(fd)
+
     def _on_winch(self, _sig, _frm):
         self.resized = True
 
@@ -323,18 +338,20 @@ class Screen:
         return k.decode("ascii", "replace")
 
     # ---- output
-    def feed(self, spans):
+    # t_ns, here and in draw and stop: the moment the line's time label or the
+    # block's clock shows, for a served screen; a terminal draws the spans
+    def feed(self, spans, t_ns=None):
         self.pending.append(("feed", spans))
 
-    def live_open(self, key, spans):
+    def live_open(self, key, spans, t_ns=None):
         """Start a live line (cut to one row) at the bottom of the feed."""
         self.pending.append(("open", key, spans))
 
-    def live_update(self, key, spans):
+    def live_update(self, key, spans, t_ns=None):
         """New text of a live line; only the latest before a draw is shown."""
         self.updates[key] = spans
 
-    def live_close(self, key, spans, cont=()):
+    def live_close(self, key, spans, cont=(), t_ns=None):
         """Final text of a live line, in place if it can still be addressed,
         else as a new line prefixed with `cont`."""
         self.updates.pop(key, None)
@@ -495,7 +512,7 @@ class Screen:
             return bar_line(spans, cols, self.color) + ("" if self.color else "\x1b[K")
         return to_ansi(fit(spans, cols - 1)[0], self.color) + "\x1b[K"
 
-    def draw(self, block):
+    def draw(self, block, t_ns=None):
         """Print pending feed lines into the scroll region, redraw the block in
         the rows under it, park the cursor on the block's first row."""
         if not self.tty:

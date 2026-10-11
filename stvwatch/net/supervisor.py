@@ -50,6 +50,9 @@ class Options:
         self.leave_reason = kw.get("leave_reason", handshake.LEAVE)
         # the viewer passes its own: one build named in all of a session's files
         self.version = kw.get("version") or version.version()
+        # --rotate: DumpWriter's next_path and on_next
+        self.next_path = kw.get("next_path")
+        self.on_next = kw.get("on_next")
 
 
 class Supervisor:
@@ -57,7 +60,13 @@ class Supervisor:
         self.opt = opt
         self.log = log
         self.endpoint = f"{opt.ip}:{opt.port}"
-        self.dump = dumpfmt.DumpWriter(dump_path, self.endpoint, fsync_ms=opt.fsync_ms)
+        self.dump = dumpfmt.DumpWriter(
+            dump_path,
+            self.endpoint,
+            fsync_ms=opt.fsync_ms,
+            next_path=opt.next_path,
+            on_next=opt.on_next,
+        )
         self.sessions = 0
         self.reconnects = 0
         self.reached_full = 0

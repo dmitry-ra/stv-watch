@@ -12,12 +12,15 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import timezone
+from zoneinfo import ZoneInfo
 
 import pytest
+from helpers import T0
 from test_voice import forged_recording
 from voicegen import demo
 
-from stvwatch import cli, serve
+from stvwatch import cli, serve, times
 from stvwatch.app import App
 from stvwatch.cli import parse_args
 from stvwatch.render import Screen
@@ -64,8 +67,8 @@ def until(cond, timeout=10.0):
 class Client:
     """An --attach screen stepping in a thread of its own."""
 
-    def __init__(self, path):
-        self.c = serve.Attached(path, tty_screen())
+    def __init__(self, path, tz=None):
+        self.c = serve.Attached(path, tty_screen(), tz=tz)
         self.stop = threading.Event()
         self.t = threading.Thread(target=self._loop, daemon=True)
         self.t.start()
@@ -110,7 +113,7 @@ class Recorded(Screen):
     def start(self, stderr_path=None):
         super().start(None)
 
-    def stop(self, final_block=()):
+    def stop(self, final_block=(), t_ns=None):
         self.final = list(final_block)
         super().stop(final_block)
 
@@ -159,6 +162,64 @@ def test_two_attached_screens_draw_what_the_local_screen_draws(
     assert not os.path.exists(sock)
 
 
+def test_a_screen_in_its_own_zone_draws_what_a_local_run_in_that_zone_draws(
+    voice, local, tmp_path, sock, monkeypatch
+):
+    """The engine runs in Tokyo, the screen in UTC: every time label and the
+    clock are the screen's, as in a local run without --tz."""
+    hold_start(monkeypatch, 1)
+    c = Client(sock, tz=timezone.utc)
+    args = ["--replay", voice, "--speed", "0", "--events", "all", "--out", str(tmp_path)]
+    assert App(parse_args(args + ["--tz", "Asia/Tokyo", "--serve", sock])).run() == 0
+    s = session_of(tmp_path)
+    lines, final = local
+    c = c.finish()
+    assert normal(screen_lines(c.screen), s) == lines
+    assert normal(c.block, s) == final
+
+
+def test_time_travels_as_data_and_the_screen_shows_it_in_its_zone(sock, monkeypatch):
+    """A line, a live line and the block carry the moment they show; a screen
+    with --tz shows it there, one without in the engine's zone, and its own
+    lines in the zone of its other labels."""
+    msk, tokyo = ZoneInfo("Europe/Moscow"), ZoneInfo("Asia/Tokyo")
+    eng = serve.ServedScreen(
+        sock, {"pid": 1, "version": "v", "tz": "Europe/Moscow", "engine": "e1"}
+    )
+    eng.start()
+    monkeypatch.setattr(serve.time, "time_ns", lambda: T0 + 9 * 10**9)
+    out = FakeTty()
+    screens = [
+        serve.Attached(sock, Screen(out=out, plain=True)),
+        serve.Attached(sock, tty_screen(), tz=tokyo),
+    ]
+    for c in screens:
+        assert c.connect()
+    t1, t2, t5 = (T0 + k * 10**9 for k in (1, 2, 5))
+    eng.feed([(times.local(t1, msk) + " ", "stamp"), ("chat  ", "blue"), ("hi", "")], t1)
+    eng.live_open("k", [(times.local(t2, msk) + " ", "stamp"), ("voice talking", "")], t2)
+    eng.live_close("k", [(times.local(t2, msk) + " ", "stamp"), ("voice: said", "")], (), t2)
+    clock = [("LIVE ", "bold"), ("  ", ""), (times.local(t5, msk) + " Europe/Moscow", "clock")]
+    eng.draw([[(" stv-watch v ", "bar")], clock, [("q", "quit")]], t5)
+    plain, own = screens
+    for c in screens:
+        until(lambda c=c: (c.step(0.01), c.block)[1])
+    shown = [ln for ln in out.getvalue().splitlines() if not ln.startswith("status ")]
+    assert shown == [
+        "12:40:09.000 attach attached to %s (engine pid 1)" % sock,
+        "12:40:01.000 chat  hi",
+        "12:40:02.000 voice: said",
+    ]
+    assert own.block[1] == [("LIVE ", "bold"), ("  ", ""), ("18:40:05.000 Asia/Tokyo", "clock")]
+    assert plain.block[1][-1] == ("12:40:05.000 Europe/Moscow", "clock")
+    assert texts(own.screen)[-2:] == ["18:40:01.000 chat  hi", "18:40:02.000 voice: said"]
+    own.note("own")
+    assert own.screen.pending[-1][1][0] == ("18:40:09.000 ", "stamp")
+    eng.stop()
+    for c in screens:
+        c.close()
+
+
 def test_an_attached_screen_marks_a_voice_from_someone_elses_slot_in_red(
     tmp_path, sock, monkeypatch
 ):
@@ -182,8 +243,8 @@ def test_a_late_screen_gets_the_history_open_live_lines_and_block_on_connect(
     early, late = Client(sock), []
     draw = serve.ServedScreen.draw
 
-    def gate(screen, block):
-        draw(screen, block)
+    def gate(screen, block, t_ns=None):
+        draw(screen, block, t_ns)
         srv = screen.server
         closed = any(e.get("key") is not None and e["op"] == "line" for e in srv.ring)
         if not late and srv.open and closed:
@@ -412,7 +473,7 @@ def test_a_screen_refuses_an_engine_of_the_previous_protocol(sock, monkeypatch):
     assert c.rc == 2 and c.engine is None
     assert texts(c.screen)[-1].endswith(
         f"attach the engine (stv-watch v) speaks protocol 1, this stv-watch"
-        f" {version.version()} speaks 2: attach with the engine's version"
+        f" {version.version()} speaks {serve.PROTO}: attach with the engine's version"
     )
     eng.stop()
 

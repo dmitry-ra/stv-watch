@@ -37,6 +37,7 @@ RECONNECT = 0x13
 MAPCHANGE = 0x14
 SPLIT_SEEN = 0x15
 LEAVE = 0x16
+NEXT_FILE = 0x17
 
 TYPE_NAMES = {
     DATAGRAM_IN: "DATAGRAM_IN",
@@ -48,8 +49,9 @@ TYPE_NAMES = {
     MAPCHANGE: "MAPCHANGE",
     SPLIT_SEEN: "SPLIT_SEEN",
     LEAVE: "LEAVE",
+    NEXT_FILE: "NEXT_FILE",
 }
-EVENT_TYPES = {SESSION_START, SIGNON, BROKEN, RECONNECT, MAPCHANGE, SPLIT_SEEN, LEAVE}
+EVENT_TYPES = {SESSION_START, SIGNON, BROKEN, RECONNECT, MAPCHANGE, SPLIT_SEEN, LEAVE, NEXT_FILE}
 
 
 class DumpError(Exception):
@@ -66,25 +68,54 @@ class DumpWriter:
     loss.
     """
 
-    def __init__(self, path, endpoint, fsync_ms=1000):
+    def __init__(self, path, endpoint, fsync_ms=1000, next_path=None, on_next=None):
         self.path = path
+        self.endpoint = endpoint
         self.fsync_interval_ns = max(0, int(fsync_ms)) * 1_000_000
         self._last_fsync = time.monotonic_ns()  # monotonic: an NTP step must
         self.records = 0  # never wedge the gate
+        # rotation: next_path(t_ns) -> the file the record at t_ns starts, or None
+        self.next_path, self.on_next = next_path, on_next
+        self._f = self._open(path)
+
+    def _open(self, path):
         try:
             d = os.path.dirname(os.path.abspath(path))
             os.makedirs(d, exist_ok=True)
-            self._f = open(path, "wb")
-            ep = endpoint.encode("ascii", "replace")
-            self._f.write(struct.pack(HEADER_HEAD, MAGIC, VERSION, time.time_ns(), len(ep)) + ep)
-            self._f.flush()
-            os.fsync(self._f.fileno())
+            f = open(path, "wb")
+            ep = self.endpoint.encode("ascii", "replace")
+            f.write(struct.pack(HEADER_HEAD, MAGIC, VERSION, time.time_ns(), len(ep)) + ep)
+            f.flush()
+            os.fsync(f.fileno())
         except OSError as e:
             raise DumpError(f"cannot open dump {path!r}: {e}") from e
+        return f
+
+    def _next_file(self, path, t_ns):
+        """The next file is complete on disk before this one points to it, so
+        a reader that follows NEXT_FILE never finds it missing."""
+        f = self._open(path)
+        if self.on_next is not None:
+            self.on_next(path)
+        old, self._f = self._f, f
+        try:
+            data = json.dumps({"path": os.path.abspath(path)}, sort_keys=True).encode("utf-8")
+            old.write(struct.pack(RECORD_HEAD, t_ns, NEXT_FILE, len(data)) + data)
+            old.flush()
+            os.fsync(old.fileno())
+        except OSError as e:
+            raise DumpError(f"dump write failed: {e}") from e
+        finally:
+            old.close()
+        self.path = path
 
     def write(self, rtype, data, t_ns=None):
         if t_ns is None:
             t_ns = time.time_ns()
+        if self.next_path is not None:
+            nxt = self.next_path(t_ns)
+            if nxt is not None:
+                self._next_file(nxt, t_ns)
         try:
             self._f.write(struct.pack(RECORD_HEAD, t_ns, rtype, len(data)))
             self._f.write(data)

@@ -16,6 +16,11 @@ a sequence number, so a client that comes back to the same engine skips what it
 has and closes the live lines that closed while it was away. A client that does
 not read is dropped once CLIENT_BUF bytes wait for it, and reconnects: the
 engine never waits for a screen.
+
+Time travels as data too: a line, a live line and a block carry `t`, the UTC
+nanoseconds their time label (style "stamp") or clock (style "clock") shows,
+and the screen writes those spans again in its own zone: --tz of the screen,
+else the engine's, named in hello.
 """
 
 import collections
@@ -28,15 +33,15 @@ import stat
 import sys
 import threading
 import time
-from datetime import datetime
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import version
 from .render import Screen, clean, is_bar
+from .times import local, tz_label, zone
 
 # Bump on any change that the other side of an older version would draw
-# wrong, not only on a change of message shape: 2 is the attached marker.
-PROTO = 2
+# wrong, not only on a change of message shape: 2 is the attached marker,
+# 3 the time as data.
+PROTO = 3
 HISTORY = 200
 CLIENT_BUF = 1 << 20
 DRAIN_S = 1.0  # at exit, how long the last bytes may take to reach the clients
@@ -185,7 +190,7 @@ class Server:
                 e["spans"] = m["spans"]
         elif op == "close":
             e = self.open.pop(m["key"], None)
-            final = {"spans": m["spans"], "cont": m["cont"]}
+            final = {"spans": m["spans"], "cont": m["cont"], "t": m.get("t")}
             if e is not None and self.ring and e["seq"] >= self.ring[0]["seq"]:
                 e.update(op="line", **final)
             else:
@@ -318,39 +323,58 @@ class ServedScreen:
     def key(self):
         return None
 
-    def feed(self, spans):
-        self.pending.append({"op": "line", "spans": spans})
+    def stderr_to(self, path):
+        self.log.stderr_to(path)
+
+    def feed(self, spans, t_ns=None):
+        self.pending.append({"op": "line", "spans": spans, "t": t_ns})
         self.log.feed(spans)
 
-    def live_open(self, key, spans):
-        self.pending.append({"op": "open", "key": key, "spans": spans})
+    def live_open(self, key, spans, t_ns=None):
+        self.pending.append({"op": "open", "key": key, "spans": spans, "t": t_ns})
 
-    def live_update(self, key, spans):
-        self.updates[key] = spans
+    def live_update(self, key, spans, t_ns=None):
+        self.updates[key] = (spans, t_ns)
 
-    def live_close(self, key, spans, cont=()):
+    def live_close(self, key, spans, cont=(), t_ns=None):
         self.updates.pop(key, None)
-        self.pending.append({"op": "close", "key": key, "spans": spans, "cont": list(cont)})
+        self.pending.append(
+            {"op": "close", "key": key, "spans": spans, "cont": list(cont), "t": t_ns}
+        )
         self.log.live_close(key, spans, cont)
 
     def _batch(self, last):
         msgs = self.pending + [
-            {"op": "update", "key": k, "spans": s} for k, s in self.updates.items()
+            {"op": "update", "key": k, "spans": s, "t": t} for k, (s, t) in self.updates.items()
         ]
         self.pending, self.updates = [], {}
         return msgs + [last]
 
-    def draw(self, block):
-        self.server.publish(self._batch({"op": "draw", "block": list(block)}))
+    def draw(self, block, t_ns=None):
+        self.server.publish(self._batch({"op": "draw", "block": list(block), "t": t_ns}))
         self.log.draw(())
 
-    def stop(self, final_block=()):
-        self.server.close(self._batch({"op": "bye", "block": list(final_block)}))
+    def stop(self, final_block=(), t_ns=None):
+        self.server.close(self._batch({"op": "bye", "block": list(final_block), "t": t_ns}))
         self.log.stop(())
 
 
 def _spans(raw):
     return [(clean(t), str(s)) for t, s in raw]
+
+
+def restamp(spans, t_ns, tz):
+    """The time label and the clock of `spans` as of `t_ns` in `tz`."""
+    if t_ns is None:
+        return spans
+    out = []
+    for text, style in spans:
+        if style == "stamp":
+            text = local(t_ns, tz) + " "
+        elif style == "clock":
+            text = local(t_ns, tz) + " " + tz_label(tz)
+        out.append((text, style))
+    return out
 
 
 def _key(k):
@@ -361,8 +385,9 @@ class Attached:
     """--attach: the screen of a served engine. Reconnects by itself when the
     engine goes away and says so in one line when it is back."""
 
-    def __init__(self, path, screen, status_every_ms=10_000):
+    def __init__(self, path, screen, status_every_ms=10_000, tz=None):
         self.path, self.screen = path, screen
+        self.own_tz = tz  # None: the engine's
         self.sock = None
         self.buf = b""
         self.engine = None  # hello of the engine shown
@@ -444,13 +469,23 @@ class Attached:
             self.note("engine ended" if self.ended else "engine gone", ", waiting for it")
             self.screen.draw(())
 
+    def zone(self):
+        """Our --tz, else the engine's zone."""
+        if self.own_tz is not None:
+            return self.own_tz
+        try:
+            return zone((self.engine or {}).get("tz", "UTC"))
+        except ValueError:
+            return zone("UTC")
+
     def handle(self, m):
         op = m.get("op")
         key = _key(m.get("key"))
+        tz, t = self.zone(), m.get("t")
         if op == "hello":
             self._hello(m)
         elif op == "line":
-            spans = _spans(m["spans"])
+            spans = restamp(_spans(m["spans"]), t, tz)
             if key is not None and key in self.open:
                 # closed while we were away
                 self.last_seq = max(self.last_seq, m["seq"])
@@ -460,7 +495,7 @@ class Attached:
                 self.last_seq = m["seq"]
                 self.screen.feed(spans)
         elif op == "open":
-            spans = _spans(m["spans"])
+            spans = restamp(_spans(m["spans"]), t, tz)
             if m["seq"] > self.last_seq:
                 self.last_seq = m["seq"]
                 self.open[key] = spans
@@ -470,14 +505,15 @@ class Attached:
                 self.screen.live_update(key, spans)
         elif op == "update":
             if key in self.open:
-                self.open[key] = _spans(m["spans"])
+                self.open[key] = restamp(_spans(m["spans"]), t, tz)
                 self.screen.live_update(key, self.open[key])
         elif op == "close":
             self.last_seq = max(self.last_seq, m.get("seq", 0))
             self.open.pop(key, None)
-            self.screen.live_close(key, _spans(m["spans"]), _spans(m["cont"]))
+            spans = restamp(_spans(m["spans"]), t, tz)
+            self.screen.live_close(key, spans, _spans(m["cont"]))
         elif op in ("draw", "bye"):
-            self.block = [_spans(line) for line in m["block"]]
+            self.block = [restamp(_spans(line), t, tz) for line in m["block"]]
             self.ended = op == "bye"
             self._draw(status=op == "draw")
 
@@ -505,15 +541,9 @@ class Attached:
             self.note(f"engine restarted: pid {old['pid']} -> {m['pid']}, {self.path}")
 
     def note(self, text, more=""):
-        """A feed line of our own, timed like the engine's."""
-        tz = (self.engine or {}).get("tz", "UTC")
-        try:
-            zone = ZoneInfo(tz)
-        except (ZoneInfoNotFoundError, ValueError):
-            zone = ZoneInfo("UTC")
-        t = datetime.now(zone)
-        stamp = t.strftime("%H:%M:%S") + ".%03d " % (t.microsecond // 1000)
-        self.screen.feed([(stamp, "dim"), ("attach ", "blue"), (text + more, "")])
+        """A feed line of our own, in the zone of our time labels."""
+        stamp = local(time.time_ns(), self.zone()) + " "
+        self.screen.feed([(stamp, "stamp"), ("attach ", "blue"), (text + more, "")])
 
     def attach_line(self):
         pid = (self.engine or {}).get("pid", "?")
@@ -561,7 +591,7 @@ def _as_attached(spans):
 def attach(a):
     """stv-watch --attach PATH. -> exit code."""
     screen = Screen(plain=a.plain, color=False if a.no_color else None)
-    c = Attached(a.attach, screen, a.status_every_ms)
+    c = Attached(a.attach, screen, a.status_every_ms, a.tz if a.tz_given else None)
     if not c.connect():
         print(f"stv-watch: no engine serves {a.attach}", file=sys.stderr)
         return 2

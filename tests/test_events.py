@@ -961,13 +961,13 @@ class Lines:
     def __init__(self, color=False):
         self.closed, self.fed, self.color = [], [], color
 
-    def feed(self, spans):
+    def feed(self, spans, t_ns=None):
         self.fed.append(spans)
 
-    def live_open(self, key, spans):
+    def live_open(self, key, spans, t_ns=None):
         pass
 
-    def live_close(self, key, spans, cont=()):
+    def live_close(self, key, spans, cont=(), t_ns=None):
         self.closed.append(spans)
 
 
