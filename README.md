@@ -131,6 +131,30 @@ Given a game port, stv-watch refuses before connecting with
 `refused: relay does not take anonymous login, auth protocol 3`: the game
 server wants a Steam login, which a SourceTV relay does not.
 
+### A relay with a password
+
+A server that sets `tv_password` closes its relay to spectators without it, and
+its A2S_INFO reply on the relay port says so (`visibility` 1). stv-watch refuses
+such a relay before connecting unless you give it the password, in a file
+(its first line) or in the environment:
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --password-file ~/.config/stv-watch/relay.pw
+STV_WATCH_PASSWORD=... uv run stv-watch --relay RELAY_IP:27020
+```
+
+There is no option that takes the password itself: a command line is visible to
+every user of the machine (`ps`) and is copied into `meta.json`. The password
+goes to the network client through its environment and to the relay in the
+connect request; it is not written to any session file (`capture.tvd` keeps the
+connect request with the password field empty), the screen or a log. A wrong
+password is a refusal retrying will not change: the relay accepts the connect
+and drops us at once with `Bad spectator password`, and stv-watch ends with exit
+code 3 (`tvd` line `[alarm] permanent failure: Bad spectator password`).
+
+A password set while we are connected does not drop us, but the next map change
+does: stv-watch reconnects after every map change, and that connect is checked.
+
 ### Voice
 
 Every utterance is a line: who talks, `talking N s` while the key is held, then
@@ -405,10 +429,10 @@ add it to the table: [docs/protocol.md](https://github.com/dmitry-ra/stv-watch/b
 
 - stv-watch takes a spectator slot on someone else's server. Before connecting it
   checks that at least one slot stays free for others after it joins
-  (`--allow-last-slot` overrides that), it does not join relays with a password or
-  a Steam-only login, and on every way out, including a crash of the viewer, it
-  tells the relay it left, so the slot is freed at once rather than after the
-  relay's 300 s timeout.
+  (`--allow-last-slot` overrides that), it joins a password-protected relay only
+  with the password you give it, never one with a Steam-only login, and on every
+  way out, including a crash of the viewer, it tells the relay it left, so the
+  slot is freed at once rather than after the relay's 300 s timeout.
 - It does not hammer a relay: a refused or dropped connection is retried with a
   growing delay, and a refusal that retrying will not change (wrong build,
   password, ban) is retried only every few minutes and ends the viewer.

@@ -285,7 +285,9 @@ class FakeClient:
     ones the viewer passes; its log lines are written by hand, since the real
     one moves its own stdout."""
 
-    def __init__(self, ip, port, dump_path, log_path, name="", duration_ms=0, extra=()):
+    def __init__(
+        self, ip, port, dump_path, log_path, name="", duration_ms=0, extra=(), password=""
+    ):
         argv = ["run", "--dump", dump_path, "--ip", ip, "--port", str(port), *extra]
         self.a = netmain.parser().parse_args(argv)
         self.log_path = log_path

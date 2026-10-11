@@ -38,6 +38,11 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
   server's A2S_INFO as JSON with `tv_port`; no `tv_port` means no SourceTV. A
   game port is refused with `refused: relay does not take anonymous login, auth
   protocol 3`.
+- A relay whose A2S_INFO says `visibility` 1 has `tv_password`: it is refused
+  before connecting (`refused: relay has tv_password ...`) unless the password
+  is given with `--password-file PATH` (first line) or `STV_WATCH_PASSWORD`.
+  Never put a password on a command line, and never ask for one you were not
+  given. A wrong one ends the run with exit code 3 (`Bad spectator password`).
 - Add `--tz ZONE` only if you need local time; `t_utc` is always there.
 - stdin is not read in `--json`/`--monitor` mode; no key needs to be pressed.
 - `--serve SOCKET` (headless engine, its screen on a Unix socket) and

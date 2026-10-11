@@ -66,6 +66,8 @@ uv run stv-watch --follow SESSION_DIR/capture.tvd --json   # a live run's journa
 - `refused: relay does not take anonymous login, auth protocol 3` usually means
   a game port was given. `uv run python -m stvwatch.net.a2s IP:GAMEPORT` prints
   `tv_port`, the port for `--relay` (absent: no SourceTV).
+- `refused: relay has tv_password` needs the password from your user, through
+  `--password-file PATH` or `STV_WATCH_PASSWORD`, never on the command line.
 - Connect only to relays your user named, one viewer per relay (more readers:
   `--follow` its `capture.tvd`), never `--allow-last-slot` unless asked.
 - Session files hold other players' voices, nicks, SteamIDs and chat: do not

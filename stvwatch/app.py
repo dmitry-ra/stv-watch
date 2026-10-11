@@ -217,8 +217,10 @@ class Utt:
 
 
 class App:
-    def __init__(self, a):
+    def __init__(self, a, password=""):
         self.a = a
+        # Kept out of `a`: meta.json holds vars(a).
+        self.password = password
         self.live = a.relay is not None
         self.follow = a.follow is not None
         self.tz = a.tz
@@ -1197,7 +1199,9 @@ class App:
         build, password, Steam login, no free slot left for anyone else after
         us). -> error text or ''."""
         ok, why, facts = source.client.precheck(
-            self.a.relay, allow_last_slot=self.a.allow_last_slot
+            self.a.relay,
+            allow_last_slot=self.a.allow_last_slot,
+            have_password=bool(self.password),
         )
         self.conn.players, self.conn.max_players = (
             facts["spectators_before"],
@@ -1218,7 +1222,10 @@ class App:
             )
         return {
             "relay_silent": "relay does not answer A2S_INFO",
-            "password": "relay has tv_password (A2S visibility=1)",
+            "password": (
+                "relay has tv_password (A2S visibility=1); give it with --password-file "
+                "or STV_WATCH_PASSWORD"
+            ),
             "few_free_slots": (
                 f"relay slots {facts['spectators_before']}/"
                 f"{facts['max_spectators']}: no free slot would remain "
@@ -1312,11 +1319,13 @@ class App:
                     name=a.name,
                     duration_ms=a.duration_ms,
                     extra=["--stv-version", self.build["version"]] + rot,
+                    password=self.password,
                 )
                 self.event(
                     "conn",
                     f"connecting to {a.relay} ({clean(self.conn.hostname)}, "
-                    f"relay {self.conn.players}/{self.conn.max_players})",
+                    f"relay {self.conn.players}/{self.conn.max_players}"
+                    f"{', with a password' if self.password else ''})",
                     "info",
                 )
                 if not self.client.start():

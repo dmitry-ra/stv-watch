@@ -13,7 +13,9 @@ import time
 
 import simlink
 
-from stvwatch.net import a2s, netchan, wire
+from stvwatch.net import a2s, messages, netchan, wire
+
+BAD_PASSWORD = "Bad spectator password"  # srcds 10889068, wrong or no tv_password
 
 
 def disconnect_reason(packet):
@@ -44,12 +46,17 @@ class FakeRelay:
         bodies=(),
         early=False,
         accept=True,
+        password=None,
     ):
         self.version = version
         self.bodies = list(bodies)  # reliable message streams for each connection
         self.early = early  # its first packet goes out before the accept
         self.accept = accept  # False: no 'B' at all, the stream alone
         self.reject = reject  # connect refused with this reason, as the engine does
+        # tv_password: announced in A2S; a connect with another one is accepted
+        # and then dropped with this reason, as srcds does
+        self.password = password
+        self.passwords = []  # the password field of every connect request
         self.max_players = max_players
         self.interval = interval
         self.cut_first_after = cut_first_after
@@ -139,6 +146,11 @@ class FakeRelay:
                 self.sock.sendto(refusal + self.reject.encode() + b"\0", addr)
             elif cmd == bytes([wire.C2S_CONNECT]):
                 challenge = struct.unpack_from("<I", data, 13)[0]
+                _name, pw = data[21:].split(b"\0", 2)[:2]
+                self.passwords.append(pw.decode("utf-8", "replace"))
+                if self.password is not None and self.passwords[-1] != self.password:
+                    self._bad_password(challenge, addr)
+                    return
                 with self.lock:
                     self.connections += 1
                     c = self.clients[addr] = {
@@ -167,6 +179,16 @@ class FakeRelay:
             return
         c["relay"].on_ack(data)
 
+    def _bad_password(self, challenge, addr):
+        with self.lock:
+            self.connections += 1
+            self.refusals += 1
+        self.sock.sendto(b"\xff\xff\xff\xff" + bytes([wire.S2C_CONNECTION]) + b"\0" * 4, addr)
+        bye = netchan.build_packet(
+            1, 0, challenge, 0, unreliable=messages.disconnect_body(BAD_PASSWORD)
+        )
+        self.sock.sendto(bye, addr)
+
     def _info(self):
         players = self.connected()
         body = (
@@ -174,7 +196,8 @@ class FakeRelay:
             + b"Fake relay\0dm_test\0hl2mp\0Half-Life 2 Deathmatch\0"
             + struct.pack("<H", 320)
             + bytes([players, self.max_players, 0])
-            + b"dl\x00\x01"
+            + b"dl"
+            + bytes([self.password is not None, 1])
             + self.version.encode()
             + b"\0"
         )

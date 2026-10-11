@@ -22,6 +22,9 @@ from .. import rotate, times
 from . import dump as dumpfmt
 from . import supervisor, wire
 
+# The viewer passes the password to this process here, not in argv.
+PASSWORD_ENV = "STV_WATCH_PASSWORD"
+
 
 def _arm_parent_death(parent_pid):
     """SIGTERM when the launching process dies (PR_SET_PDEATHSIG), the path on
@@ -87,7 +90,7 @@ def cmd_run(a):
         port=a.port,
         name=a.name,
         build=None if a.build == "auto" else a.build,
-        password=a.password,
+        password=os.environ.get(PASSWORD_ENV, "") if a.password is None else a.password,
         crc=None if a.crc == "auto" else int(a.crc, 0),
         seconds=a.duration_ms / 1000,
         fsync_ms=a.fsync_ms,
@@ -195,7 +198,12 @@ def parser():
     r.add_argument(
         "--build", default="auto", help="server build; auto = A2S_INFO version of the relay"
     )
-    r.add_argument("--password", default="", help="tv_password, if set")
+    r.add_argument(
+        "--password",
+        default=None,
+        help=f"tv_password of the relay (default: ${PASSWORD_ENV}); for manual tests only: "
+        "an argument is visible to every user in ps",
+    )
     r.add_argument(
         "--crc",
         default="auto",

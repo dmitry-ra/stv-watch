@@ -8,7 +8,8 @@
 
 Rules enforced here rather than by each caller:
   * precheck before connecting, nothing sent that takes a slot: the relay
-    answers A2S, has no tv_password, runs a build with a known CRC, accepts
+    answers A2S, has no tv_password unless we were given one, runs a build
+    with a known CRC, accepts
     anonymous login (getchallenge auth protocol), and keeps a slot free for
     real spectators after we join (unless allow_last_slot); optionally the
     game server has humans;
@@ -33,6 +34,7 @@ from . import a2s, builds, handshake, wire
 # The child imports this same package, whatever the caller's cwd.
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CHILD = "stvwatch.net.main"
+CHILD_PASSWORD_ENV = "STV_WATCH_PASSWORD"  # net/main.py PASSWORD_ENV
 
 
 def split_addr(addr):
@@ -67,7 +69,15 @@ def auth_proto(addr, timeout=2.0, attempts=2):
         sock.close()
 
 
-def precheck(relay, game=None, need_humans=False, allow_last_slot=False, info=None, auth=None):
+def precheck(
+    relay,
+    game=None,
+    need_humans=False,
+    allow_last_slot=False,
+    info=None,
+    auth=None,
+    have_password=False,
+):
     """-> (ok, why, facts). `why` is a short reason word (+ detail)."""
     info, auth = info or safe_info, auth or auth_proto
     gi = info(game) if game else None
@@ -79,12 +89,13 @@ def precheck(relay, game=None, need_humans=False, allow_last_slot=False, info=No
         "spectators_before": None if ri is None else ri["players"],
         "max_spectators": None if ri is None else ri["max_players"],
         "version": None if ri is None else ri["version"],
+        "password": None if ri is None else bool(ri["visibility"]),
     }
     if ri is None:
         return False, "relay_silent", facts
     if str(ri["version"]) not in builds.CRC_BY_BUILD:
         return False, "unknown_build %s" % ri["version"], facts
-    if ri["visibility"]:
+    if ri["visibility"] and not have_password:
         return False, "password", facts
     free_after = ri["max_players"] - ri["players"] - 1
     if free_after < 0 or (free_after < 1 and not allow_last_slot):
@@ -131,8 +142,11 @@ def slot_freed(relay, with_us, settle_s=2.0, polls=3, every=2.0, info=None):
 class LiveClient:
     """tvdump child process writing the session journal (the dump)."""
 
-    def __init__(self, ip, port, dump_path, log_path, name="tvdump", duration_ms=0, extra=()):
+    def __init__(
+        self, ip, port, dump_path, log_path, name="tvdump", duration_ms=0, extra=(), password=""
+    ):
         self.ip, self.port = ip, port
+        self.password = password
         self.dump_path, self.log_path = dump_path, log_path
         self.name, self.duration_ms, self.extra = name, duration_ms, list(extra)
         self.proc = None
@@ -164,12 +178,18 @@ class LiveClient:
             "--parent-pid",
             str(os.getpid()),
         ] + self.extra
+        # In the environment, not in argv: argv is public in ps. Set or
+        # removed, never inherited: the child must send what we were given.
+        env = {k: v for k, v in os.environ.items() if k != CHILD_PASSWORD_ENV}
+        if self.password:
+            env[CHILD_PASSWORD_ENV] = self.password
         self.proc = subprocess.Popen(
             cmd,
             stdout=self.log_fh,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             cwd=PACKAGE_ROOT,
+            env=env,
         )
         end = time.monotonic() + wait_s
         while time.monotonic() < end:

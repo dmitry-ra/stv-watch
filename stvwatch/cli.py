@@ -17,6 +17,11 @@ from . import asr, rotate, serve, version
 from . import events as gamevents
 from .app import LIVE_DRAIN_MS, MAX_UTT_MS, App
 from .asr import weights
+from .net.main import PASSWORD_ENV
+
+# A password file is read whole only up to this: a wrong path given to it
+# (a recording, a log) must not be loaded into memory.
+MAX_PASSWORD_FILE = 4096
 
 
 def default_out():
@@ -109,6 +114,14 @@ def parse_args(argv=None):
         "~/.local/share/stv-watch/sessions when XDG_DATA_HOME is unset)",
     )
     ap.add_argument("--name", default="stvwatch", help="client name shown on the relay")
+    ap.add_argument(
+        "--password-file",
+        metavar="PATH",
+        default=None,
+        help=f"live: the relay's tv_password, the first line of this file (or set "
+        f"${PASSWORD_ENV}); without one a relay that announces a password is refused. "
+        "It is sent to the relay only, never written to the session files or shown",
+    )
     ap.add_argument(
         "--allow-last-slot",
         action="store_true",
@@ -264,6 +277,11 @@ def parse_args(argv=None):
         ap.error("--rotate is the engine's: an --attach screen writes no session")
     if a.relay is not None:
         a.relay = relay_addr(a.relay, ap)
+    if a.password_file is not None:
+        if a.relay is None:
+            ap.error("--password-file is for --relay: a recording holds no password")
+        if PASSWORD_ENV in os.environ:
+            ap.error(f"--password-file and ${PASSWORD_ENV} both given: unset one")
     if a.follow:
         a.replay, a.speed, a.skip_ms = a.follow, 1.0, 0
     try:
@@ -306,6 +324,38 @@ def parse_args(argv=None):
     return a
 
 
+def read_password(a):
+    """The relay password of a live run, from --password-file or the
+    environment; '' for none. Raises ValueError with a message that never
+    holds the password itself."""
+    if a.relay is None:
+        return ""
+    if a.password_file is None:
+        text, where = os.environ.get(PASSWORD_ENV, ""), "$" + PASSWORD_ENV
+        if PASSWORD_ENV in os.environ and not text:
+            raise ValueError(f"{where} is set but empty")
+    else:
+        where = "--password-file"
+        try:
+            with open(a.password_file, "rb") as f:
+                raw = f.read(MAX_PASSWORD_FILE + 1)
+        except OSError as e:
+            raise ValueError(f"{where}: {e.strerror}: {a.password_file}") from None
+        if len(raw) > MAX_PASSWORD_FILE:
+            raise ValueError(f"{where}: longer than {MAX_PASSWORD_FILE} bytes, not a password")
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(f"{where}: not UTF-8 text") from None
+        lines = text.splitlines()
+        text = lines[0] if lines else ""
+        if not text:
+            raise ValueError(f"{where}: the first line is empty")
+    if "\x00" in text:
+        raise ValueError(f"{where}: holds a NUL byte, which the connect request cannot carry")
+    return text
+
+
 def has_screen(a):
     """Whether the run shows live lines (App: Screen.tty)."""
     return bool(a.serve) or (not a.plain and sys.stdout.isatty())
@@ -326,7 +376,12 @@ def main(argv=None):
             print(f"stv-watch: {engine} weights not available: {e}", file=sys.stderr)
             return 2
     try:
-        app = App(a)
+        password = read_password(a)
+    except ValueError as e:
+        print(f"stv-watch: {e}", file=sys.stderr)
+        return 2
+    try:
+        app = App(a, password=password)
     except serve.ServeError as e:
         print(f"stv-watch: --serve {e}", file=sys.stderr)
         return 2
