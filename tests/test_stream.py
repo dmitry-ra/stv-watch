@@ -7,8 +7,10 @@ And how a run ends, in meta.json's `quit`."""
 
 import functools
 import hashlib
+import queue
 import re
 import threading
+import time
 
 import pytest
 from helpers import T0, account, chat_bytes, packet, reliable_packet, steamid64, table_update
@@ -17,7 +19,7 @@ from test_voice import Engine
 from voicegen import noise, tone, voice_plan
 
 from stvwatch import cli, source
-from stvwatch.app import App
+from stvwatch.app import LIVE_LAG_NS, App
 from stvwatch.asr import recognizer
 from stvwatch.net import dump, netchan
 from stvwatch.times import utc_iso
@@ -177,6 +179,9 @@ def test_the_stream_is_in_time_order_and_each_talk_has_one_voice(rec, tmp_path, 
         ("voice", "bob", 4, False),
         ("voice", "alice", 5, False),
     ]
+    # made before the first record, the replay's own lines take its time
+    early = [r for r in lines if r["type"] in ("asr", "play")]
+    assert early and {r["t_utc"] for r in early} == {iso(0)}
     by = {(r["type"], r.get("utt")): r for r in lines}
     # a piece is cut when it passes the limit, after the pause it ends at
     cut = by[("voice", 2)]
@@ -256,6 +261,27 @@ def test_lines_wait_only_for_the_text_of_a_closed_utterance(rec, tmp_path, monke
     assert whole[len(seen)] == first
     assert ("talk", 1) in {(r["type"], r.get("utt")) for r in seen}
     assert max(r["t_utc"] for r in seen) <= first["t_utc"]
+
+
+def test_live_the_stream_clock_waits_for_the_reader(tmp_path):
+    """Live the clock is the wall clock less the journal's lag, but only once
+    the reader has read all the network client wrote: records still queued or
+    unread are older than that and must not find their moment passed."""
+    app = App(cli.parse_args(["--relay", "127.0.0.1:9", "--out", str(tmp_path)]))
+
+    class Reader:
+        q, at_end = queue.Queue(), False
+
+        def waiting(self):
+            return self.at_end
+
+    app.rec = Reader()
+    assert app.dry_bound() is None
+    app.rec.at_end = True
+    before = time.time_ns()
+    assert before - LIVE_LAG_NS <= app.dry_bound() <= time.time_ns() - LIVE_LAG_NS
+    app.rec.q.put(("dg", None))
+    assert app.dry_bound() is None
 
 
 # ------------------------------------------------------------------ how a run ends
