@@ -182,6 +182,15 @@ def test_a_rotation_takes_along_the_voice_that_has_no_line_yet(rec, tmp_path, mo
     minute; with one her text is still being waited for at the minute, so her
     line, row and WAV go to the new session. Bob talks across the minute: all
     of him is in the new one, from his real start."""
+    ready = []  # what the new directory holds when the old events.jsonl names it
+    event = App.event
+
+    def watched(app, tag, *rest):
+        if tag == "rotate":
+            ready.append(sorted(os.listdir(rest[-1]["extra"]["next_dir"])))
+        return event(app, tag, *rest)
+
+    monkeypatch.setattr(App, "event", watched)
     extra = []
     if asr:
         engine = Engine()
@@ -189,6 +198,8 @@ def test_a_rotation_takes_along_the_voice_that_has_no_line_yet(rec, tmp_path, mo
         held_until_exit(engine, monkeypatch, 0.0)
         extra = ["--asr", "parakeet"]
     old, new = replay(rec, tmp_path / "o", "--rotate", EVERY_MINUTE, *extra)
+    files = ["events.jsonl", "feed.log", "meta.json", "transcript.tsv"]
+    assert ready == [sorted(files + (["audio"] if asr else []))]
     a, b = lines_of(old), lines_of(new)
     assert [r["type"] for r in a].count("rotate") == [r["type"] for r in b].count("rotate") == 1
     assert (a[-1]["t_utc"], a[-1]["next_dir"]) == (iso(60), str(new))

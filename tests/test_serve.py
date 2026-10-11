@@ -317,9 +317,10 @@ def test_a_screen_that_stops_reading_is_dropped_and_gets_what_it_missed_once(soc
 def test_a_live_line_older_than_the_history_is_still_open_and_still_closes(sock, monkeypatch):
     monkeypatch.setattr(serve, "HISTORY", 4)
     eng = served_screen(sock)
-    a = serve.Attached(sock, tty_screen())
+    a = serve.Attached(sock, tty_screen(), tz=ZoneInfo("Asia/Tokyo"))
     assert a.connect()
-    eng.live_open("k", [("k talking", "")])
+    stamp = ("09:40:00.000 ", "stamp")
+    eng.live_open("k", [stamp, ("k talking", "")], T0)
     for n in range(6):
         eng.feed([(f"line {n}", "")])
     eng.draw([[("block", "")]])
@@ -331,14 +332,15 @@ def test_a_live_line_older_than_the_history_is_still_open_and_still_closes(sock,
     # `a` is away while k closes, comes back and closes it too
     a.close()
     a.retry_at = time.monotonic() + 60
-    eng.live_close("k", [("k said", "")], [("^ ", "")])
+    eng.live_close("k", [stamp, ("k said", "")], [("^ ", "")], T0)
     eng.draw([[("block", "")]])
     a.retry_at = 0.0
     until(lambda: (a.step(0.01), not a.open and a.sock)[1])
     until(lambda: (late.step(0.01), not late.open)[1])
-    for c in (a, late):
+    # `a` got the final text from the history, its time with it: shown in Tokyo
+    for c, at in ((a, "18:40:00.000"), (late, "09:40:00.000")):
         c.screen.draw(c.view())
-        assert [t for t in texts(c.screen) if t.startswith("k ")] == ["k said"]
+        assert [t for t in texts(c.screen) if " k " in t] == [at + " k said"]
     eng.stop()
     a.close()
     late.close()
