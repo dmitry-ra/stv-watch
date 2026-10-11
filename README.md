@@ -11,6 +11,11 @@ JSON object per line.
 Every live session is recorded byte for byte (`capture.tvd`), and a replay of
 that recording gives the same lines the live run printed.
 
+![stv-watch replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
+
+A synthetic recording: invented players, English TTS voices, real Parakeet
+recognition.
+
 ## Requirements
 
 - Linux. The network client is a child process that the kernel stops when the
@@ -18,27 +23,48 @@ that recording gives the same lines the live run printed.
 - Python 3.12 to 3.14 (CI tests each), x86-64. onnxruntime publishes wheels
   up to CPython 3.14; on a newer Python the install stops at it with no
   matching wheel.
-- [uv](https://docs.astral.sh/uv/). uv provides the interpreter and the
-  environment with the dependencies, all wheels from PyPI (about 60 MB of
-  downloads): numpy, opuslib-next-bundled (the Opus decoder, libopus inside),
-  onnxruntime, onnx-asr and sherpa-onnx (speech recognition). onnxruntime 1.29
+- git, to clone the repository.
+- [uv](https://docs.astral.sh/uv/). uv provides the interpreter (a Python 3.12 or
+  newer it finds on the system, else one it downloads) and the
+  environment with the dependencies, all wheels from PyPI: numpy,
+  opuslib-next-bundled (the Opus decoder, libopus inside), onnxruntime, onnx-asr
+  and sherpa-onnx (speech recognition), cronsim (the `--rotate` schedule).
+  `uv run` also installs the development tools of the project (black, ruff,
+  pytest): about 70 MB of downloads in all, 210 MB in `.venv`. onnxruntime 1.29
   and later on Linux sends usage events to Microsoft by default; stv-watch sets
   `ORT_DISABLE_TELEMETRY=1` before loading it, unless you set that variable
   yourself.
 - For `--asr parakeet`: 2.55 GB of disk for the model weights (Parakeet and
-  Silero VAD) and about 2.6 GB of memory while it runs. `--live-asr nemotron`
+  Silero VAD) and about 2.9 GB of memory while it runs. `--live-asr nemotron`
   adds 0.68 GB of disk and about 1 GB of memory.
+- For `--tz`: the system time zone database (package `tzdata`).
+
+A fresh Ubuntu 24.04 server has all of this but uv.
 
 ## Install and run
+
+Install uv if you do not have it (its standalone installer puts it into
+`~/.local/bin`; other ways are in the [uv docs](https://docs.astral.sh/uv/getting-started/installation/)):
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.local/bin/env    # or open a new shell
+```
+
+Then:
 
 ```sh
 git clone https://github.com/dmitry-ra/stv-watch.git
 cd stv-watch
 uv run stv-watch --help
+uv run stv-watch --replay tests/data/sample.tvd --speed 0
 ```
 
-The first `uv run` creates `.venv` in the clone. Run later commands from the same
-directory, or pass `--project PATH_TO_CLONE` to `uv run`.
+The first `uv run` creates `.venv` in the clone and installs the dependencies
+into it. Run later commands from the same directory, or pass
+`--project PATH_TO_CLONE` to `uv run`. The replay of the bundled sample prints a
+dozen lines (chat, a connect, a map change) and ends at once: it checks the
+install without a network or a game server.
 
 ## Examples
 
@@ -49,23 +75,61 @@ uv run stv-watch --relay RELAY_IP:27020
 ```
 
 The feed scrolls above a status block pinned to the bottom of the terminal; `q`
-quits, which stops receiving and recording. Before connecting, stv-watch asks the relay (A2S_INFO) whether it can take
-a spectator and refuses when it should not (see Responsible use).
+quits, which stops receiving and recording (it is the only key). Before
+connecting, stv-watch asks the relay (A2S_INFO) whether it can take a spectator
+and refuses when it should not (see Responsible use). The last line names the
+session directory with the recording and the other files (see Session files).
 
-Replay a recording, as fast as possible or at its own pace:
+Replay a recording, as fast as possible or at its own pace, from the start or
+from a point in it, all of it or a part:
 
 ```sh
 uv run stv-watch --replay tests/data/sample.tvd --speed 0
 uv run stv-watch --replay ~/.local/share/stv-watch/sessions/SESSION/capture.tvd --speed 4
+uv run stv-watch --replay capture.tvd --skip-ms 600000 --duration-ms 60000
 ```
 
-Choose the events (`--events`, default `chat,console,connect,join,leave,name`):
+`--duration-ms` also bounds a live run: the viewer leaves the relay after that
+much wall time. `--follow` watches the `capture.tvd` of a live run while it is
+being written, with no connection of its own, so more people can watch one
+connection; what the file held before only sets the state, and the feed starts
+with what comes next. It waits for more until `q` or a signal, also once the
+writer has stopped; a finished recording is for `--replay`:
+
+```sh
+uv run stv-watch --follow ~/.local/share/stv-watch/sessions/SESSION/capture.tvd
+```
+
+Choose the events (`--events`, default `chat,console,connect,join,leave,name`;
+the types are `chat`, `console`, `connect`, `join`, `leave`, `death`, `team`,
+`name`, `server`, `sourcemod`):
 
 ```sh
 uv run stv-watch --relay RELAY_IP:27020 --events all
 uv run stv-watch --relay RELAY_IP:27020 --events all,-server   # everything but server notices
 uv run stv-watch --relay RELAY_IP:27020 --events chat,death
 ```
+
+Voice and the viewer's own lines (connection, traffic, recognizer) are always
+shown. Without a terminal (a pipe, a file) or with `--plain` the feed is
+printed as lines with a status summary every `--status-every-ms` (default
+10000) instead of the pinned block.
+
+### Finding the relay of a server
+
+SourceTV listens on a port of its own (`tv_port`, 27020 by default), not on
+the game port players join (often 27015), and not every server runs it. A
+server with SourceTV names its relay port in its A2S_INFO reply; this prints
+the reply as JSON, and `tv_port` is the port to give `--relay` (no `tv_port`:
+the server has no SourceTV):
+
+```sh
+uv run python -m stvwatch.net.a2s SERVER_IP:27015
+```
+
+Given a game port, stv-watch refuses before connecting with
+`refused: relay does not take anonymous login, auth protocol 3`: the game
+server wants a Steam login, which a SourceTV relay does not.
 
 ### Voice
 
@@ -160,6 +224,55 @@ Times are in UTC. `--tz` takes an IANA zone name for the screen and the files
 uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin
 ```
 
+An `--attach` screen takes its own `--tz`, for that screen only (the engine's
+files keep the engine's zone); without it, it shows the engine's zone.
+
+### Session rotation
+
+A run that lasts for weeks can start a new session directory on a schedule,
+so old sessions can be removed whole. `--rotate` takes a standard 5-field cron
+schedule (minute, hour, day of month, month, day of week), read in the `--tz`
+zone (UTC without it) and in the recording's time: a replay of a recording
+rotates where the live run would have. Off by default.
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin --rotate "0 6 * * *"   # 06:00 daily
+```
+
+Every file of the session goes on in the new directory, `capture.tvd` too; the
+connection to the relay stays. The new directory is made and its files opened
+first; then the old `events.jsonl` gets its last line, of type `rotate`, with
+the absolute paths of the new directory and its `events.jsonl`:
+
+```json
+{"t_utc": "2026-10-11T03:00:00.012Z", "t_local": "2026-10-11 06:00:00", "type": "rotate", "steamid64": 0, "nick": "", "text": "session goes on in /data/s/20261011T030000Z_RELAY_IP_27020_4242", "next_dir": "/data/s/20261011T030000Z_RELAY_IP_27020_4242", "next_events": "/data/s/20261011T030000Z_RELAY_IP_27020_4242/events.jsonl"}
+```
+
+A reader of `events.jsonl` that meets it opens `next_events` and reads on from
+its first line, a `rotate` line with `prev_dir`, `prev_events` and `version`
+that only marks the continuation: skip it. Follow `next_events` from file to
+file and never order sessions by their directory names: in a replay the
+sessions after a rotation are named by the recording's time, the first one by
+the time the replay started, so the names do not sort in the order of the
+run. `--json` prints both `rotate` lines, so its output is the sessions'
+`events.jsonl` one after the other; the screen shows only the first.
+
+An utterance is never split: one still being spoken or recognized at the
+rotation is written, WAV and all, in the new session, with its real start time.
+A replay at `--speed 0` with `--asr` reads far ahead of the recognizer, so
+most voice then lands in later sessions than the ones it was spoken in; at a
+pace the recognizer keeps up with (in a test with a dozen speakers `--speed 4`
+was enough) the voice lands where the live run put it.
+
+Each session has its own `meta.json`, written when it starts and when it ends
+(`quit` is `rotated` for all but the last); its counters are totals since the
+run started. A rotated `capture.tvd` starts in the middle of the connection:
+`--replay` of it alone shows voice but not who is who until the next map
+change, while `--follow` goes on from one file into the next by itself. A
+schedule cron would misread (not 5 fields) or that never fires is refused at
+the start (exit code 2), and `--attach` takes no `--rotate`: the engine
+rotates. A period with no record in it gets no directory.
+
 ### A headless engine and its screens
 
 `--serve SOCKET` runs the viewer without a terminal UI: it connects, records,
@@ -167,12 +280,13 @@ recognizes and writes its session files as always, and serves its screen on a
 Unix socket (mode 0600) to any number of clients. `--attach SOCKET` is such a
 client: the same screen, drawn from what the engine sends, with no connection to
 the relay, no parsing and no model of its own. A name without `/` is a socket in
-`$XDG_RUNTIME_DIR/stv-watch/`:
+`$XDG_RUNTIME_DIR/stv-watch/`; where that variable is unset (a system service,
+`sudo`), give a path:
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --serve noob   # in tmux, a service, ...
-uv run stv-watch --attach noob                                         # in any terminal, as often as you like
-uv run stv-watch --attach noob --plain                                 # finished lines only
+uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --serve watch   # in tmux, a service, ...
+uv run stv-watch --attach watch                                         # in any terminal, as often as you like
+uv run stv-watch --attach watch --plain                                 # finished lines only
 ```
 
 The attached screen is the engine's screen, marked so that it is not taken for
@@ -191,11 +305,13 @@ attached screen it closes only that screen. On connect the screen gets the last
 engine. When the engine goes away the screen waits for it, and when an
 engine serves the socket again it reconnects by itself and says so in one feed
 line. A client that does not keep up is dropped and reconnects; the engine never
-waits for a screen. The engine's stdout gets its finished feed lines (as
-`--plain` without status lines); a socket file left by an engine that died is
+waits for a screen. The engine's stdout gets a first line
+`serving SOCKET (pid N): stv-watch --attach SOCKET`, then its finished feed lines (as
+`--plain` without status lines); its session directory ends in `_N`, the same
+pid. A socket file left by an engine that died is
 taken over, one that a live engine serves is refused. A screen and an engine of
-different socket protocol versions (0.4.0 brought protocol 2) do not work
-together: the screen names both versions and exits.
+different socket protocol versions (0.4.0 brought protocol 2, 0.5.0 protocol 3)
+do not work together: the screen names both versions and exits.
 
 ### For scripts and agents
 
@@ -208,7 +324,7 @@ uv run stv-watch --relay RELAY_IP:27020 --json --events all
 
 ```json
 {"t_utc": "2025-10-07T09:40:00.200Z", "type": "chat", "steamid64": 76561201960265729, "nick": "alice", "text": "hello", "channel": "all", "ent": 1}
-{"t_utc": "2025-10-07T09:40:09.060Z", "type": "voice", "steamid64": 76561201960265729, "nick": "alice", "text": "see you", "result": "text", "continued": false, "spectator": false, "details": "1.0s/0.9s fr 50 plc 0 gap 0 33kb/s press 1 msg 17 -2 0% arr 17 p50 60 max 60ms +1.1s asr 0.24s +0.9s", "t_end_utc": "2025-10-07T09:40:11.050Z"}
+{"t_utc": "2025-10-07T09:40:09.060Z", "type": "voice", "steamid64": 76561201960265729, "nick": "alice", "text": "see you", "result": "text", "continued": false, "spectator": false, "details": "1.0s/0.9s fr 50 plc 0 gap 0 33kb/s press 1 msg 17 -2 0% arr 17 p50 60 max 60ms +1.1s asr 0.24s +0.9s", "t_end_utc": "2025-10-07T09:40:11.050Z", "speech_ms": 820, "slot": 1, "verified": true}
 ```
 
 A voice line is written when the utterance is recognized, so it can come after
@@ -216,9 +332,22 @@ lines of later events; its `t_utc` is when the speaker started.
 
 The fields are `t_utc`, `t_local` (only with `--tz`), `type`, `steamid64`, `nick`,
 `text` and the extra fields of the type; the format is
-[docs/events.schema.json](docs/events.schema.json), described in
-[docs/session-files.md](docs/session-files.md). `--monitor` gives the same events
-as plain text lines. [AGENTS.md](AGENTS.md) is a guide for agents that run it.
+[docs/events.schema.json](https://github.com/dmitry-ra/stv-watch/blob/main/docs/events.schema.json), described in
+[docs/session-files.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/session-files.md). `--monitor` gives the same events
+as plain text lines. [AGENTS.md](https://github.com/dmitry-ra/stv-watch/blob/main/AGENTS.md) is a guide for agents that run it.
+
+For AI coding agents there is a skill, [skills/stv-watch](https://github.com/dmitry-ra/stv-watch/blob/main/skills/stv-watch/SKILL.md),
+in the format that Claude Code, Codex and Pi load. Link it into the agent's
+skill directory, from the clone:
+
+```sh
+mkdir -p ~/.claude/skills && ln -s "$PWD/skills/stv-watch" ~/.claude/skills/stv-watch       # Claude Code
+mkdir -p ~/.codex/skills && ln -s "$PWD/skills/stv-watch" ~/.codex/skills/stv-watch         # Codex
+mkdir -p ~/.pi/agent/skills && ln -s "$PWD/skills/stv-watch" ~/.pi/agent/skills/stv-watch   # Pi
+```
+
+The skill finds the clone through the link, so it stays current with
+`git pull`.
 
 Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording),
 2 when the relay was refused before connecting, the command line is wrong, no
@@ -227,6 +356,18 @@ the socket of `--serve` is taken or the recognizer could not start (its weights
 could not be fetched or checked, or the model failed to load), 3 when the network
 client stopped on its own (the relay refuses us for a reason retrying will not
 change).
+
+### Other options
+
+`uv run stv-watch --help` lists every option. Those not shown above:
+
+| Option | What it does |
+|---|---|
+| `--name NAME` | the client name the relay shows for us (default `stvwatch`) |
+| `--threads N` | CPU threads of the `--asr` recognizer (default 2) |
+| `--debug` | on screen also the transport and recognizer numbers (per utterance and in the block), both SteamIDs of a kill and a line per sequence gap counted as lost; `feed.log` and `--json` always hold the numbers |
+| `--quiet-ms MS` | traffic counts as stopped after this long without datagrams (default 3000) |
+| `--no-color` | no colours on the screen |
 
 ## Version
 
@@ -242,11 +383,14 @@ first JSON line, in `meta.json` and in each session start record of
 
 ## Session files
 
-Each run writes a directory under `$XDG_DATA_HOME/stv-watch/sessions`
+Each run writes a directory `<UTC start>_<IP_PORT, replay-NAME or
+follow-NAME>_<pid>` under `$XDG_DATA_HOME/stv-watch/sessions`
 (`~/.local/share/stv-watch/sessions` when `XDG_DATA_HOME` is unset; `--out`
-chooses another parent): `capture.tvd` (live only), `events.jsonl`, `feed.log`,
+chooses another parent), and its last feed line (`done`) names it:
+`capture.tvd` (live only), `events.jsonl`, `feed.log`,
 `transcript.tsv`, `audio/` (a WAV per utterance), `meta.json`, `tvdump.log`
-(live only), `stderr.log`. See [docs/session-files.md](docs/session-files.md).
+(live only), `stderr.log`; with `--rotate` a directory per period. See
+[docs/session-files.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/session-files.md).
 
 ## A server on an unknown build
 
@@ -255,7 +399,7 @@ knows the CRCs of the builds in `stvwatch/net/builds.py` and refuses a relay on
 any other build, naming the build number, instead of guessing (each wrong guess
 would be a connection on someone else's server). After a game update, extract the
 new CRC with `tools/read_crc.py` from a local dedicated server of that build and
-add it to the table: [docs/protocol.md](docs/protocol.md#server-builds).
+add it to the table: [docs/protocol.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/protocol.md#server-builds).
 
 ## Responsible use
 
@@ -290,7 +434,7 @@ English sample of its export from Hugging Face, 229 KB, as the k2-fsa archive
 has none).
 `tools/local_srcds.py` starts a loopback dedicated server with SourceTV for
 manual checks, `tools/tmux_check.sh` checks the screen in a real terminal.
-How the protocol works: [docs/protocol.md](docs/protocol.md).
+How the protocol works: [docs/protocol.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/protocol.md).
 
 Every pull request that changes `stvwatch/` raises `version` in `pyproject.toml`
 (the patch number for a fix, the minor one for a feature) and refreshes `uv.lock`;
@@ -298,7 +442,7 @@ CI fails a pull request that does not.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/dmitry-ra/stv-watch/blob/main/LICENSE).
 
 The recognition model is not part of this repository: stv-watch downloads it
 from its source. Parakeet TDT 0.6B v3 is by NVIDIA

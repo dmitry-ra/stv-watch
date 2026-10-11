@@ -146,9 +146,12 @@ def packed(base, arc, **wrong):
     return weights.Pin("t", "test", base, "rel", "CC0", pin(base, **wrong).files, "t", arc)
 
 
-def test_an_archive_gives_its_pinned_files_only_and_is_removed(server, tmp_path):
+@pytest.mark.parametrize("extra_first", [False, True])
+def test_an_archive_gives_its_pinned_files_only_and_is_removed(server, tmp_path, extra_first):
+    """A member nobody pinned is skipped wherever it stands in the archive."""
     base, src, seen = server
-    p = packed(base, archive(src, {**MEMBERS, f"{STEM}/README.md": b"x"}))
+    extra = {f"{STEM}/README.md": b"x"}
+    p = packed(base, archive(src, {**extra, **MEMBERS} if extra_first else {**MEMBERS, **extra}))
     said = []
     path = weights.ensure(p, str(tmp_path / "m"), log=said.append)
     assert {n: open(os.path.join(path, n), "rb").read() for n in FILES} == FILES

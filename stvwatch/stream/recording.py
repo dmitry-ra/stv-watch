@@ -13,6 +13,7 @@ inbound connectionless accept 'B' is taken as the boundary. One source per
 format, so one handshake counts once.
 """
 
+import json
 import os
 import struct
 import time
@@ -25,6 +26,7 @@ TVD_DATAGRAM_IN = 0x01
 TVD_DATAGRAM_OUT = 0x02
 TVD_SESSION_START = 0x10
 TVD_RECONNECT = 0x13
+TVD_NEXT_FILE = 0x17
 HCAP_DIR_IN = 0x01
 
 RECORD_HEAD = struct.Struct("<QBI")
@@ -91,7 +93,9 @@ class Recording:
     network client is still appending to, so live and replay share one code
     path after the reader. A short read waits `poll_s` and retries from the
     same offset; iteration ends when `stop()` returns true or nothing new has
-    arrived for `idle_s`.
+    arrived for `idle_s`. A journal rotated by its writer ends in a NEXT_FILE
+    record naming the file it goes on in; follow=True goes on there, a replay
+    ends with the file it was given.
 
     on_event(t_ns, rtype, data), if given, receives every non-inbound record
     (lifecycle events, outbound datagrams) in file order."""
@@ -115,7 +119,8 @@ class Recording:
         boundary_pending = False
         is_tvd = self.kind == "tvd"
         boundary = Boundaries()
-        with open(self.path, "rb", buffering=1 << 20) as f:
+        f = open(self.path, "rb", buffering=1 << 20)
+        try:
             f.seek(self._data_offset)
             read = self._follow_read(f) if self.follow else f.read
             unpack = RECORD_HEAD.unpack
@@ -134,6 +139,12 @@ class Recording:
                     return
                 if rtype != TVD_DATAGRAM_IN and self.on_event is not None:
                     self.on_event(t_ns, rtype, data)
+                if is_tvd and rtype == TVD_NEXT_FILE and self.follow:
+                    # the writer rotated: the same stream goes on in the next file
+                    f.close()
+                    f = self._next_file(data)
+                    read = self._follow_read(f)
+                    continue
                 if is_tvd and rtype != TVD_DATAGRAM_IN and boundary(rtype, data):
                     boundary_pending = True
                 if rtype != TVD_DATAGRAM_IN:  # same value in both formats
@@ -145,6 +156,23 @@ class Recording:
                 boundary_pending = False
                 yield Datagram(index, t_ns, session, data)
                 index += 1
+        finally:
+            f.close()
+
+    @staticmethod
+    def _next_file(data):
+        try:
+            path = json.loads(data.decode("utf-8"))["path"]
+            f, kind, _v, _start, _ep = _open(path)
+        except (ValueError, KeyError, TypeError, OSError) as e:
+            raise RecordingError(f"next file of a rotated recording: {e}") from e
+        offset = f.tell()
+        f.close()
+        if kind != "tvd":
+            raise RecordingError(f"{path}: the next file is not a .tvd")
+        f = open(path, "rb", buffering=1 << 20)
+        f.seek(offset)
+        return f
 
     def _follow_read(self, f):
         """read(n) that waits for a growing file: returns n bytes, or what is

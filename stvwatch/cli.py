@@ -9,10 +9,11 @@ stv-watch --attach NAME                                     (that screen)
 import argparse
 import os
 import sys
+import time
 from datetime import timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import asr, serve, version
+from . import asr, rotate, serve, version
 from . import events as gamevents
 from .app import LIVE_DRAIN_MS, MAX_UTT_MS, App
 from .asr import weights
@@ -177,7 +178,17 @@ def parse_args(argv=None):
         metavar="NAME",
         default=None,
         help="time zone of the screen and the files, an IANA name such as Europe/Berlin "
-        "(default UTC); with it each JSON line also gets t_local",
+        "(default UTC); with it each JSON line also gets t_local. With --attach: of that "
+        "screen only (default: the engine's)",
+    )
+    ap.add_argument(
+        "--rotate",
+        metavar="CRON",
+        default=None,
+        help="start a new session directory at these times, a 5-field cron schedule in the "
+        "--tz zone, such as '0 6 * * *' (06:00 daily); by the recording's time, live and "
+        "in a replay; the relay connection stays. The old events.jsonl ends with a "
+        "'rotate' line naming the new one (default: one session for the whole run)",
     )
     ap.add_argument(
         "--quiet-ms",
@@ -249,6 +260,8 @@ def parse_args(argv=None):
         ap.error("--serve has no screen of its own: --plain, --monitor and --json go to --attach")
     if a.attach and (a.serve or a.monitor or a.json):
         ap.error("--attach shows a screen only: read events.jsonl of the engine's session")
+    if a.attach and a.rotate:
+        ap.error("--rotate is the engine's: an --attach screen writes no session")
     if a.relay is not None:
         a.relay = relay_addr(a.relay, ap)
     if a.follow:
@@ -268,6 +281,11 @@ def parse_args(argv=None):
             )
     else:
         a.tz = timezone.utc
+    if a.rotate is not None:
+        try:
+            rotate.Schedule(a.rotate, a.tz, time.time_ns())
+        except rotate.RotateError as e:
+            ap.error(f"--rotate: {e}")
     if a.out is None:
         a.out = default_out()
     if a.models_dir is None:
