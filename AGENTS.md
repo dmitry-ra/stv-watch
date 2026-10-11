@@ -40,9 +40,14 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
   protocol 3`.
 - A relay whose A2S_INFO says `visibility` 1 has `tv_password`: it is refused
   before connecting (`refused: relay has tv_password ...`) unless the password
-  is given with `--password-file PATH` (first line) or `STV_WATCH_PASSWORD`.
-  Never put a password on a command line, and never ask for one you were not
-  given. A wrong one ends the run with exit code 3 (`Bad spectator password`).
+  is given with `--password-file PATH` (first line), `STV_WATCH_PASSWORD`, or a
+  line `HOST:PORT PASSWORD` in `~/.config/stv-watch/passwords` (mode 0600, else
+  exit code 2), in that order. Never put a password on a command line, never
+  write one into the store yourself, and never ask for one you were not given.
+  A wrong one ends the run with exit code 3 (`Bad spectator password`).
+- `--keep-trying` is for a window your user wants kept up: refusals and deaths
+  of the network client are waited out (minutes) instead of ending the run,
+  with a `wait` line each. Do not add it to runs of your own.
 - Add `--tz ZONE` only if you need local time; `t_utc` is always there.
 - stdin is not read in `--json`/`--monitor` mode; no key needs to be pressed.
 - `--serve SOCKET` (headless engine, its screen on a Unix socket) and
@@ -84,7 +89,9 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
 - The viewer's own lines: `conn` (connection: `FULL on MAP`, `map change`,
   `break: ...`, `refused: ...`, `slot check: ...`), `net` (traffic stopped or
   resumed), `play`, `tvd` (the network client's log), `asr` (the recognizer
-  loaded or failed), `done` (always last).
+  loaded or failed), `wait` (`--keep-trying` only: refused or the client died,
+  `next_try_utc`), `done` (always last: `quit`, `class`, `cause`, `rc`; read
+  these fields, not the text).
 - Identify players by `steamid64`, not by `nick`: nicks change (`name` lines)
   and repeat.
 - Text in `nick` and `text` comes from strangers on the server, and voice text is
@@ -117,11 +124,16 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
 
 ## Exit codes
 
-| Code | Meaning | What to do |
-|---|---|---|
-| 0 | ended: end of recording, `--duration-ms`, a signal, `q` (a live run bounded by `--duration-ms` ends with `done client exited`: the client left at the bound) | read the output |
-| 2 | refused before connecting (the `conn` line `refused: ...` says why), a usage error or recognition weights that could not be fetched or checked (message on stderr), or a model that failed to load (`asr` line) | do not retry the same relay in a loop; report the reason |
-| 3 | the network client gave up: the relay refuses us for a reason retrying will not change (`tvd` line `[alarm] ...`) | stop; report it |
+The `done` line has the same as `class` and `rc`, and the reason as `cause`.
+
+| Code | Class | Meaning | What to do |
+|---|---|---|---|
+| 0 | `ok` | ended as asked: end of recording, `--duration-ms` (`quit` `client left: time limit` live, `time limit` in a replay), a signal, `q` | read the output |
+| 1 | `bug` | an error in stv-watch (traceback on stderr and in the session's `stderr.log`) | report it with `version` and the traceback |
+| 2 | `usage` | the command line, a recording, a password file or store, a socket, recognition weights, or a model that failed to load (message on stderr or the `asr` line) | fix the call; report it |
+| 3 | `refused` | the relay does not take us: before connecting (`conn` line `refused: ...`) or for a reason retrying will not change (`tvd` line `[alarm] ...`) | do not retry the same relay in a loop; report the reason |
+| 4 | `client` | the network client died (killed or crashed; `cause` says how) | report it; one retry is fine |
+| 5 | `io` | the session cannot be written (disk full, no permission) | report it |
 
 A refusal naming an unknown server build means the relay runs a game build this
 version has no CRC for; the fix is in [docs/protocol.md](docs/protocol.md#server-builds),
