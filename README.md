@@ -23,9 +23,12 @@ that recording gives the same lines the live run printed.
   newer it finds on the system, else one it downloads) and the
   environment with the dependencies, all wheels from PyPI: numpy,
   opuslib-next-bundled (the Opus decoder, libopus inside), onnxruntime, onnx-asr
-  and sherpa-onnx (speech recognition). `uv run` also installs the development
-  tools of the project (black, ruff, pytest): about 70 MB of downloads in all,
-  210 MB in `.venv`.
+  and sherpa-onnx (speech recognition), cronsim (the `--rotate` schedule).
+  `uv run` also installs the development tools of the project (black, ruff,
+  pytest): about 70 MB of downloads in all, 210 MB in `.venv`. onnxruntime 1.29
+  and later on Linux sends usage events to Microsoft by default; stv-watch sets
+  `ORT_DISABLE_TELEMETRY=1` before loading it, unless you set that variable
+  yourself.
 - For `--asr parakeet`: 2.55 GB of disk for the model weights (Parakeet and
   Silero VAD) and about 2.9 GB of memory while it runs. `--live-asr nemotron`
   adds 0.68 GB of disk and about 1 GB of memory.
@@ -216,6 +219,36 @@ Times are in UTC. `--tz` takes an IANA zone name for the screen and the files
 uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin
 ```
 
+An `--attach` screen takes its own `--tz`; without it, it shows the engine's zone.
+
+### Session rotation
+
+A run that lasts for weeks can start a new session directory on a schedule,
+so old sessions can be removed whole. `--rotate` takes a standard 5-field cron
+schedule (minute, hour, day of month, month, day of week), read in the `--tz`
+zone (UTC without it) and in the recording's time: a replay of a recording
+rotates where the live run would have. Off by default.
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin --rotate "0 6 * * *"   # 06:00 daily
+```
+
+Every file of the session goes on in the new directory, `capture.tvd` too; the
+connection to the relay stays. The new directory is made and its files opened
+first; then the old `events.jsonl` gets its last line, of type `rotate`, with
+the absolute paths of the new directory and its `events.jsonl`:
+
+```json
+{"t_utc": "2026-10-11T03:00:00.012Z", "t_local": "2026-10-11 06:00:00", "type": "rotate", "steamid64": 0, "nick": "", "text": "session goes on in /data/s/20261011T030000Z_RELAY_IP_27020_4242", "next_dir": "/data/s/20261011T030000Z_RELAY_IP_27020_4242", "next_events": "/data/s/20261011T030000Z_RELAY_IP_27020_4242/events.jsonl"}
+```
+
+A reader of `events.jsonl` that meets it opens `next_events` and reads on from
+its first line, a `rotate` line with `prev_dir`, `prev_events` and `version`.
+An utterance is never split: one still being spoken or recognized at the
+rotation is written, WAV and all, in the new session, with its real start time.
+A schedule cron would misread (not 5 fields) or that never fires is refused at
+the start.
+
 ### A headless engine and its screens
 
 `--serve SOCKET` runs the viewer without a terminal UI: it connects, records,
@@ -237,7 +270,7 @@ the engine itself, since `q` does different things there:
 
 | | local run | `--attach` screen |
 |---|---|---|
-| label of the rule over the block | `stv-watch 0.4.0`, blue | `stv-watch 0.4.0`, a middle dot, `attached`; magenta |
+| label of the rule over the block | `stv-watch VERSION`, blue | `stv-watch VERSION`, a middle dot, `attached`; magenta |
 | hint line | `q quit - stops the engine` | `q close screen - engine keeps running` |
 | one more block line | | `attach SOCKET  engine pid N` |
 
@@ -253,8 +286,8 @@ waits for a screen. The engine's stdout gets a first line
 `--plain` without status lines); its session directory ends in `_N`, the same
 pid. A socket file left by an engine that died is
 taken over, one that a live engine serves is refused. A screen and an engine of
-different socket protocol versions (0.4.0 brought protocol 2) do not work
-together: the screen names both versions and exits.
+different socket protocol versions (0.4.0 brought protocol 2, 0.5.0 protocol 3)
+do not work together: the screen names both versions and exits.
 
 ### For scripts and agents
 
@@ -332,7 +365,8 @@ follow-NAME>_<pid>` under `$XDG_DATA_HOME/stv-watch/sessions`
 chooses another parent), and its last feed line (`done`) names it:
 `capture.tvd` (live only), `events.jsonl`, `feed.log`,
 `transcript.tsv`, `audio/` (a WAV per utterance), `meta.json`, `tvdump.log`
-(live only), `stderr.log`. See [docs/session-files.md](docs/session-files.md).
+(live only), `stderr.log`; with `--rotate` a directory per period. See
+[docs/session-files.md](docs/session-files.md).
 
 ## A server on an unknown build
 

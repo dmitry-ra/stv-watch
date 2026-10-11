@@ -1,11 +1,23 @@
 # Session files
 
-Every run of stv-watch writes one directory:
+Every run of stv-watch writes one directory (with `--rotate`, one per period):
 
     $XDG_DATA_HOME/stv-watch/sessions/<UTC start>_<what>_<pid>/
 
 `<UTC start>` is `YYYYMMDDTHHMMSSZ`; `<what>` is the relay (`IP_PORT`) live,
 `replay-<name>` or `follow-<name>` otherwise. `--out DIR` replaces the parent.
+
+With `--rotate CRON` a run goes on in a new directory at each time of the
+schedule (5 fields, in the `--tz` zone, by the time of the recording's
+records), named the same way with the start of its period as `<UTC start>`
+(in a replay that is the recording's time, so those names sort before the
+first one's; follow `next_dir`). Every file below goes on there; the
+connection to the relay stays. The order is fixed: the new directory and its
+files are made and opened, then the old `events.jsonl` gets its last line (a
+`rotate` line naming the new one), then the old files are closed. An utterance
+still being spoken or waiting for its text goes to the new session whole, its
+WAV moved along; none is split between two. A period without any record gets
+no directory.
 
 | File | Live | Replay | Content |
 |---|---|---|---|
@@ -14,7 +26,7 @@ Every run of stv-watch writes one directory:
 | `feed.log` | yes | yes | the feed as text, tab separated, with full details |
 | `transcript.tsv` | yes | yes | one row per utterance: who, when, the recognized text, its WAV |
 | `audio/` | yes | yes | a WAV file per utterance (not with `--no-audio`; only once someone spoke) |
-| `meta.json` | yes | yes | arguments, counters and how the run ended, written at exit |
+| `meta.json` | yes | yes | arguments, counters and how the session ended, written at its start and its end |
 | `tvdump.log` | yes | - | the network client's own log |
 | `stderr.log` | yes | yes | anything printed to stdout or stderr other than the screen |
 
@@ -42,8 +54,8 @@ The schema is [events.schema.json](events.schema.json). Every line has:
 
 The first line of a session (`asr` when `--asr` loads the recognizer first,
 else `conn` live, `play` in a replay or `--follow`; `done` if the run ended
-before either) also has `version`, the stv-watch version that wrote it. No
-other line has it.
+before either; `rotate` in a session a rotation opened) also has `version`,
+the stv-watch version that wrote it. No other line has it.
 
 Players are named by the stream itself: the nick is the current entry of the
 `userinfo` string table, the SteamID64 comes from the same entry or from the
@@ -111,6 +123,11 @@ The viewer's own lines: `conn` (connecting, signon, map change, breaks,
 reconnects, leaving, the slot check), `net` (traffic started, stopped, resumed;
 with `--debug` also `lost: seq A -> B (N)` with `seq_from`, `seq_to`, `lost`),
 `play` (replay started), `tvd` (a line of the network client's log, live only),
+`rotate` (`--rotate`: the last line of a session, with `next_dir` and
+`next_events`, the absolute paths of the next session and its `events.jsonl`,
+and the first line of that one, with `prev_dir`, `prev_events` and `version`;
+only the first is shown on the screen, `--json` prints both, so its output is
+the sessions' `events.jsonl` one after the other),
 `asr` (the recognizer loaded, failed to load, or failed on an utterance; with
 `--live-asr` also the live recognizer: `nemotron live ready in ...`, `... live
 failed: ...`, `... live error: ...`, or `... live off` when the run has no
@@ -147,7 +164,7 @@ they were finished (tabs and line breaks inside a field become spaces):
 `HHMMSS_<steamid64>_<n>.wav`: 16 kHz mono 16-bit PCM of one utterance as
 decoded (lost frames concealed or filled with silence, loud peaks limited).
 `HHMMSS` is the start in UTC, or in the `--tz` zone; `<n>` counts the speaker's
-utterances in the session, so names do not repeat.
+utterances in the run, so names do not repeat, across rotated sessions too.
 
 ## capture.tvd
 
@@ -166,6 +183,7 @@ epoch ns), `u16` length and the relay's address. Then records:
 | `0x14` | map change (JSON: `map`) |
 | `0x15` | a `-2` split part was seen (JSON: `length`) |
 | `0x16` | we left (JSON: `why`, `sent` = net_Disconnect copies) |
+| `0x17` | `--rotate`: the last record; the recording goes on in the file `path` (JSON), absolute |
 
 `version` in a session start is the stv-watch version that wrote the record;
 the event records are JSON, so it needed no change of the format, and files
@@ -173,16 +191,22 @@ written before it simply lack the field.
 
 Voice messages stay in the recorded datagrams: a replay shows and recognizes
 them as a live run does. A file cut by a crash is readable up to the cut.
+A rotated file starts in the middle of a connection, with no handshake or
+string tables of its own: `--replay` of it shows voice but not who is who
+before the next map change, and a replay ends with the file it was given;
+`--follow` goes on into the next file.
 `stv-watch --replay` also reads the older `.hcap` format (magic `HLTVCAP`,
 datagrams only).
 
 ## meta.json
 
-Written at exit: `version`, `build` (`version`, `release`, `commit` = the full
+Written when the session starts and again when it ends (at exit, or at a
+rotation): `version`, `build` (`version`, `release`, `commit` = the full
 hash, `dirty`; the last two null outside a git checkout), `args` (the command
 line), `model` (the `--asr` engine or null), `dir`, `tz`, `pid`, `start_utc`,
 `end_utc`, `quit` (`end of recording`, `duration`, `key q`, `SIGINT`,
-`SIGTERM`, `SIGHUP`, `alarm`, `client exited`, `precheck`, `asr failed`),
+`SIGTERM`, `SIGHUP`, `alarm`, `client exited`, `precheck`, `asr failed`,
+`rotated`),
 `tvdump_rc` (exit code of the network client; null when it had to be killed),
 `traffic`, `framer` (receive path counters: `seq_lost`, `seq_choked`,
 `resend_skipped`, `voice_msgs`, `voice_crc_bad`, packet fates, ...), `segments`
@@ -198,6 +222,10 @@ also `live_asr`: `engine`, `state`, `error`, `load_ms`, `audio_ms` and
 `drops`. Its partial text is in no file. Every duration is whole
 milliseconds named `*_ms`; `args` holds the options under their names
 (`duration_ms`, `skip_ms`, ...).
+A session a rotation ended has `next_dir`; one a rotation opened has
+`prev_dir` and `rotated_utc` (the time of the record it starts with). The
+counters (`traffic` to `live_asr`) are totals since the run started, in every
+session of it.
 Live runs also have `slot_released`, `relay_before`, `relay_with_us` and
 `relay_after`: the relay's spectator counts used to check that our slot was
 freed.

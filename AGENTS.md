@@ -99,6 +99,9 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
   session (`stv-watch --version`; `0.1.0+g976b9ae` from a git checkout off the
   release tag, with `.dirty` for uncommitted changes). Quote it when you report
   a problem.
+- With `--rotate CRON` the run starts a new session directory on that schedule.
+  On stdout nothing changes but two `rotate` lines; a reader of `events.jsonl`
+  goes on in the file named by `next_events` of the `rotate` line that ends it.
 
 ## Exit codes
 

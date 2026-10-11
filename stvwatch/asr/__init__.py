@@ -13,6 +13,12 @@ import os
 
 from . import weights
 
+# onnxruntime >= 1.29 on Linux uploads usage events to Microsoft and keeps a
+# device id in ~/.cache/Microsoft. It reads the switch once, on import, so it is
+# set here: every import of onnxruntime and sherpa-onnx goes through this
+# package. A value the user set is kept.
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+
 ENGINES = ("parakeet",)
 # the weights each engine loads, names of weights.PINS
 WEIGHTS = {"parakeet": ("parakeet", "silero-vad")}

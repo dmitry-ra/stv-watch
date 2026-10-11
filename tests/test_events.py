@@ -166,8 +166,8 @@ def test_every_event_type_becomes_one_self_contained_line(app):
         ("leave", "leave Sniper left: Kicked  BOT"),
         ("connect", f"connect carol connecting  {steam2(c)}"),
     ]
-    assert f.g.kill_summary(T0 + 2 * 10**9) == "kills 3 3/min top alice 1"
-    assert f.g.kill_summary(T0 + 70 * 10**9) == "kills 3 0/min top alice 1"
+    assert f.g.kill_summary(T0 + 2 * 10**9) == "kills 3 3/min"
+    assert f.g.kill_summary(T0 + 70 * 10**9) == "kills 3 0/min"
 
 
 def test_steam2_form_of_networkid_names_the_same_account():
@@ -252,7 +252,7 @@ def test_filter_hides_types_but_kills_are_counted():
     f.ev("server_cvar", cvarname="x", cvarvalue="1")
     f.msg("SayText2", ent=1, chat=1, fmt="HL2MP_Chat_All", params=["a", "gg", "", ""])
     assert [r["type"] for r in f.take()] == ["chat"]
-    assert f.g.counts["death"] == 1 and f.g.kill_summary(T0) == "kills 1 1/min top a 1"
+    assert f.g.counts["death"] == 1 and f.g.kill_summary(T0) == "kills 1 1/min"
     # muted (replay fast-forward): state kept, nothing shown or counted
     f.g.muted = True
     f.ev("player_death", userid=4, attacker=2, weapon="ar2")
@@ -961,13 +961,13 @@ class Lines:
     def __init__(self, color=False):
         self.closed, self.fed, self.color = [], [], color
 
-    def feed(self, spans):
+    def feed(self, spans, t_ns=None):
         self.fed.append(spans)
 
-    def live_open(self, key, spans):
+    def live_open(self, key, spans, t_ns=None):
         pass
 
-    def live_close(self, key, spans, cont=()):
+    def live_close(self, key, spans, cont=(), t_ns=None):
         self.closed.append(spans)
 
 
