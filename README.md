@@ -11,6 +11,11 @@ JSON object per line.
 Every live session is recorded byte for byte (`capture.tvd`), and a replay of
 that recording gives the same lines the live run printed.
 
+![stv-watch replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
+
+A synthetic recording: invented players, English TTS voices, real Parakeet
+recognition.
+
 ## Requirements
 
 - Linux. The network client is a child process that the kernel stops when the
@@ -219,7 +224,8 @@ Times are in UTC. `--tz` takes an IANA zone name for the screen and the files
 uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin
 ```
 
-An `--attach` screen takes its own `--tz`; without it, it shows the engine's zone.
+An `--attach` screen takes its own `--tz`, for that screen only (the engine's
+files keep the engine's zone); without it, it shows the engine's zone.
 
 ### Session rotation
 
@@ -243,11 +249,29 @@ the absolute paths of the new directory and its `events.jsonl`:
 ```
 
 A reader of `events.jsonl` that meets it opens `next_events` and reads on from
-its first line, a `rotate` line with `prev_dir`, `prev_events` and `version`.
+its first line, a `rotate` line with `prev_dir`, `prev_events` and `version`
+that only marks the continuation: skip it. Follow `next_events` from file to
+file and never order sessions by their directory names: in a replay the
+sessions after a rotation are named by the recording's time, the first one by
+the time the replay started, so the names do not sort in the order of the
+run. `--json` prints both `rotate` lines, so its output is the sessions'
+`events.jsonl` one after the other; the screen shows only the first.
+
 An utterance is never split: one still being spoken or recognized at the
 rotation is written, WAV and all, in the new session, with its real start time.
-A schedule cron would misread (not 5 fields) or that never fires is refused at
-the start.
+A replay at `--speed 0` with `--asr` reads far ahead of the recognizer, so
+most voice then lands in later sessions than the ones it was spoken in; at a
+pace the recognizer keeps up with (in a test with a dozen speakers `--speed 4`
+was enough) the voice lands where the live run put it.
+
+Each session has its own `meta.json`, written when it starts and when it ends
+(`quit` is `rotated` for all but the last); its counters are totals since the
+run started. A rotated `capture.tvd` starts in the middle of the connection:
+`--replay` of it alone shows voice but not who is who until the next map
+change, while `--follow` goes on from one file into the next by itself. A
+schedule cron would misread (not 5 fields) or that never fires is refused at
+the start (exit code 2), and `--attach` takes no `--rotate`: the engine
+rotates. A period with no record in it gets no directory.
 
 ### A headless engine and its screens
 
@@ -308,11 +332,11 @@ lines of later events; its `t_utc` is when the speaker started.
 
 The fields are `t_utc`, `t_local` (only with `--tz`), `type`, `steamid64`, `nick`,
 `text` and the extra fields of the type; the format is
-[docs/events.schema.json](docs/events.schema.json), described in
-[docs/session-files.md](docs/session-files.md). `--monitor` gives the same events
-as plain text lines. [AGENTS.md](AGENTS.md) is a guide for agents that run it.
+[docs/events.schema.json](https://github.com/dmitry-ra/stv-watch/blob/main/docs/events.schema.json), described in
+[docs/session-files.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/session-files.md). `--monitor` gives the same events
+as plain text lines. [AGENTS.md](https://github.com/dmitry-ra/stv-watch/blob/main/AGENTS.md) is a guide for agents that run it.
 
-For AI coding agents there is a skill, [skills/stv-watch](skills/stv-watch/SKILL.md),
+For AI coding agents there is a skill, [skills/stv-watch](https://github.com/dmitry-ra/stv-watch/blob/main/skills/stv-watch/SKILL.md),
 in the format that Claude Code, Codex and Pi load. Link it into the agent's
 skill directory, from the clone:
 
@@ -366,7 +390,7 @@ chooses another parent), and its last feed line (`done`) names it:
 `capture.tvd` (live only), `events.jsonl`, `feed.log`,
 `transcript.tsv`, `audio/` (a WAV per utterance), `meta.json`, `tvdump.log`
 (live only), `stderr.log`; with `--rotate` a directory per period. See
-[docs/session-files.md](docs/session-files.md).
+[docs/session-files.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/session-files.md).
 
 ## A server on an unknown build
 
@@ -375,7 +399,7 @@ knows the CRCs of the builds in `stvwatch/net/builds.py` and refuses a relay on
 any other build, naming the build number, instead of guessing (each wrong guess
 would be a connection on someone else's server). After a game update, extract the
 new CRC with `tools/read_crc.py` from a local dedicated server of that build and
-add it to the table: [docs/protocol.md](docs/protocol.md#server-builds).
+add it to the table: [docs/protocol.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/protocol.md#server-builds).
 
 ## Responsible use
 
@@ -410,7 +434,7 @@ English sample of its export from Hugging Face, 229 KB, as the k2-fsa archive
 has none).
 `tools/local_srcds.py` starts a loopback dedicated server with SourceTV for
 manual checks, `tools/tmux_check.sh` checks the screen in a real terminal.
-How the protocol works: [docs/protocol.md](docs/protocol.md).
+How the protocol works: [docs/protocol.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/protocol.md).
 
 Every pull request that changes `stvwatch/` raises `version` in `pyproject.toml`
 (the patch number for a fix, the minor one for a feature) and refreshes `uv.lock`;
@@ -418,7 +442,7 @@ CI fails a pull request that does not.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/dmitry-ra/stv-watch/blob/main/LICENSE).
 
 The recognition model is not part of this repository: stv-watch downloads it
 from its source. Parakeet TDT 0.6B v3 is by NVIDIA

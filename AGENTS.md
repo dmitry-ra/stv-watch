@@ -99,9 +99,16 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
   session (`stv-watch --version`; `0.1.0+g976b9ae` from a git checkout off the
   release tag, with `.dirty` for uncommitted changes). Quote it when you report
   a problem.
-- With `--rotate CRON` the run starts a new session directory on that schedule.
-  On stdout nothing changes but two `rotate` lines; a reader of `events.jsonl`
-  goes on in the file named by `next_events` of the `rotate` line that ends it.
+- With `--rotate CRON` (5 fields, in the `--tz` zone, by the recording's time)
+  the run starts a new session directory on that schedule; the relay
+  connection stays. On stdout nothing changes but two `rotate` lines. A reader
+  of `events.jsonl` goes on in the file named by `next_events` of the `rotate`
+  line that ends it, and skips that file's first line (a `rotate` line with
+  `prev_dir`, `prev_events`, `version`). Follow `next_events`; never order
+  sessions by directory name (in a replay the first is named by wall time, the
+  rest by recording time). Each session has its own `meta.json` (`quit`
+  `rotated`, counters since the run started). A replay at `--speed 0` with
+  `--asr` carries voice still waiting for its text into later sessions.
 
 ## Exit codes
 
