@@ -355,3 +355,27 @@ def test_the_network_client_reports_its_own_death(tmp_path, monkeypatch, capsys,
     argv = ["run", "--dump", str(tmp_path / "a.tvd"), "--ip", "127.0.0.1", "--port", "9"]
     assert netmain.main(argv) == rc
     assert capsys.readouterr().out.splitlines()[-1] == "[tvdump] " + said
+
+
+def test_a_stderr_log_that_cannot_be_opened_is_5_not_a_bug(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    app = app_for(
+        ["--replay", SAMPLE, "--speed", "0", "--json", "--out", str(out)], monkeypatch, tmp_path
+    )
+
+    def start(screen, stderr_path=None):
+        raise PermissionError(13, "Permission denied", stderr_path)
+
+    monkeypatch.setattr(type(app.screen), "start", start)
+    assert app.run() == 5
+    # after a write error the session takes no more lines, done included
+    assert app.outcome[0] == "io" and "stderr.log" in app.outcome[1]
+
+
+def test_a_bad_password_source_stops_before_any_weights_are_fetched(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    fetched = []
+    monkeypatch.setattr(cli.weights, "ensure", lambda *a, **k: fetched.append(a))
+    argv = ["--relay", "192.0.2.1:27020", "--asr", "parakeet", "--out", str(tmp_path / "o")]
+    assert cli.main(argv + ["--password-file", str(tmp_path / "missing")]) == 2
+    assert fetched == [] and "password" in capsys.readouterr().err

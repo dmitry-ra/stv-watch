@@ -361,6 +361,13 @@ def main(argv=None):
     a = parse_args(argv)
     if a.attach:
         return serve.attach(a)
+    # cheap checks first: a bad password or recording must not cost a weights download
+    try:
+        src = password_source(a)
+        check_recording(a)
+    except ValueError as e:
+        print(f"stv-watch: {e}", file=sys.stderr)
+        return CODES["usage"]
     engines = [(a.asr, asr.WEIGHTS)] if a.asr else []
     if a.live_asr and has_screen(a):
         engines.append((a.live_asr, asr.LIVE_WEIGHTS))
@@ -371,12 +378,6 @@ def main(argv=None):
         except (weights.WeightsError, KeyboardInterrupt) as e:
             print(f"stv-watch: {engine} weights not available: {e}", file=sys.stderr)
             return CODES["usage"]
-    try:
-        src = password_source(a)
-        check_recording(a)
-    except ValueError as e:
-        print(f"stv-watch: {e}", file=sys.stderr)
-        return CODES["usage"]
     try:
         app = App(a, passwords=src)
     except serve.ServeError as e:

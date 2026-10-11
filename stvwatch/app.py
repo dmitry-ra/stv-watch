@@ -1372,10 +1372,15 @@ class App:
         try:
             self.version_due = True
             self.write_meta(self.meta)
-            self.screen.start(os.path.join(self.dir, "stderr.log"))
-            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-                signal.signal(sig, self._on_signal)
-            self.main()
+            err_log = os.path.join(self.dir, "stderr.log")
+            try:
+                self.screen.start(err_log)
+            except OSError as e:
+                self.io_failed(e, err_log)
+            if self.io_error is None:
+                for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                    signal.signal(sig, self._on_signal)
+                self.main()
         except Exception as e:  # noqa: BLE001
             crash = self.crashed(e)
         late = self.shutdown()
