@@ -339,7 +339,8 @@ moment: every line before it is in the old session, every line from it on in
 the new one, the same live and in a replay at any speed, with `--asr` or
 without. An utterance that starts before the cut and closes after it has its
 `talk` line in the old session and its `voice` line, `transcript.tsv` row and
-WAV in the new one; `utt` pairs them. `capture.tvd` is cut by the receive time
+WAV in the session where it closes (the next one, or a later one if it stays
+open across several cuts); `utt` pairs them. `capture.tvd` is cut by the receive time
 of the packets at the same moment, so the last voice data of such an utterance
 is in the next file.
 

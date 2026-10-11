@@ -122,7 +122,7 @@ def check_stream(sessions):
             elif r["type"] == "voice":
                 assert r["utt"] in talks and r["utt"] not in voices
                 tk, talk = talks[r["utt"]]
-                assert k - tk in (0, 1)
+                assert k >= tk  # open across several cuts: any later session
                 assert (r["steamid64"], r["start_utc"], r["continued"], r["slot"]) == (
                     talk["steamid64"],
                     talk["start_utc"],

@@ -270,8 +270,8 @@ Voice messages stay in the recorded datagrams: a replay shows and recognizes
 them as a live run does. A file cut by a crash is readable up to the cut.
 With `--rotate` the network client cuts the file by the receive time of the
 packets, at the moment of the cut of the events: the voice data of an utterance
-that closes after the cut, and so has its `voice` line in the next session, is
-partly in the next file too. A rotated file starts in the middle of a
+that closes after the cut, and so has its `voice` line in a later session, is
+partly in a later file too. A rotated file starts in the middle of a
 connection, with no handshake or string tables of its own: `--replay` of it shows voice but not who is who
 before the next map change, and a replay ends with the file it was given;
 `--follow` goes on into the next file.
