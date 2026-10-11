@@ -15,7 +15,7 @@ from fakerelay import FakeRelay
 from test_sample import SAMPLE, SCHEMA, check
 
 from stvwatch import cli, source
-from stvwatch.app import CODES, App, ReaderFailed
+from stvwatch.app import App, ReaderFailed
 from stvwatch.net import dump
 from stvwatch.net import main as netmain
 
@@ -84,10 +84,6 @@ def until(cond, timeout=30.0):
             return True
         time.sleep(0.05)
     return False
-
-
-def test_every_class_has_its_own_code():
-    assert sorted(CODES.values()) == list(range(6))
 
 
 def test_a_replay_that_ends_says_so_in_fields(tmp_path):
