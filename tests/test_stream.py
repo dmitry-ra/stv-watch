@@ -7,6 +7,7 @@ And how a run ends, in meta.json's `quit`."""
 
 import functools
 import hashlib
+import json
 import queue
 import re
 import threading
@@ -14,12 +15,13 @@ import time
 
 import pytest
 from helpers import T0, account, chat_bytes, packet, reliable_packet, steamid64, table_update
+from test_ending import run_with, until
 from test_rotate import chain, lines_of, meta_of, rows_of, wavs
 from test_voice import Engine
 from voicegen import noise, tone, voice_plan
 
 from stvwatch import cli, source
-from stvwatch.app import LIVE_LAG_NS, App
+from stvwatch.app import LIVE_LAG_NS, App, Backoff
 from stvwatch.asr import recognizer
 from stvwatch.net import dump, netchan
 from stvwatch.times import utc_iso
@@ -358,3 +360,123 @@ def test_a_signal_is_the_end_even_when_the_network_client_goes_first(tmp_path, m
     argv = ["--relay", "127.0.0.1:9", "--json", "--out", str(tmp_path)]
     assert App(cli.parse_args(argv)).run() == 0
     assert meta_of(next(tmp_path.iterdir()))["quit"] == "SIGINT"
+
+
+# ------------------------------------------------------------------ --keep-trying
+class WallClient:
+    """A network client whose journal is written as it would be live: the
+    datagrams of its plan at their seconds after it starts, on the wall
+    clock. The first one dies (killed) once its plan is out, the second one
+    stays until stopped."""
+
+    plans = []
+
+    def __init__(
+        self, ip, port, dump_path, log_path, name="", duration_ms=0, extra=(), password=""
+    ):
+        self.path, self.log_path = dump_path, log_path
+        self.plan, self.rc = WallClient.plans.pop(0)
+
+    def start(self):
+        open(self.log_path, "w").close()
+        t0 = time.time_ns()
+        with dump.DumpWriter(self.path, "127.0.0.1:9", fsync_ms=0) as w:
+            # every network client counts its sessions from 1
+            w.write(dump.SESSION_START, b'{"session": 1}', t_ns=t0)
+            for n, (s, make) in enumerate(self.plan):
+                time.sleep(max(0.0, (t0 + int(s * NS) - time.time_ns()) / NS))
+                w.write(dump.DATAGRAM_IN, make(n + 1), t_ns=t0 + int(s * NS))
+        return True
+
+    def alive(self):
+        return self.rc is None
+
+    def stop(self):
+        return 0 if self.rc is None else self.rc
+
+    def cpu_s(self):
+        return 0.0
+
+
+def test_a_restart_cuts_the_stream_where_the_new_client_starts(tmp_path, monkeypatch, slow):
+    """alice is still talking when the first client dies: the end of its
+    journal closes her utterance, so its talk and voice lines both stay in
+    the old session, which goes on the wall clock while no client runs (the
+    wait line is written during the wait) and ends with the rotate of the
+    restart; the new client's lines are the new session's."""
+    monkeypatch.setattr(Backoff, "CLIENT_S", 2.0)
+    monkeypatch.setattr(source, "LiveClient", WallClient)
+    monkeypatch.setattr(App, "precheck", lambda app, have: "")
+    said = [
+        (0.2 + t, lambda seq, p=p: packet(seq, [(1, p)]))
+        for t, _sid, p in voice_plan([(0.0, ALICE, tone(1.0))])
+    ]
+    quiet = [(k * 0.05, lambda seq: packet(seq)) for k in range(1, 27)]
+    first = sorted([(0.0, players)] + said + quiet, key=lambda e: e[0])
+    hello = (0.1, lambda seq: reliable_packet(seq, chat_bytes("bob", "hello")))
+    WallClient.plans = [(first, -9), ([(0.0, players), hello], None)]
+    out = tmp_path / "o"
+    argv = ["--relay", "127.0.0.1:9", "--events", "all", "--keep-trying", "--out", str(out)]
+    app = App(cli.parse_args(argv + ["--asr", "parakeet"]))
+    in_wait = []
+
+    def seen(what):
+        files = sorted(out.glob("*/events.jsonl"))
+        return any(what(json.loads(ln)) for f in files for ln in f.read_text().splitlines())
+
+    def drive():
+        assert until(lambda: seen(lambda r: r["type"] == "wait"))
+        in_wait.append(app.waiting is not None)
+        assert until(lambda: seen(lambda r: r["text"] == "hello"))
+
+    assert run_with(app, drive) == 0
+    assert in_wait == [True]
+    old, new = chain(out)
+    lines = check_stream([old, new])
+    a, b = lines_of(old), lines_of(new)
+    assert [r["type"] for r in a if r["type"] in ("talk", "voice")] == ["talk", "voice"]
+    assert [(r["type"], r.get("reason")) for r in a[-2:]] == [("wait", None), ("rotate", "restart")]
+    assert (b[0]["type"], b[0]["reason"], b[-1]["type"]) == ("rotate", "restart", "done")
+    assert [r["text"] for r in b if r["type"] == "chat"] == ["hello"]
+    assert lines[-1]["t_utc"] >= lines[-2]["t_utc"]
+
+
+def test_done_is_the_last_line_even_when_a_bug_leaves_voice_without_its_text(
+    rec, tmp_path, monkeypatch
+):
+    """A bug while winding down, with utterances still waiting for the
+    recognizer and the rotation at the minute behind them: their places are
+    let go, the rotation is made, and only then meta.json and done, both in
+    the session the stream ends in."""
+    engine = Engine()
+    monkeypatch.setattr(recognizer, "build", lambda *a: engine)
+    gate, stream = threading.Event(), engine.open
+    engine.open = lambda: (gate.wait(), stream())[1]
+
+    def broken(app):
+        raise RuntimeError("winding down")
+
+    monkeypatch.setattr(App, "wind_down", broken)
+    argv = ["--replay", rec, "--speed", "0", "--json", "--events", "all", "--asr", "parakeet"]
+    argv += ["--rotate", "* * * * *", "--out", str(tmp_path / "o")]
+    try:
+        with pytest.raises(RuntimeError, match="winding down"):
+            App(cli.parse_args(argv)).run()
+    finally:
+        gate.set()
+    old, new = chain(tmp_path / "o")
+    lines = lines_of(old) + lines_of(new)
+    times = [r["t_utc"] for r in lines]
+    assert times == sorted(times)
+    assert (lines_of(old)[-1]["type"], lines[-1]["type"], lines[-1]["class"]) == (
+        "rotate",
+        "done",
+        "bug",
+    )
+    assert (meta_of(old)["quit"], meta_of(new)["quit"], meta_of(new)["class"]) == (
+        "rotated",
+        "crash",
+        "bug",
+    )
+    assert {r["type"] for r in lines} >= {"talk", "chat"}
+    assert not any(r["type"] == "voice" for r in lines)
