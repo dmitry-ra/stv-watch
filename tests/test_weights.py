@@ -118,7 +118,8 @@ def test_a_models_dir_that_cannot_be_made_is_a_weights_error_and_exit_2(tmp_path
     under = str(tmp_path / "file" / "m")
     with pytest.raises(weights.WeightsError, match="Not a directory"):
         weights.ensure(pin("http://127.0.0.1:9"), under, log=print)
-    assert cli.main(["--replay", "x.tvd", "--asr", "parakeet", "--models-dir", under]) == 2
+    # a relay, not a missing recording: cheap checks run before the weights
+    assert cli.main(["--relay", "192.0.2.1:27020", "--asr", "parakeet", "--models-dir", under]) == 2
     assert "parakeet weights not available" in capsys.readouterr().err
 
 

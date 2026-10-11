@@ -131,6 +131,82 @@ Given a game port, stv-watch refuses before connecting with
 `refused: relay does not take anonymous login, auth protocol 3`: the game
 server wants a Steam login, which a SourceTV relay does not.
 
+### A relay with a password
+
+A server that sets `tv_password` closes its relay to spectators without it, and
+its A2S_INFO reply on the relay port says so (`visibility` 1). stv-watch refuses
+such a relay before connecting unless you give it the password: in a file
+(its first line), in the environment, or in the password store:
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --password-file ~/.config/stv-watch/relay.pw
+STV_WATCH_PASSWORD=... uv run stv-watch --relay RELAY_IP:27020
+uv run stv-watch --relay RELAY_IP:27020        # the line of RELAY_IP:27020 in the store
+```
+
+The store is `$XDG_CONFIG_HOME/stv-watch/passwords`
+(`~/.config/stv-watch/passwords` when `XDG_CONFIG_HOME` is unset), one relay
+per line, `#` starts a comment:
+
+```
+# HOST:PORT     PASSWORD (the rest of the line, without leading and trailing spaces)
+RELAY_IP:27020  the password
+```
+
+Like ssh with a key, stv-watch refuses to read it (exit code 2) when its mode
+lets anyone but its owner read or change it: `chmod 600` it. Its password is
+sent only to a relay that announces one. The first source given wins:
+`--password-file`, then `STV_WATCH_PASSWORD`, then the store; a broken file or
+store is an error at the start. The file and the store are read again before
+every connection attempt, so a long run picks up a new password without a
+restart (see `--keep-trying` below).
+
+There is no option that takes the password itself: a command line is visible to
+every user of the machine (`ps`) and is copied into `meta.json`. The password
+goes to the network client through its environment and to the relay in the
+connect request; it is not written to any session file (`capture.tvd` keeps the
+connect request with the password field empty), the screen or a log. A wrong
+password is a refusal retrying will not change: the relay accepts the connect
+and drops us at once with `Bad spectator password`, and stv-watch ends with exit
+code 3 (`tvd` line `[alarm] permanent failure: Bad spectator password`).
+
+A password set while we are connected does not drop us, but the next map change
+does: stv-watch reconnects after every map change, and that connect is checked.
+
+### A window that stays up
+
+A run meant to stay up for days (a window in tmux, a service) should not end
+because the relay turned it away for a while. With `--keep-trying` the refusals
+that may pass without a change to stv-watch are waited out inside the run:
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --keep-trying
+```
+
+- the relay refused us before connecting (silent, no free slot, a password
+  announced and none given, an unknown build) or with a standing refusal (`Bad
+  spectator password`, a ban, a build or class table mismatch): the next attempt
+  is 300 s later, doubled while the same refusal repeats, at most 30 minutes
+  (12 connects an hour is all a relay that keeps saying no gets from us; it is
+  someone else's server);
+- the network client died (killed, crashed): 10 s, doubled up to 300 s.
+
+The waits start over after a connection that reached FULL. When the password
+file or the store changes during a wait, the next attempt comes at once (a
+second after the last write), so fixing the password brings the window back
+within seconds. The status line shows `refused: Bad spectator password, next
+try in 4:12` or `client died (rc -9): killed by SIGKILL, next try in 0:08`,
+and `events.jsonl` gets a `wait` line per failed attempt, with the cause, its
+class and `next_try_utc` (see [docs/session-files.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/session-files.md)).
+A new network client after a wait writes a new session directory, linked to
+the old one by `rotate` lines with `reason` `restart`, as `--rotate` does. `q`
+and signals end the run as always, waiting or not. Usage errors (a bad option,
+a password file that cannot be read, a store others may read) and errors in
+stv-watch itself still end it: waiting would not fix them.
+
+Without `--keep-trying` a run ends at the first refusal or client death, with
+the exit code of its class (below).
+
 ### Voice
 
 Every utterance is a line: who talks, `talking N s` while the key is held, then
@@ -349,13 +425,21 @@ mkdir -p ~/.pi/agent/skills && ln -s "$PWD/skills/stv-watch" ~/.pi/agent/skills/
 The skill finds the clone through the link, so it stays current with
 `git pull`.
 
-Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording),
-2 when the relay was refused before connecting, the command line is wrong, no
-engine serves the socket given to `--attach` or it speaks another protocol version,
-the socket of `--serve` is taken or the recognizer could not start (its weights
-could not be fetched or checked, or the model failed to load), 3 when the network
-client stopped on its own (the relay refuses us for a reason retrying will not
-change).
+### Exit codes
+
+One code per class of ending; the last line of `events.jsonl` (`done`) says
+the same in fields: `quit` (what ended it), `class`, `cause`, `rc`.
+
+| Code | Class | When |
+|---|---|---|
+| 0 | `ok` | done as asked: `q`, a signal, `--duration-ms` (`quit` `client left: time limit` live, `time limit` in a replay), the end of a recording |
+| 1 | `bug` | an error in stv-watch itself (`quit` `crash`): the traceback is on the terminal and in the session's `stderr.log`, `cause` names the exception |
+| 2 | `usage` | a usage or configuration error: the command line, a recording that cannot be read, a password file or store that cannot be read or that others may read, the socket of `--serve` or `--attach`, recognition weights that could not be fetched or checked, a model that failed to load (`asr failed`) |
+| 3 | `refused` | the relay does not take us: refused before connecting (`precheck`) or with a standing refusal (`alarm`) |
+| 4 | `client` | the network client died: killed or stopped from outside (also a SIGTERM to it alone), or crashed (`quit` `client died (rc N)`) |
+| 5 | `io` | the session cannot be written: the directory cannot be made, a full disk (`write error`, or `client died (rc 5)` when the network client could not write `capture.tvd`) |
+
+Codes 3 and 4 end a run only without `--keep-trying`.
 
 ### Other options
 
@@ -389,7 +473,8 @@ follow-NAME>_<pid>` under `$XDG_DATA_HOME/stv-watch/sessions`
 chooses another parent), and its last feed line (`done`) names it:
 `capture.tvd` (live only), `events.jsonl`, `feed.log`,
 `transcript.tsv`, `audio/` (a WAV per utterance), `meta.json`, `tvdump.log`
-(live only), `stderr.log`; with `--rotate` a directory per period. See
+(live only), `stderr.log`; with `--rotate` a directory per period, with
+`--keep-trying` a new one for each new network client. See
 [docs/session-files.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/session-files.md).
 
 ## A server on an unknown build
@@ -405,10 +490,10 @@ add it to the table: [docs/protocol.md](https://github.com/dmitry-ra/stv-watch/b
 
 - stv-watch takes a spectator slot on someone else's server. Before connecting it
   checks that at least one slot stays free for others after it joins
-  (`--allow-last-slot` overrides that), it does not join relays with a password or
-  a Steam-only login, and on every way out, including a crash of the viewer, it
-  tells the relay it left, so the slot is freed at once rather than after the
-  relay's 300 s timeout.
+  (`--allow-last-slot` overrides that), it joins a password-protected relay only
+  with the password you give it, never one with a Steam-only login, and on every
+  way out, including a crash of the viewer, it tells the relay it left, so the
+  slot is freed at once rather than after the relay's 300 s timeout.
 - It does not hammer a relay: a refused or dropped connection is retried with a
   growing delay, and a refusal that retrying will not change (wrong build,
   password, ban) is retried only every few minutes and ends the viewer.

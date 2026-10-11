@@ -26,8 +26,8 @@ its 300 s timeout.
 `net/client.py` `precheck`: A2S_INFO of the relay port (spectator count, slots,
 password flag, build number in `version`), then a connectionless getchallenge
 to read the auth protocol. Nothing in it takes a slot. Refused: a silent relay,
-a password, an unknown build, a relay that wants Steam login (auth protocol 3),
-no slot left for others after us.
+a password when none was given, an unknown build, a relay that wants Steam
+login (auth protocol 3), no slot left for others after us.
 
 ## Handshake
 
@@ -42,6 +42,34 @@ The anonymous login works on the relay port only. The game server's own port
 wants a Steam session; a relay that offers authentication protocol 2 checks
 nothing but `tv_password`, so with no password it takes the hashed-cdkey login
 (a dummy MD5 of the name) and no Steam ticket.
+
+## tv_password
+
+Observed on a local dedicated server of build 10889068 (`tools/local_srcds.py`
+with `+tv_password`), and on a live relay:
+
+- A2S_INFO on the relay port answers `visibility` 1 while `tv_password` is set
+  and 0 when it is empty; the game port reports its own `sv_password` only.
+  A change at runtime shows in the next reply.
+- The password travels in the `k` connect request, the field after the name.
+  The relay does not refuse a wrong or missing one with a `9` reject: it
+  accepts the connect (`B`) and then drops the channel with `net_Disconnect`
+  `Bad spectator password` (its console: `Dropped NAME from server (Bad
+  spectator password)`). `net/builds.py` classifies that reason as permanent.
+- A password sent to a relay without `tv_password` is ignored.
+- Every change is announced as a `server_cvar` event with the value
+  `***PROTECTED***` (a `server` line in stv-watch): players and spectators see
+  that it changed, not to what.
+- `tv_password` changed at runtime applies to the next connect at once, no
+  restart; spectators already connected stay. A map change makes our client
+  connect again (`net/session.py`, changelevel), so a password set while we
+  are in drops us at the next map change.
+
+The viewer takes the password from `--password-file` or `STV_WATCH_PASSWORD`,
+keeps it out of its options (`meta.json` `args`), and hands it to the network
+client in the environment (`STV_WATCH_PASSWORD`), not in argv: `/proc/PID/environ`
+is readable by the same user only, `/proc/PID/cmdline` by everyone. The dump
+records the connect request with the password field empty.
 
 ## Netchannel
 

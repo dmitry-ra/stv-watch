@@ -150,7 +150,9 @@ def connect(ip, port, name, build, password="", timeout=6.0, on_packet=None):
 
         ck = build_connect(nonce, ch["challenge"], name, build, password)
         sock.sendto(ck, server)
-        emit("out", ck)
+        # The dump gets the request with the password field empty: a
+        # recording is shared and replayed, the password is not.
+        emit("out", build_connect(nonce, ch["challenge"], name, build) if password else ck)
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

@@ -19,6 +19,11 @@ still being spoken or waiting for its text goes to the new session whole, its
 WAV moved along; none is split between two. A period without any record gets
 no directory.
 
+With `--keep-trying` every network client after the first one of a session
+starts a new directory the same way, named by the time it starts: the `rotate`
+lines that link the two have `reason` `restart`, and so has the new
+`meta.json`. A new client never appends to the journal of a dead one.
+
 | File | Live | Replay | Content |
 |---|---|---|---|
 | `capture.tvd` | yes | - | the raw recording: every datagram both ways and the session lifecycle |
@@ -28,7 +33,7 @@ no directory.
 | `audio/` | yes | yes | a WAV file per utterance (not with `--no-audio`; only once someone spoke) |
 | `meta.json` | yes | yes | arguments, counters and how the session ended, written at its start and its end |
 | `tvdump.log` | yes | - | the network client's own log |
-| `stderr.log` | yes | yes | anything printed to stdout or stderr other than the screen |
+| `stderr.log` | yes | yes | anything printed to stdout or stderr other than the screen; the traceback of an error in stv-watch itself |
 
 `events.jsonl`, `feed.log`, `meta.json` and `capture.tvd` name the stv-watch
 version that wrote them, as `stv-watch --version` prints it:
@@ -132,7 +137,41 @@ the sessions' `events.jsonl` one after the other),
 `--live-asr` also the live recognizer: `nemotron live ready in ...`, `... live
 failed: ...`, `... live error: ...`, or `... live off` when the run has no
 screen to show its text on),
-`done` (the last line: why the run ended and where its files are).
+`wait` (`--keep-trying`: an attempt failed and the next one is due; below),
+`done` (the last line: how the run ended and where its files are; below).
+A `rotate` line of a restart under `--keep-trying` also has `reason`
+`restart`.
+
+| type | extra fields | what |
+|---|---|---|
+| `done` | `quit`, `class`, `cause`, `rc`, `retrying`, `tvdump_rc` | the run ends; `text` is `<quit> -> <session directory>` |
+| `wait` | `quit`, `class`, `cause`, `attempt`, `next_try_utc`, `retrying` | `--keep-trying`: attempt `attempt` (1 for the first) failed, the next one is due at `next_try_utc` (earlier if the password file changes); `text` is `refused: <cause>, next try in M:SS` or `client died (rc N): <cause>, next try in M:SS` |
+
+- `quit`: what ended the run or the attempt, the same label as in `meta.json`:
+  `key q`, `SIGINT`, `SIGTERM`, `SIGHUP`, `time limit` (a replay's
+  `--duration-ms`), `client left: time limit` (a live one's), `end of
+  recording`, `precheck` (refused before connecting), `alarm` (a standing
+  refusal), `client died (rc N)` (the network client's exit code, negative for
+  a signal), `asr failed`, `password` (the password file or store could not be
+  read after the start), `write error`, `crash`.
+- `class`, one per exit code: `ok` 0 (done as asked), `bug` 1 (an error in
+  stv-watch itself), `usage` 2, `refused` 3 (the relay does not take us),
+  `client` 4 (the network client died), `io` 5 (the session cannot be written).
+- `cause`: why, as text, empty for `ok`: the relay's refusal (`Bad spectator
+  password`, `relay does not answer A2S_INFO`, ...), how the client died
+  (`killed by SIGKILL`, `stopped from outside (exit code 0)`, the last line of
+  its crash such as `RuntimeError: ...`), the exception of a bug (`Type:
+  message`), the file that could not be written and why.
+- `rc`: the exit code of the run. `retrying`: `false` on `done`, `true` on
+  `wait`. `tvdump_rc`: the exit code of the last network client, null when
+  none ran or it had to be killed.
+
+`done` is written on every way out that leaves the process running long
+enough, a crash included. It is missing only when the process was killed
+(SIGKILL, the OOM killer) or `events.jsonl` itself could not be written; then
+`meta.json` has no `end_utc`. While a run with `--keep-trying` waits, its last
+line so far is the `wait` of the failed attempt; when that run ends, `done`
+still follows it.
 
 ## feed.log
 
@@ -201,13 +240,14 @@ datagrams only).
 ## meta.json
 
 Written when the session starts and again when it ends (at exit, or at a
-rotation): `version`, `build` (`version`, `release`, `commit` = the full
+rotation), each time whole (a new file renamed over the old one), so a full
+disk leaves the earlier one: `version`, `build` (`version`, `release`, `commit` = the full
 hash, `dirty`; the last two null outside a git checkout), `args` (the command
 line), `model` (the `--asr` engine or null), `dir`, `tz`, `pid`, `start_utc`,
-`end_utc`, `quit` (`end of recording`, `duration`, `key q`, `SIGINT`,
-`SIGTERM`, `SIGHUP`, `alarm`, `client exited`, `precheck`, `asr failed`,
-`rotated`),
-`tvdump_rc` (exit code of the network client; null when it had to be killed),
+`end_utc`, `quit` (as in the `done` line, or `rotated`), `class`, `cause` and
+`rc` (as in the `done` line; not in a session a rotation ended),
+`tvdump_rc` (exit code of the last network client; null when none ran or it
+had to be killed),
 `traffic`, `framer` (receive path counters: `seq_lost`, `seq_choked`,
 `resend_skipped`, `voice_msgs`, `voice_crc_bad`, packet fates, ...), `segments`
 (speech segmenter counters), `counters` (`utterances`, `phrases` with text,
@@ -223,7 +263,8 @@ also `live_asr`: `engine`, `state`, `error`, `load_ms`, `audio_ms` and
 milliseconds named `*_ms`; `args` holds the options under their names
 (`duration_ms`, `skip_ms`, ...).
 A session a rotation ended has `next_dir`; one a rotation opened has
-`prev_dir` and `rotated_utc` (the time of the record it starts with). The
+`prev_dir` and `rotated_utc` (the time of the record it starts with), and
+`reason` `restart` when a `--keep-trying` restart opened it. The
 counters (`traffic` to `live_asr`) are totals since the run started, in every
 session of it.
 Live runs also have `slot_released`, `relay_before`, `relay_with_us` and
