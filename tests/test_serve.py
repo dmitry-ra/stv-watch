@@ -169,6 +169,14 @@ def test_a_screen_in_its_own_zone_draws_what_a_local_run_in_that_zone_draws(
     clock are the screen's, as in a local run without --tz."""
     hold_start(monkeypatch, 1)
     c = Client(sock, tz=timezone.utc)
+    clocks = []
+    draw = c.c.screen.draw
+
+    def seen(block, t_ns=None):
+        clocks.extend(t for line in block for t, st in line if st == "clock")
+        draw(block, t_ns)
+
+    c.c.screen.draw = seen
     args = ["--replay", voice, "--speed", "0", "--events", "all", "--out", str(tmp_path)]
     assert App(parse_args(args + ["--tz", "Asia/Tokyo", "--serve", sock])).run() == 0
     s = session_of(tmp_path)
@@ -176,6 +184,7 @@ def test_a_screen_in_its_own_zone_draws_what_a_local_run_in_that_zone_draws(
     c = c.finish()
     assert normal(screen_lines(c.screen), s) == lines
     assert normal(c.block, s) == final
+    assert clocks and all(t.endswith(" UTC") for t in clocks)
 
 
 def test_time_travels_as_data_and_the_screen_shows_it_in_its_zone(sock, monkeypatch):
@@ -240,7 +249,8 @@ def test_a_late_screen_gets_the_history_open_live_lines_and_block_on_connect(
     """Connected while alice talks and bob's line has closed: the snapshot
     holds bob's final text where his line was and alice's latest progress."""
     hold_start(monkeypatch, 1)
-    early, late = Client(sock), []
+    tokyo = ZoneInfo("Asia/Tokyo")  # not the engine's: the snapshot keeps the time as data
+    early, late = Client(sock, tz=tokyo), []
     draw = serve.ServedScreen.draw
 
     def gate(screen, block, t_ns=None):
@@ -248,8 +258,9 @@ def test_a_late_screen_gets_the_history_open_live_lines_and_block_on_connect(
         srv = screen.server
         closed = any(e.get("key") is not None and e["op"] == "line" for e in srv.ring)
         if not late and srv.open and closed:
-            late.append(Client(sock))
-            until(lambda: late[0].c.block is not None and early.c.block == srv.last["block"])
+            late.append(Client(sock, tz=tokyo))
+            last = [serve.restamp(ln, srv.last["t"], tokyo) for ln in srv.last["block"]]
+            until(lambda: late[0].c.block is not None and early.c.block == last)
             e, lt = early.c, late[0].c
             assert lt.open == e.open and lt.block == e.block
             assert "talking 0.0s" not in "".join(t for t, _s in list(e.open.values())[0])
@@ -461,19 +472,19 @@ def test_q_closes_the_attached_screen(sock):
 
 
 def test_a_screen_refuses_an_engine_of_the_previous_protocol(sock, monkeypatch):
-    """A 0.3 engine draws the rule and the q hint the old way."""
+    """A 0.4 engine sends time labels drawn in its own zone only."""
     from stvwatch import version
 
     with monkeypatch.context() as m:
-        m.setattr(serve, "PROTO", 1)
+        m.setattr(serve, "PROTO", 2)
         eng = served_screen(sock)
     c = serve.Attached(sock, tty_screen())
     assert c.connect()
     until(lambda: (c.step(0.01), c.quit)[1])
     assert c.rc == 2 and c.engine is None
     assert texts(c.screen)[-1].endswith(
-        f"attach the engine (stv-watch v) speaks protocol 1, this stv-watch"
-        f" {version.version()} speaks {serve.PROTO}: attach with the engine's version"
+        f"attach the engine (stv-watch v) speaks protocol 2, this stv-watch"
+        f" {version.version()} speaks 3: attach with the engine's version"
     )
     eng.stop()
 
