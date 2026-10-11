@@ -11,10 +11,10 @@ JSON object per line.
 Every live session is recorded byte for byte (`capture.tvd`), and a replay of
 that recording gives the same lines the live run printed.
 
-![stv-watch replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
+![stv-watch 0.6.0 replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
 
-A synthetic recording: invented players, English TTS voices, real Parakeet
-recognition.
+stv-watch 0.6.0 replaying a synthetic recording: invented players, English TTS
+voices, real Parakeet recognition.
 
 ## Requirements
 
@@ -90,11 +90,12 @@ uv run stv-watch --replay capture.tvd --skip-ms 600000 --duration-ms 60000
 ```
 
 `--duration-ms` also bounds a live run: the viewer leaves the relay after that
-much wall time (`quit` in `meta.json` says `client left: time limit`). `--follow` watches the `capture.tvd` of a live run while it is
-being written, with no connection of its own, so more people can watch one
-connection; what the file held before only sets the state, and the feed starts
-with what comes next. It waits for more until `q` or a signal, also once the
-writer has stopped; a finished recording is for `--replay`:
+much wall time (`quit` in `meta.json` says `client left: time limit`).
+`--follow` watches the `capture.tvd` of a live run while it is being written,
+with no connection of its own, so more people can watch one connection; what
+the file held before only sets the state, and the feed starts with what comes
+next. It waits for more until `q` or a signal, also once the writer has
+stopped; a finished recording is for `--replay`:
 
 ```sh
 uv run stv-watch --follow ~/.local/share/stv-watch/sessions/SESSION/capture.tvd
@@ -201,9 +202,10 @@ class and `next_try_utc` (see [docs/session-files.md](https://github.com/dmitry-
 A new network client after a wait writes a new session directory, linked to
 the old one by `rotate` lines with `reason` `restart`, as `--rotate` does: the
 stream is cut where the new client starts, so the old session ends with the
-failed attempt, its `wait` line and the `rotate` line. `q` and signals end the run as always, waiting or not. Usage errors (a bad option,
-a password file that cannot be read, a store others may read) and errors in
-stv-watch itself still end it: waiting would not fix them.
+failed attempt, its `wait` line and the `rotate` line. `q`, signals and
+`--duration-ms` end the run as always, waiting or not. Usage errors (a bad
+option, a password file that cannot be read, a store others may read) and
+errors in stv-watch itself still end it: waiting would not fix them.
 
 Without `--keep-trying` a run ends at the first refusal or client death, with
 the exit code of its class (below).
@@ -216,8 +218,8 @@ into pieces of at most two minutes (`--max-utt-ms`, default 120000, at most
 400000: Parakeet takes at most 400 s in one call); later pieces are marked
 `(cont)`. A piece ends in the middle of the longest pause in its last 40 %, the
 pauses found by Silero VAD (with `--asr`); with no pause there, or without
-`--asr`, the cut is hard at the limit. Each utterance is also saved as a WAV file and a row of
-`transcript.tsv` (`--no-audio` turns the WAV files off).
+`--asr`, the cut is hard at the limit. Each utterance is also saved as a WAV
+file and a row of `transcript.tsv` (`--no-audio` turns the WAV files off).
 
 To see what is said, add a recognizer:
 
@@ -238,8 +240,9 @@ so its text follows the speech by about a second. A replay that reaches its
 end waits until every queued utterance is recognized; live, or stopped by a
 signal or `q`, the exit waits at most `--drain-ms` (default 20000), and the
 rest are marked `not recognized before exit`. `--drain-ms` bounds a replay's
-wait too, and a signal or `q` during the wait ends it. The queue holds at most 600 s of audio: a replay waits for room, while
-live an utterance that does not fit is marked `not recognized, queue full`.
+wait too, and a signal or `q` during the wait ends it. The queue holds at most
+600 s of audio: a replay waits for room, while live an utterance that does not
+fit is marked `not recognized, queue full`.
 
 Silero VAD stands in front of the model as a gate: an utterance with less
 speech in it than `--min-speech-ms` (default 250) gets no text (`no speech`)
@@ -340,9 +343,9 @@ the new one, the same live and in a replay at any speed, with `--asr` or
 without. An utterance that starts before the cut and closes after it has its
 `talk` line in the old session and its `voice` line, `transcript.tsv` row and
 WAV in the session where it closes (the next one, or a later one if it stays
-open across several cuts); `utt` pairs them. `capture.tvd` is cut by the receive time
-of the packets at the same moment, so the last voice data of such an utterance
-is in the next file.
+open across several cuts); `utt` pairs them. `capture.tvd` is cut by the
+receive time of the packets at the same moment, so the last voice data of such
+an utterance is in the next file.
 
 Each session has its own `meta.json`, written when it starts and when it ends
 (`quit` is `rotated` for all but the last); its counters are totals since the
@@ -390,8 +393,9 @@ waits for a screen. The engine's stdout gets a first line
 `--plain` without status lines); its session directory ends in `_N`, the same
 pid. A socket file left by an engine that died is
 taken over, one that a live engine serves is refused. A screen and an engine of
-different socket protocol versions (0.4.0 brought protocol 2, 0.5.0 protocol 3)
-do not work together: the screen names both versions and exits.
+different socket protocol versions (0.4.0 brought protocol 2, 0.5.0 protocol 3,
+which 0.6.0 keeps) do not work together: the screen names both versions and
+exits.
 
 ### For scripts and agents
 
