@@ -254,8 +254,11 @@ def parser():
 def main(argv=None):
     ap = parser()
     a = ap.parse_args(argv)
-    if getattr(a, "rotate", None) and not a.rotate_dir:
-        ap.error("--rotate needs --rotate-dir")
+    if getattr(a, "rotate", None):
+        if not a.rotate_dir:
+            ap.error("--rotate needs --rotate-dir")
+        if "{stamp}" not in a.rotate_dir:
+            ap.error("--rotate-dir needs {stamp}: every period opens a directory of its own")
     return a.fn(a)
 
 

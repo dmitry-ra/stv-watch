@@ -358,6 +358,24 @@ def test_live_the_session_follows_the_network_client_into_its_new_directory(tmp_
     assert [d.t_ns for d in follow] == [t for t, _d in timeline()]
 
 
+def test_a_rotated_journal_never_opens_over_a_file_that_exists(tmp_path, capsys, monkeypatch):
+    """A --rotate-dir without {stamp} names one directory for every period: it
+    is refused at the start. A writer told to go on in a file that exists
+    keeps the journal it has rather than truncating it."""
+    monkeypatch.setattr(netmain, "cmd_run", lambda a: 0)
+    argv = ["run", "--dump", str(tmp_path / "a.tvd"), "--ip", "127.0.0.1", "--port", "9"]
+    with pytest.raises(SystemExit) as e:
+        netmain.main(argv + ["--rotate", EVERY_MINUTE, "--rotate-dir", str(tmp_path / "d")])
+    assert e.value.code == 2 and "--rotate-dir needs {stamp}" in capsys.readouterr().err
+    path = str(tmp_path / "j.tvd")
+    w = dump.DumpWriter(path, "127.0.0.1:9", fsync_ms=0, next_path=lambda t: path if t else None)
+    w.write(dump.DATAGRAM_IN, b"kept", t_ns=0)
+    with pytest.raises(dump.DumpError, match="File exists"):
+        w.write(dump.DATAGRAM_IN, b"next", t_ns=at(1))
+    w.close()
+    assert [(t, d) for t, _r, d in dump.DumpReader(path)] == [(0, b"kept")]
+
+
 def test_the_network_client_moves_its_log_into_the_new_directory(tmp_path):
     """Its stdout and stderr are the log file the viewer opened for it."""
     path = tmp_path / "new.log"

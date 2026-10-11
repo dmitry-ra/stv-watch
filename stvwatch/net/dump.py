@@ -78,11 +78,11 @@ class DumpWriter:
         self.next_path, self.on_next = next_path, on_next
         self._f = self._open(path)
 
-    def _open(self, path):
+    def _open(self, path, mode="wb"):
         try:
             d = os.path.dirname(os.path.abspath(path))
             os.makedirs(d, exist_ok=True)
-            f = open(path, "wb")
+            f = open(path, mode)
             ep = self.endpoint.encode("ascii", "replace")
             f.write(struct.pack(HEADER_HEAD, MAGIC, VERSION, time.time_ns(), len(ep)) + ep)
             f.flush()
@@ -93,8 +93,9 @@ class DumpWriter:
 
     def _next_file(self, path, t_ns):
         """The next file is complete on disk before this one points to it, so
-        a reader that follows NEXT_FILE never finds it missing."""
-        f = self._open(path)
+        a reader that follows NEXT_FILE never finds it missing. A file that
+        exists is refused: it may be the journal being written."""
+        f = self._open(path, "xb")
         if self.on_next is not None:
             self.on_next(path)
         old, self._f = self._f, f
