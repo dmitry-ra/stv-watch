@@ -63,7 +63,7 @@ def test_no_password_for_a_password_relay_is_refused_before_anything_is_sent(tmp
     with FakeRelay(password=SECRET) as r:
         p = watch(r, tmp_path)
         out, _ = p.communicate(timeout=60)
-        assert p.returncode == 2
+        assert p.returncode == 3
         assert (r.challenges, r.connections) == (0, 0)
     (rec,) = [x for x in lines(out) if x["text"].startswith("refused:")]
     assert "tv_password" in rec["text"] and "--password-file" in rec["text"]
@@ -122,7 +122,6 @@ def test_a_wrong_password_is_a_standing_refusal_that_ends_the_viewer(tmp_path):
     "argv,env,content,said",
     [
         (["--replay", "x.tvd"], {}, SECRET, "is for --relay"),
-        (["--relay", "1.2.3.4:27020"], {"STV_WATCH_PASSWORD": SECRET}, SECRET, "both given"),
         (["--relay", "1.2.3.4:27020"], {}, "\n" + SECRET, "first line is empty"),
         (["--relay", "1.2.3.4:27020"], {}, SECRET + "\0x", "NUL"),
         (["--relay", "1.2.3.4:27020"], {}, None, "No such file"),

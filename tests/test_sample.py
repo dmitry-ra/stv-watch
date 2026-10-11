@@ -23,7 +23,7 @@ SAMPLE = os.path.join(HERE, "data", "sample.tvd")
 EXPECTED = os.path.join(HERE, "data", "sample.events.jsonl")
 SCHEMA = os.path.join(os.path.dirname(HERE), "docs", "events.schema.json")
 ARGS = ["--speed", "0", "--json", "--events", "all", "--debug", "--tz", "Europe/Berlin"]
-VIEWER_TYPES = ("conn", "net", "play", "tvd", "asr", "rotate", "done")
+VIEWER_TYPES = ("conn", "net", "play", "tvd", "asr", "rotate", "wait", "done")
 
 
 def replay(out, *extra):
@@ -80,7 +80,7 @@ def test_replay_duration_bounds_what_is_shown_even_at_max_speed(tmp_path):
     args = ("--speed", "0", "--duration-ms", "1000", "--json", "--events", "all")
     lines = [json.loads(ln) for ln in replay(tmp_path, *args)]
     shown = max(r["t_utc"] for r in lines if r["type"] not in ("play", "done"))
-    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "duration")
+    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "time limit")
 
 
 def test_the_build_is_named_once_at_the_start_and_in_meta(tmp_path):

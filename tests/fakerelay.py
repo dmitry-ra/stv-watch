@@ -179,6 +179,21 @@ class FakeRelay:
             return
         c["relay"].on_ack(data)
 
+    def drop(self, reason="Server shutting down"):
+        """Every client is dropped with net_Disconnect, as a relay that
+        restarts or changes level does; they may connect again."""
+        with self.lock:
+            live = [(a, c) for a, c in self.clients.items() if not c["gone"]]
+            for _a, c in live:
+                c["gone"] = True
+        for addr, c in live:
+            rl = c["relay"]
+            rl.seq += 1
+            bye = netchan.build_packet(
+                rl.seq, rl.peer_seq, rl.challenge, 0, unreliable=messages.disconnect_body(reason)
+            )
+            self.sock.sendto(bye, addr)
+
     def _bad_password(self, challenge, addr):
         with self.lock:
             self.connections += 1

@@ -116,6 +116,8 @@ class Reader(threading.Thread):
 
 
 LiveClient = client.LiveClient
+# Lines of the network client's log that say why it is about to die.
+CLIENT_DIED = ("[tvdump] crash: ", "[tvdump] write error: ")
 
 
 class LogTail(client.LogTail):

@@ -17,6 +17,7 @@ import os
 import signal
 import sys
 import time
+import traceback
 
 from .. import rotate, times
 from . import dump as dumpfmt
@@ -100,12 +101,20 @@ def cmd_run(a):
         next_path=next_path,
         on_next=on_next,
     )
-    sup = supervisor.Supervisor(opt, a.dump)
-    sup.stop = bool(stopping)
-
-    t0 = time.time()
-    print(f"[tvdump] {sup.endpoint} -> {a.dump}")
-    sup.run()
+    try:
+        sup = supervisor.Supervisor(opt, a.dump)
+        sup.stop = bool(stopping)
+        t0 = time.time()
+        print(f"[tvdump] {sup.endpoint} -> {a.dump}")
+        sup.run()
+    except dumpfmt.DumpError as e:
+        # the viewer reads these lines (source.CLIENT_DIED) and the code
+        print(f"[tvdump] write error: {e}")
+        return dumpfmt.WRITE_FAILED_RC
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc(file=sys.stdout)
+        print(f"[tvdump] crash: {type(e).__name__}: {e}")
+        return 1
     print(
         f"[tvdump] {time.time() - t0:.1f}s | sessions={sup.sessions} "
         f"reconnects={sup.reconnects} full={sup.reached_full} "

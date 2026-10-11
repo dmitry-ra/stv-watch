@@ -12,13 +12,14 @@ import queue
 import signal
 import threading
 import time
+import traceback
 import wave
 from itertools import pairwise
 
 import numpy as np
 
 from . import events as gamevents
-from . import rotate, source, version
+from . import passwords, rotate, source, version
 from .asr import build_live
 from .asr import recognizer as asrmod
 from .asr import vad as vadmod
@@ -93,9 +94,13 @@ LINE_STYLE = {
     "tvd": {"info": "dim", "fail": "red"},
     "asr": {"ready": "", "failed": "red", "error": "red"},
     "rotate": "",
+    "wait": "yellow",
     "done": "",
 }
 HUD_PRINTTALK = 3
+# Exit code of each class of ending (README, "Exit codes").
+CODES = {"ok": 0, "bug": 1, "usage": 2, "refused": 3, "client": 4, "io": 5}
+SETTLE_S = 1.0  # a changed password file is read once it has not changed for this long
 QUIT_HINT = "q quit - stops the engine  "  # an --attach screen shows its own (serve.py)
 
 
@@ -126,6 +131,44 @@ def steam2(sid64):
 
 def owner_sid(player):
     return STEAMID64_BASE + player.friends_id if player.friends_id else 0
+
+
+def mmss(seconds):
+    s = int(max(0, round(seconds)))
+    return f"{s // 60}:{s % 60:02d}"
+
+
+class Backoff:
+    """--keep-trying: how long to wait before the next attempt. A refusal:
+    REFUSED_S, doubled while the same refusal repeats, at most REFUSED_MAX_S
+    (the relay is someone else's server); a death of the network client:
+    CLIENT_S doubled up to CLIENT_MAX_S. reset() once a session reached FULL."""
+
+    REFUSED_S, REFUSED_MAX_S = 300.0, 1800.0
+    CLIENT_S, CLIENT_MAX_S = 10.0, 300.0
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.last, self.delay = None, 0.0
+
+    def next(self, cls, cause):
+        if cls == "client":
+            key, first, cap = cls, self.CLIENT_S, self.CLIENT_MAX_S
+        else:
+            key, first, cap = (cls, cause), self.REFUSED_S, self.REFUSED_MAX_S
+        self.delay = min(self.delay * 2, cap) if key == self.last else first
+        self.last = key
+        return self.delay
+
+
+def passwords_none():
+    return passwords.Source()
+
+
+class ReaderFailed(Exception):
+    """The thread reading the recording or journal stopped on an error."""
 
 
 def lag_style(seconds):
@@ -217,10 +260,11 @@ class Utt:
 
 
 class App:
-    def __init__(self, a, password=""):
+    def __init__(self, a, passwords=None):
         self.a = a
-        # Kept out of `a`: meta.json holds vars(a).
-        self.password = password
+        # Kept out of `a`: meta.json holds vars(a). Read before every attempt.
+        self.passwords = passwords or passwords_none()
+        self.password = ""  # the one the current network client was given
         self.live = a.relay is not None
         self.follow = a.follow is not None
         self.tz = a.tz
@@ -254,8 +298,18 @@ class App:
         self.pacer = None
         self.held = None
         self.client = None
-        self.client_rc = 0
+        self.client_rc = None
+        self.client_stopped = False
+        self.left_unchecked = False
+        self.client_said = ""  # the network client's crash or write error line
+        self.alarm = None  # the standing refusal the network client reported
         self.logtail = None
+        self.backoff = Backoff()
+        self.waiting = None  # (what, cause, monotonic deadline) while --keep-trying waits
+        self.deadline = None  # live --duration-ms, monotonic
+        self.outcome = None  # (class, cause) of the ending, see end()
+        self.io_error = None
+        self.a2s_thread = None
         self.cpu = (time.monotonic(), self._cpu_s(), 0.0)
         self.cpu_cores = 0.0
         self.net_cpu = 0.0
@@ -277,8 +331,15 @@ class App:
             else None
         )
         self.screen = self._screen()
-        self.dir = self._session_dir(self.started_ns)
-        self.feed_fh, self.jsonl_fh, self.tsv_fh = self._open_files(self.dir)
+        try:
+            self.dir = self._session_dir(self.started_ns)
+            self.feed_fh, self.jsonl_fh, self.tsv_fh = self._open_files(self.dir)
+        except OSError:
+            try:
+                self.screen.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         self.meta = self._meta(self.dir, start_utc=utc_iso(self.started_ns))
 
     def _open_files(self, d):
@@ -307,8 +368,37 @@ class App:
         }
 
     def write_meta(self, meta):
-        with open(os.path.join(meta["dir"], "meta.json"), "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=1, default=str)
+        """Whole or not at all: a full disk leaves the previous meta.json."""
+        path = os.path.join(meta["dir"], "meta.json")
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=1, default=str)
+            os.replace(tmp, path)
+        except OSError as e:
+            self.io_failed(e, path)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    def io_failed(self, e, what):
+        """A session file could not be written: the run ends (class io), and
+        no session file is written again (the screen still is)."""
+        if self.io_error is None:
+            self.io_error = f"{what}: {e.strerror or e}"
+            self.quit = True
+            if self.end("io", self.io_error):
+                self.quit_why = "write error"
+
+    def end(self, cls, cause=""):
+        """How the run ends. -> whether this one stands: the first word does,
+        but a bug, then a write error, is worse news than what came before."""
+        rank = {"bug": 2, "io": 1}
+        if self.outcome is not None and rank.get(cls, 0) <= rank.get(self.outcome[0], 0):
+            return False
+        self.outcome = (cls, cause)
+        return True
 
     # ---------------------------------------------------------------- setup
     def _screen(self):
@@ -319,10 +409,11 @@ class App:
             return ServedScreen(a.serve, hello)
         return Screen(plain=a.plain, color=False if a.no_color else None)
 
-    def _session_dir(self, t_ns, make=True):
+    def _session_dir(self, t_ns, make=True, fresh=False):
         """<UTC time>_<what>_<pid>: the start of the run, or of the period a
         rotated session opens ("{stamp}" with make=False: the template the
-        network client fills)."""
+        network client fills); fresh=True: the first second after `t_ns`
+        no directory has."""
         what = (
             self.a.relay.replace(":", "_")
             if self.live
@@ -331,23 +422,33 @@ class App:
         )
         when = stamp(t_ns) if make else "{stamp}"
         d = os.path.join(self.a.out, f"{when}_{what}_{os.getpid()}")
+        if fresh and os.path.exists(d):
+            return self._session_dir(t_ns + NS, make, fresh)
         if make:
             os.makedirs(d, exist_ok=True)
         return d
 
-    def rotate(self, t_ns, new_dir):
+    def rotate(self, t_ns, new_dir, reason=None):
         """The session goes on in `new_dir` from the record at `t_ns`. Its
         files are open before the old events.jsonl names them in its last
         line, and only then are the old ones closed. Voice that has no line
         yet (still talking, or waiting for its text) goes along with its WAV:
-        an utterance is never split between sessions."""
+        an utterance is never split between sessions. `reason` 'restart': a
+        new network client (--keep-trying), not the --rotate schedule."""
+        if self.io_error:
+            return
         old_dir, old_meta = self.dir, self.meta
         old_files = (self.feed_fh, self.jsonl_fh, self.tsv_fh)
         old_abs, new_abs = os.path.abspath(old_dir), os.path.abspath(new_dir)
-        os.makedirs(new_dir, exist_ok=True)
-        files = self._open_files(new_dir)
-        err = self.screen.stderr_open(os.path.join(new_dir, "stderr.log"))
-        self.meta = self._meta(new_dir, rotated_utc=utc_iso(t_ns), prev_dir=old_abs)
+        try:
+            os.makedirs(new_dir, exist_ok=True)
+            files = self._open_files(new_dir)
+            err = self.screen.stderr_open(os.path.join(new_dir, "stderr.log"))
+        except OSError as e:
+            self.io_failed(e, new_dir)
+            return
+        why = {"reason": reason} if reason else {}
+        self.meta = self._meta(new_dir, rotated_utc=utc_iso(t_ns), prev_dir=old_abs, **why)
         self.write_meta(self.meta)
         self._move_voice(old_dir, new_dir)
         if self.logtail is not None:
@@ -355,7 +456,7 @@ class App:
                 self.event("tvd", clean(line), "info")
             self.logtail = source.LogTail(os.path.join(new_dir, "tvdump.log"))
         text = f"session goes on in {new_abs}"
-        nxt = {"next_dir": new_abs, "next_events": os.path.join(new_abs, "events.jsonl")}
+        nxt = {"next_dir": new_abs, "next_events": os.path.join(new_abs, "events.jsonl"), **why}
         self.event("rotate", text, None, t_ns, {"type": "rotate", "text": text, "extra": nxt})
         old_meta.update(end_utc=utc_iso(time.time_ns()), quit="rotated", next_dir=new_abs)
         old_meta.update(self.totals())
@@ -369,7 +470,7 @@ class App:
         # wrote it; on the screen the old session's last line says it all
         v = self.build["version"]
         text = f"session goes on from {old_abs}"
-        prev = {"prev_dir": old_abs, "prev_events": os.path.join(old_abs, "events.jsonl")}
+        prev = {"prev_dir": old_abs, "prev_events": os.path.join(old_abs, "events.jsonl"), **why}
         line = self.json_line(
             {"type": "rotate", "text": text, "extra": dict(prev, version=v)}, t_ns
         )
@@ -467,14 +568,21 @@ class App:
         return json.dumps(out, ensure_ascii=False)
 
     def jsonl(self, line):
-        self.jsonl_fh.write(line + "\n")
-        self.jsonl_fh.flush()
+        self.write(self.jsonl_fh, line + "\n")
 
     def log(self, spans, t_ns, sid=0):
         """feed.log: UTC time, the player's SteamID64 (empty if none), text."""
         text = "".join(t for t, _s in spans)
-        self.feed_fh.write(f"{utc_iso(t_ns)}\t{sid or ''}\t{text}\n")
-        self.feed_fh.flush()
+        self.write(self.feed_fh, f"{utc_iso(t_ns)}\t{sid or ''}\t{text}\n")
+
+    def write(self, fh, text):
+        if self.io_error:
+            return
+        try:
+            fh.write(text)
+            fh.flush()
+        except OSError as e:
+            self.io_failed(e, fh.name)
 
     def event(self, tag, text, state=None, t_ns=None, rec=None):
         if (
@@ -971,8 +1079,9 @@ class App:
             {True: "true", False: "false", None: ""}[utt.verified],
             str(owner_sid(utt.slot_owner)) if utt.verified is False else "",
         ]
-        self.tsv_fh.write("\t".join(f.replace("\t", " ").replace("\n", " ") for f in row) + "\n")
-        self.tsv_fh.flush()
+        self.write(
+            self.tsv_fh, "\t".join(f.replace("\t", " ").replace("\n", " ") for f in row) + "\n"
+        )
 
     def voice_close(self, utt, ch, head, said, text, label, tail, speech=None):
         """Final line of an utterance. On screen: who, what and how long, the
@@ -1046,6 +1155,10 @@ class App:
         )
         if state == "FULL" and c.full_ns:
             state = f"FULL {hms((now - c.full_ns) / NS)}"
+        if self.waiting is not None:
+            what, cause, until = self.waiting
+            left = mmss(until - time.monotonic())
+            state, st_style = f"{what}: {clean(cause)}, next try in {left}", "red"
         head += [("  ", ""), (state, st_style)]
         if c.hostname:
             head += [("  ", ""), (clean(c.hostname), "")]
@@ -1194,14 +1307,14 @@ class App:
         if c.state == "FULL" and now_ns - c.full_ns > 5 * NS and self.traffic.flowing:
             self.with_us = players
 
-    def precheck(self):
+    def precheck(self, have_password):
         """Refuse a relay we must not take (client.precheck: silent, unknown
         build, password, Steam login, no free slot left for anyone else after
-        us). -> error text or ''."""
+        us). -> '' or (cause, the text of the conn line)."""
         ok, why, facts = source.client.precheck(
             self.a.relay,
             allow_last_slot=self.a.allow_last_slot,
-            have_password=bool(self.password),
+            have_password=have_password,
         )
         self.conn.players, self.conn.max_players = (
             facts["spectators_before"],
@@ -1214,24 +1327,27 @@ class App:
             return ""
         if why.startswith("unknown_build "):
             build = why.split(" ", 1)[1]
-            return (
+            return f"unknown server build {build}", (
                 f"relay runs server build {build}, whose SendTable CRC this version does "
                 "not know; guessing it would cost the relay a connection per guess. "
                 "Extract it with tools/read_crc.py and add it to stvwatch/net/builds.py "
                 '(docs/protocol.md, "Server builds")'
             )
-        return {
-            "relay_silent": "relay does not answer A2S_INFO",
-            "password": (
-                "relay has tv_password (A2S visibility=1); give it with --password-file "
-                "or STV_WATCH_PASSWORD"
-            ),
-            "few_free_slots": (
-                f"relay slots {facts['spectators_before']}/"
-                f"{facts['max_spectators']}: no free slot would remain "
+        if why == "few_free_slots":
+            slots = f"relay slots {facts['spectators_before']}/{facts['max_spectators']}"
+            return f"{slots}, no free slot after us", (
+                f"{slots}: no free slot would remain "
                 "after us (use --allow-last-slot to take the last one)"
-            ),
-        }.get(why, why.replace("auth_", "relay does not take anonymous login, " "auth protocol "))
+            )
+        if why == "password":
+            return "relay has tv_password, none given", (
+                "relay has tv_password (A2S visibility=1); give it with --password-file, "
+                f"{passwords.ENV} or a line 'HOST:PORT PASSWORD' in {passwords.store_path()}"
+            )
+        if why == "relay_silent":
+            return "relay does not answer A2S_INFO", "relay does not answer A2S_INFO"
+        text = why.replace("auth_", "relay does not take anonymous login, auth protocol ")
+        return text, text
 
     def slot_check(self):
         """The slot rule (client.slot_freed): fewer spectators after we
@@ -1249,92 +1365,54 @@ class App:
 
     # ---------------------------------------------------------------- run
     def run(self):
-        a = self.a
-        self.version_due = True
-        self.write_meta(self.meta)
-        self.screen.start(os.path.join(self.dir, "stderr.log"))
-        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            signal.signal(sig, self._on_signal)
+        """-> the exit code of the run's class (CODES). A bug is raised again
+        once the session is closed: its traceback is then in stderr.log and
+        on the terminal."""
+        crash = None
         try:
-            self.pacer = source.Pacer(
-                self.live or self.follow,
-                a.speed,
-                a.skip_ms / 1000,
-                time.time_ns() - NS if self.follow else 0,
-            )
-            if self.live:
-                err = self.precheck()
-                if err:
-                    self.event("conn", "refused: " + err, "fail")
-                    self.quit_why = "precheck"
-                    return 2
-            else:
-                self.conn.state = "replay"
-            if self.model:
-                self.asr = asrmod.Recognizer(
-                    self.model,
-                    a.threads,
-                    a.models_dir,
-                    a.min_speech_ms,
-                    self.pacer.media_now,
-                    self.q_out,
-                    wait=not self.live,
-                )
-                if a.live_asr:
-                    self.start_live()
-                # Load before reading or connecting: the load holds the GIL for
-                # seconds, which would stall the reader (a fake traffic stop in
-                # a replay) and miss the first phrases live.
-                while self.loading() and not self.quit:
-                    self.tick(False)
-                    self.render()
-                    time.sleep(0.1)
-                self.tick(False)
-                if self.quit:
-                    return 0
-                if self.asr.state == "failed":
-                    self.quit_why = "asr failed"
-                    return 2
-            if self.live:
-                ip, port = a.relay.rsplit(":", 1)
-                # absolute: the client runs in the package's directory
-                cap = os.path.abspath(os.path.join(self.dir, "capture.tvd"))
-                rot = []
-                if a.rotate:
-                    rot = [
-                        "--rotate",
-                        a.rotate,
-                        "--rotate-tz",
-                        tz_label(self.tz),
-                        "--rotate-dir",
-                        os.path.abspath(self._session_dir(0, make=False)),
-                        "--rotate-log",
-                        "tvdump.log",
-                    ]
-                self.client = source.LiveClient(
-                    ip,
-                    int(port),
-                    cap,
-                    os.path.join(self.dir, "tvdump.log"),
-                    name=a.name,
-                    duration_ms=a.duration_ms,
-                    extra=["--stv-version", self.build["version"]] + rot,
-                    password=self.password,
-                )
-                self.event(
-                    "conn",
-                    f"connecting to {a.relay} ({clean(self.conn.hostname)}, "
-                    f"relay {self.conn.players}/{self.conn.max_players}"
-                    f"{', with a password' if self.password else ''})",
-                    "info",
-                )
-                if not self.client.start():
-                    self.event("conn", "network client did not start, see tvdump.log", "fail")
-                    return 2
-                self.logtail = source.LogTail(os.path.join(self.dir, "tvdump.log"))
-                self.rec = source.Reader(cap, follow=True)
-                threading.Thread(target=self.a2s_poll, daemon=True, name="a2s").start()
-            elif self.follow:
+            self.version_due = True
+            self.write_meta(self.meta)
+            self.screen.start(os.path.join(self.dir, "stderr.log"))
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                signal.signal(sig, self._on_signal)
+            self.main()
+        except Exception as e:  # noqa: BLE001
+            crash = self.crashed(e)
+        late = self.shutdown()
+        crash = crash or late
+        if crash is not None:
+            raise crash
+        return CODES[self.outcome[0]]
+
+    def crashed(self, e):
+        """An exception nobody handled: a bug. Its traceback goes to the
+        session's stderr.log (the terminal gets it when run() raises it)."""
+        cause = str(e) if isinstance(e, ReaderFailed) else f"{type(e).__name__}: {e}"
+        self.quit = True
+        if self.end("bug", cause):
+            self.quit_why = "crash"
+        try:
+            with open(os.path.join(self.dir, "stderr.log"), "a", encoding="utf-8") as f:
+                traceback.print_exception(e, file=f)
+        except OSError:
+            pass
+        return e
+
+    def main(self):
+        a = self.a
+        self.pacer = source.Pacer(
+            self.live or self.follow,
+            a.speed,
+            a.skip_ms / 1000,
+            time.time_ns() - NS if self.follow else 0,
+        )
+        if self.io_error:
+            return
+        if not self.live:
+            self.conn.state = "replay"
+            if self.model and not self.load_asr():
+                return
+            if self.follow:
                 self.rec = source.Reader(a.replay, follow=True)
                 self.event(
                     "play",
@@ -1351,13 +1429,224 @@ class App:
                 )
             self.rec.start()
             self.loop()
+            return
+        if a.duration_ms:
+            self.deadline = time.monotonic() + a.duration_ms / 1000
+        attempt = 0
+        while not self.quit:
+            attempt += 1
+            started = time.time_ns()
+            failed = self.attempt()
+            if failed is None:
+                return
+            cls, label, cause = failed
+            if not a.keep_trying or cls not in ("refused", "client"):
+                self.quit, self.quit_why = True, label
+                self.end(cls, cause)
+                return
+            if self.conn.full_ns >= started:
+                self.backoff.reset()
+            self.wait(cls, label, cause, self.backoff.next(cls, cause), attempt)
+
+    def load_asr(self):
+        """Load the recognizer before reading or connecting: the load holds the
+        GIL for seconds, which would stall the reader (a fake traffic stop in a
+        replay) and miss the first phrases live. -> False if the run ends."""
+        a = self.a
+        self.asr = asrmod.Recognizer(
+            self.model,
+            a.threads,
+            a.models_dir,
+            a.min_speech_ms,
+            self.pacer.media_now,
+            self.q_out,
+            wait=not self.live,
+        )
+        if a.live_asr:
+            self.start_live()
+        while self.loading() and not self.quit:
+            self.tick(False)
+            self.render()
+            time.sleep(0.1)
+        self.tick(False)
+        if self.quit:
+            return False
+        if self.asr.state == "failed":
+            self.quit, self.quit_why = True, "asr failed"
+            self.end("usage", f"{self.model}: {self.asr.error}")
+            return False
+        return True
+
+    def attempt(self):
+        """One try at the relay: the password, the precheck, then the network
+        client until it ends. -> None when the run ends with it (self.quit),
+        else (class, quit label, cause) of a failure --keep-trying waits out."""
+        a = self.a
+        try:
+            pw, origin = self.passwords.get()
+        except passwords.PasswordError as e:
+            self.event("conn", f"password: {e}", "fail")
+            return "usage", "password", str(e)
+        refused = self.precheck(bool(pw))
+        if self.quit:
+            return None
+        if refused:
+            cause, text = refused
+            self.event("conn", "refused: " + text, "fail")
+            return "refused", "precheck", cause
+        if origin == "store" and not self.a2s_before["password"]:
+            pw = ""  # the store is for a relay that asks
+        if self.model and self.asr is None and not self.load_asr():
+            return None
+        if self.client is not None:
+            # this session holds a journal already: the new one gets its own
+            t = time.time_ns()
+            self.rotate(t, self._session_dir(t, fresh=True), reason="restart")
+            if self.io_error:
+                return None
+        ip, port = a.relay.rsplit(":", 1)
+        # absolute: the client runs in the package's directory
+        cap = os.path.abspath(os.path.join(self.dir, "capture.tvd"))
+        rot = []
+        if a.rotate:
+            rot = [
+                "--rotate",
+                a.rotate,
+                "--rotate-tz",
+                tz_label(self.tz),
+                "--rotate-dir",
+                os.path.abspath(self._session_dir(0, make=False)),
+                "--rotate-log",
+                "tvdump.log",
+            ]
+        duration_ms = 0
+        if self.deadline is not None:
+            duration_ms = max(1, int(-(-(self.deadline - time.monotonic()) * 1000 // 1)))
+        self.password = pw
+        self.alarm, self.client_said, self.client_stopped = None, "", False
+        self.with_us = None
+        self.client = source.LiveClient(
+            ip,
+            int(port),
+            cap,
+            os.path.join(self.dir, "tvdump.log"),
+            name=a.name,
+            duration_ms=duration_ms,
+            extra=["--stv-version", self.build["version"]] + rot,
+            password=pw,
+        )
+        self.event(
+            "conn",
+            f"connecting to {a.relay} ({clean(self.conn.hostname)}, "
+            f"relay {self.conn.players}/{self.conn.max_players}"
+            f"{', with a password' if pw else ''})",
+            "info",
+        )
+        self.logtail = source.LogTail(os.path.join(self.dir, "tvdump.log"))
+        if not self.client.start():
+            self.event("conn", "network client did not start, see tvdump.log", "fail")
+            return self.client_ended(late=True)
+        self.rec = source.Reader(cap, follow=True)
+        self.rec.start()
+        if self.a2s_thread is None:
+            self.a2s_thread = threading.Thread(target=self.a2s_poll, daemon=True, name="a2s")
+            self.a2s_thread.start()
+        self.loop()
+        if self.quit:
+            return None
+        return self.client_ended()
+
+    def client_ended(self, late=False):
+        """The network client stopped by itself, reported a standing refusal,
+        or (late) wrote no journal in time: it is stopped (leaving the relay),
+        the journal read to its end. -> None if that was the --duration-ms
+        bound, else (class, label, cause)."""
+        alarm = self.alarm
+        rc = self.stop_client()
+        self.stop_reader()
+        if alarm:
+            return "refused", "alarm", alarm
+        if rc == 0 and not late and self.deadline is not None and time.monotonic() >= self.deadline:
+            self.quit, self.quit_why = True, "client left: time limit"
+            self.end("ok")
+            return None
+        label = f"client died (rc {rc})"
+        if rc == dumpfmt.WRITE_FAILED_RC:
+            return "io", label, self.client_said or "the journal could not be written"
+        if self.client_said:
+            cause = self.client_said
+        elif late:
+            cause = "wrote no journal within 10 s, see tvdump.log"
+        elif rc is not None and rc < 0:
+            cause = f"killed by {signal.Signals(-rc).name}"
+        elif rc == 0:
+            cause = "stopped from outside (exit code 0)"
+        else:
+            cause = f"exit code {rc}, see tvdump.log"
+        return "client", label, cause
+
+    def stop_client(self):
+        """SIGTERM: the client leaves the relay. -> its exit code (None: it
+        had to be killed)."""
+        if self.client is None or self.client_stopped:
+            return self.client_rc
+        self.event("conn", "leaving relay ...", "info")
+        self.render(force=True)
+        rc = self.client_rc = self.client.stop()
+        self.client_stopped = self.left_unchecked = True
+        if rc is None:
+            self.event("conn", "network client killed: relay keeps the slot up to 300 s", "fail")
+        if self.logtail is not None:
+            self.tvd_lines()
+        return rc
+
+    def stop_reader(self, wait_s=3.0):
+        """Read a live journal to its end (its writer has stopped)."""
+        if self.rec is None:
+            return
+        self.rec.stop_flag.set()
+        end = time.monotonic() + wait_s
+        while time.monotonic() < end:
+            if self.pump(0.05) and self.rec.done.is_set():
+                break
+        self.rec.abandon.set()
+
+    def wait(self, cls, label, cause, delay_s, attempt):
+        """--keep-trying: no client runs until the next attempt in `delay_s`,
+        or as soon as the password file changes (once it settles). q, a
+        signal and the --duration-ms bound end the run."""
+        what = "refused" if cls == "refused" else label
+        nxt = time.time_ns() + int(delay_s * NS)
+        text = f"{what}: {clean(cause)}, next try in {mmss(delay_s)}"
+        extra = {
+            "quit": label,
+            "class": cls,
+            "cause": cause,
+            "attempt": attempt,
+            "next_try_utc": utc_iso(nxt),
+            "retrying": True,
+        }
+        self.event("wait", text, None, None, {"type": "wait", "text": text, "extra": extra})
+        self.waiting = (what, cause, time.monotonic() + delay_s)
+        self.left_unchecked = False  # the slot check is for a run that ends as it leaves
+        seen, changed = self.passwords.stamp(), None
+        try:
+            while not self.quit and time.monotonic() < self.waiting[2]:
+                if self.deadline is not None and time.monotonic() >= self.deadline:
+                    self.quit, self.quit_why = True, "time limit"
+                    self.end("ok")
+                    break
+                self.tick(True)
+                self.render()
+                now = self.passwords.stamp()
+                if now != seen:
+                    seen, changed = now, time.monotonic()
+                elif changed is not None and time.monotonic() - changed >= SETTLE_S:
+                    self.event("conn", "password file changed: trying now", "info")
+                    break
+                time.sleep(0.1)
         finally:
-            self.shutdown()
-        # the network client gave up on its own: a standing refusal (alarm) or
-        # an abnormal exit; the session holds what it saw until then
-        if self.live and (self.quit_why == "alarm" or self.client_rc != 0):
-            return 3
-        return 0
+            self.waiting = None
 
     def start_live(self):
         """--live-asr: its text is seen only in live lines, which a screen
@@ -1387,6 +1676,7 @@ class App:
         self.stops += 1
         if not self.quit:
             self.quit, self.quit_why = True, why
+            self.end("ok")
 
     def drain_end(self, start):
         """When the exit stops waiting for queued recognition; None: once the
@@ -1414,7 +1704,8 @@ class App:
             t = item[1].t_ns if item[0] == "dg" else item[1]
             if self.past_end(t):
                 self.held = None
-                self.quit, self.quit_why = True, "duration"
+                self.quit, self.quit_why = True, "time limit"
+                self.end("ok")
                 return False
             wait = self.pacer.due(t)
             if wait > 0:
@@ -1470,13 +1761,22 @@ class App:
             else:
                 self.cpu = (t, c1, 0.0)
         if self.logtail is not None:
-            for line in self.logtail.lines():
-                self.event("tvd", clean(line), "fail" if line.startswith("[alarm]") else "info")
-                if line.startswith("[alarm]"):
-                    self.quit, self.quit_why = True, "alarm"
+            self.tvd_lines()
         k = self.screen.key()
         if k in ("q", "Q"):
             self.ask_stop("key q")
+
+    def tvd_lines(self):
+        """New lines of the network client's log worth a feed line; notes a
+        standing refusal and the client's own last word."""
+        for line in self.logtail.lines():
+            alarm = line.startswith("[alarm]")
+            died = line.startswith(source.CLIENT_DIED)
+            self.event("tvd", clean(line), "fail" if alarm or died else "info")
+            if alarm and self.alarm is None:
+                self.alarm = line.split("permanent failure: ", 1)[-1]
+            if died:
+                self.client_said = line.split(": ", 1)[1]
 
     def check_traffic(self, now):
         tr = self.traffic.check(now)
@@ -1513,6 +1813,8 @@ class App:
             self.screen.draw((), now)
 
     def loop(self):
+        """Until a stop, the end of the recording, or (live) the network
+        client ends or reports a standing refusal."""
         a = self.a
         while not self.quit:
             dry = self.pump()
@@ -1524,16 +1826,19 @@ class App:
                 and self.play_t0
                 and self.now - self.play_t0 >= a.duration_ms * 1_000_000
             ):
-                self.quit, self.quit_why = True, "duration"
-            if self.live and not self.client.alive():
-                self.quit, self.quit_why = True, "client exited"
-            if (
-                not self.live
-                and self.rec.done.is_set()
-                and self.rec.q.empty()
-                and self.held is None
-            ):
-                self.quit, self.quit_why = True, "end of recording"
+                self.quit, self.quit_why = True, "time limit"
+                self.end("ok")
+            if self.quit:
+                return
+            if self.live and (self.alarm or not self.client.alive()):
+                return
+            if self.rec.done.is_set() and self.rec.q.empty() and self.held is None:
+                if self.rec.error is not None:
+                    e = self.rec.error
+                    raise ReaderFailed(f"reader: {type(e).__name__}: {e}") from e
+                if not self.live:
+                    self.quit, self.quit_why = True, "end of recording"
+                    self.end("ok")
 
     def totals(self):
         """meta.json's counters: totals since the run started, in a rotated
@@ -1591,67 +1896,102 @@ class App:
         return out
 
     def shutdown(self):
+        """Leave the relay, finish what is queued, then the last line and
+        meta.json, whatever failed before them. -> the exception of a bug in
+        the winding down, or None."""
+        crash = None
         try:
-            rc = None
-            if self.client is not None:
-                self.event("conn", "leaving relay ...", "info")
-                self.render(force=True)
-                rc = self.client_rc = self.client.stop()
-                if rc is None:
-                    self.event(
-                        "conn", "network client killed: relay keeps the slot up to 300 s", "fail"
-                    )
-            if self.rec is not None and not self.live:
-                self.rec.abandon.set()
-                self.rec.stop_flag.set()
-            elif self.rec is not None:
-                self.rec.stop_flag.set()
-                end = time.monotonic() + 3.0
-                while time.monotonic() < end:
-                    if self.pump(0.05) and self.rec.done.is_set():
-                        break
-                self.rec.abandon.set()
-                self.tick(True)
-            if self.logtail is not None:
-                for line in self.logtail.lines():
-                    self.event("tvd", clean(line), "info")
-            self.seg.flush(self.now)
-            self.process_closed()
-            if self.live_asr is not None:
-                self.live_asr.stop()
-            if self.asr is not None:
-                stops = self.stops
-                end = self.drain_end(time.monotonic())
-                while self.stops == stops and self.asr.state != "failed":
-                    if end is not None and time.monotonic() >= end:
-                        break
-                    jobs, _p = self.asr.queue_depth()
-                    if self.asr.state == "ready" and not jobs:
-                        break
-                    self.tick(False)
-                    self.render()
-                    time.sleep(0.05)
-                self.asr.close()
-                self.tick(False)
-            for utt in list(self.utts.values()):
-                self.finalize(utt, "", dict(utt.meta, result="not recognized before exit"))
-            if self.client is not None and self.a2s_before is not None:
-                ok, after, text = self.slot_check()
-                self.event("conn", text, "ok" if ok else "fail")
-                self.meta["slot_released"] = ok
-                self.meta["relay_before"] = self.a2s_before
-                self.meta["relay_with_us"] = self.with_us
-                self.meta["relay_after"] = after
-            self.meta.update(
-                {"end_utc": utc_iso(time.time_ns()), "quit": self.quit_why, "tvdump_rc": rc}
-            )
-            self.meta.update(self.totals())
-            self.event("done", f"{self.quit_why or 'stopped'} -> {self.dir}")
+            self.wind_down()
+        except Exception as e:  # noqa: BLE001
+            crash = self.crashed(e)
+        try:
+            self.write_done()
+        except Exception as e:  # noqa: BLE001
+            crash = crash or self.crashed(e)
         finally:
-            self.write_meta(self.meta)
-            now = self.clock()
-            final = self.block(now) if self.screen.tty else []
-            self.screen.stop(final[:-1], now)
-            self.feed_fh.close()
-            self.jsonl_fh.close()
-            self.tsv_fh.close()
+            self.close()
+        return crash
+
+    def wind_down(self):
+        if self.client is not None:
+            self.stop_client()
+        if self.rec is not None and not self.live:
+            self.rec.abandon.set()
+            self.rec.stop_flag.set()
+        elif self.rec is not None and not self.rec.abandon.is_set():
+            self.stop_reader()
+            self.tick(True)
+        self.seg.flush(self.now)
+        self.process_closed()
+        if self.live_asr is not None:
+            self.live_asr.stop()
+        if self.asr is not None:
+            stops = self.stops
+            end = self.drain_end(time.monotonic())
+            while self.stops == stops and self.asr.state != "failed":
+                if end is not None and time.monotonic() >= end:
+                    break
+                jobs, _p = self.asr.queue_depth()
+                if self.asr.state == "ready" and not jobs:
+                    break
+                self.tick(False)
+                self.render()
+                time.sleep(0.05)
+            self.asr.close()
+            self.tick(False)
+        for utt in list(self.utts.values()):
+            self.finalize(utt, "", dict(utt.meta, result="not recognized before exit"))
+        if self.left_unchecked and self.a2s_before is not None:
+            ok, after, text = self.slot_check()
+            self.event("conn", text, "ok" if ok else "fail")
+            self.meta["slot_released"] = ok
+            self.meta["relay_before"] = self.a2s_before
+            self.meta["relay_with_us"] = self.with_us
+            self.meta["relay_after"] = after
+
+    def write_done(self):
+        """The session's last line says how the run ended, in fields."""
+        cls, cause = self.outcome or ("bug", "the run ended without a recorded reason")
+        label = self.quit_why or "stopped"
+        rc = CODES[cls]
+        self.meta.update(
+            {
+                "end_utc": utc_iso(time.time_ns()),
+                "quit": label,
+                "class": cls,
+                "cause": cause,
+                "rc": rc,
+                "tvdump_rc": self.client_rc,
+            }
+        )
+        try:
+            self.meta.update(self.totals())
+        finally:
+            text = f"{label} -> {self.dir}"
+            extra = {
+                "quit": label,
+                "class": cls,
+                "cause": cause,
+                "rc": rc,
+                "retrying": False,
+                "tvdump_rc": self.client_rc,
+            }
+            try:
+                self.event("done", text, None, None, {"type": "done", "text": text, "extra": extra})
+            finally:
+                self.write_meta(self.meta)
+
+    def close(self):
+        now = self.clock()
+        try:
+            try:
+                final = self.block(now)[:-1] if self.screen.tty else []
+            except Exception:  # noqa: BLE001
+                final = []  # a bug already on its way out: the terminal comes first
+            self.screen.stop(final, now)
+        finally:
+            for fh in (self.feed_fh, self.jsonl_fh, self.tsv_fh):
+                try:
+                    fh.close()
+                except OSError:
+                    pass
