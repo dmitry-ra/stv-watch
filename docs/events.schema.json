@@ -18,10 +18,10 @@
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$"
     },
     "type": {
-      "description": "talk: a player starts an utterance (or a piece of a monologue); voice: its end and what was said, the same utt. Game events: chat, console, connect, join, leave, death, team, name, server, sourcemod (filtered by --events). The viewer's own lines: conn (connection), net (traffic), play (replay), tvd (network client log), asr (a recognizer loaded or failed, the live one too), rotate (--rotate: the last line of a session, naming the next, and the first line of the next, naming it), done (exit).",
+      "description": "talk: a player starts an utterance (or a piece of a monologue); voice: its end and what was said, the same utt. Game events: chat, console, connect, join, leave, death, team, name, server, sourcemod (filtered by --events). The viewer's own lines: conn (connection), net (traffic), play (replay), tvd (network client log), asr (a recognizer loaded or failed, the live one too), rotate (--rotate or a restart under --keep-trying: the last line of a session, naming the next, and the first line of the next, naming it), wait (--keep-trying: refused or the network client died, the next attempt is due at next_try_utc), done (exit, always the last line).",
       "type": "string",
       "enum": ["talk", "voice", "chat", "console", "connect", "join", "leave", "death", "team", "name",
-               "server", "sourcemod", "conn", "net", "play", "tvd", "asr", "rotate", "done"]
+               "server", "sourcemod", "conn", "net", "play", "tvd", "asr", "rotate", "wait", "done"]
     },
     "steamid64": {
       "description": "SteamID64 of the player the line is about (the killer for a death), 0 when unknown or not a player.",
@@ -73,6 +73,15 @@
     "next_events": {"description": "rotate, the last line of a session: the absolute path of the next session's events.jsonl, to go on reading there.", "type": "string"},
     "prev_dir": {"description": "rotate, the first line of a rotated session: the absolute path of the session directory before it.", "type": "string"},
     "prev_events": {"description": "rotate, the first line of a rotated session: the absolute path of the previous session's events.jsonl.", "type": "string"},
+    "reason": {"description": "rotate: restart when a new network client starts after a --keep-trying wait (its journal and files go in a directory of their own); absent for the --rotate schedule.", "type": "string", "enum": ["restart"]},
+    "quit": {"description": "done and wait: what ended the run or the attempt, the label meta.json has as quit: key q, SIGINT, SIGTERM, SIGHUP, time limit, client left: time limit, end of recording, precheck, alarm, client died (rc N), asr failed, password, write error, crash.", "type": "string"},
+    "class": {"description": "done and wait: the class of the ending, one per exit code: ok 0, bug 1, usage 2, refused 3, client 4, io 5.", "type": "string", "enum": ["ok", "bug", "usage", "refused", "client", "io"]},
+    "cause": {"description": "done and wait: why, as text: the relay's refusal, how the network client died, the exception of a bug, the file that could not be written; empty when the run ended as asked.", "type": "string"},
+    "rc": {"description": "done: the exit code of the run.", "type": "integer", "minimum": 0},
+    "retrying": {"description": "done: false (the run ends); wait: true.", "type": "boolean"},
+    "tvdump_rc": {"description": "done: the exit code of the last network client; null when none ran or it had to be killed.", "type": ["integer", "null"]},
+    "attempt": {"description": "wait: the number of the attempt that failed, 1 for the first.", "type": "integer", "minimum": 1},
+    "next_try_utc": {"description": "wait: when the next attempt is due, the format of t_utc; it comes earlier when the password file changes.", "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"},
     "version": {"description": "Only on the first line of a session (asr when --asr loads the recognizer first, else conn live, play replay and follow, done if the run ended before either; rotate in a session a rotation opened): the stv-watch version that wrote it, as `stv-watch --version` names it: 0.1.0 or, run from a git checkout, 0.1.0+g976b9ae (.dirty when tracked files differ from the commit).", "type": "string"}
   },
   "allOf": [
@@ -84,7 +93,9 @@
     {"if": {"properties": {"type": {"const": "death"}}}, "then": {"required": ["weapon", "userid", "attacker"]}},
     {"if": {"properties": {"type": {"const": "team"}}}, "then": {"required": ["team", "oldteam", "userid"]}},
     {"if": {"properties": {"type": {"const": "name"}}}, "then": {"required": ["old", "userid"]}},
-    {"if": {"properties": {"type": {"enum": ["server", "sourcemod"]}}}, "then": {"required": ["via"]}}
+    {"if": {"properties": {"type": {"enum": ["server", "sourcemod"]}}}, "then": {"required": ["via"]}},
+    {"if": {"properties": {"type": {"const": "done"}}}, "then": {"required": ["quit", "class", "cause", "rc", "retrying", "tvdump_rc"]}},
+    {"if": {"properties": {"type": {"const": "wait"}}}, "then": {"required": ["quit", "class", "cause", "attempt", "next_try_utc", "retrying"]}}
   ],
   "dependentSchemas": {
     "channel": {"properties": {"type": {"const": "chat"}}},
@@ -121,6 +132,15 @@
     "next_events": {"properties": {"type": {"const": "rotate"}}},
     "prev_dir": {"properties": {"type": {"const": "rotate"}}},
     "prev_events": {"properties": {"type": {"const": "rotate"}}},
+    "reason": {"properties": {"type": {"const": "rotate"}}},
+    "quit": {"properties": {"type": {"enum": ["done", "wait"]}}},
+    "class": {"properties": {"type": {"enum": ["done", "wait"]}}},
+    "cause": {"properties": {"type": {"enum": ["done", "wait"]}}},
+    "retrying": {"properties": {"type": {"enum": ["done", "wait"]}}},
+    "rc": {"properties": {"type": {"const": "done"}}},
+    "tvdump_rc": {"properties": {"type": {"const": "done"}}},
+    "attempt": {"properties": {"type": {"const": "wait"}}},
+    "next_try_utc": {"properties": {"type": {"const": "wait"}}},
     "version": {"properties": {"type": {"enum": ["conn", "play", "asr", "rotate", "done"]}}}
   },
   "dependentRequired": {

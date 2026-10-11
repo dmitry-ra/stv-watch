@@ -468,7 +468,7 @@ def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine, mo
 
     engine.open, engine.delay = held, 0.3
     shutdown = App.shutdown
-    monkeypatch.setattr(App, "shutdown", lambda app: (gate.set(), shutdown(app)))
+    monkeypatch.setattr(App, "shutdown", lambda app: (gate.set(), shutdown(app))[1])
     rec = str(tmp_path / "demo.tvd")
     demo(rec)
     rc, session, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet", "--drain-ms", "0")
@@ -506,7 +506,7 @@ def held_until_exit(engine, monkeypatch, delay):
 
     engine.open, engine.delay = held, delay
     shutdown = App.shutdown
-    monkeypatch.setattr(App, "shutdown", lambda app: (gate.set(), shutdown(app)))
+    monkeypatch.setattr(App, "shutdown", lambda app: (gate.set(), shutdown(app))[1])
 
 
 def voice_rows(session):
@@ -553,7 +553,7 @@ def test_a_stop_during_the_drain_ends_it_and_finishes_the_utterance_in_the_engin
         lambda app: (
             threading.Timer(0.2, app._on_signal, (signal.SIGTERM, None)).start(),
             drain(app),
-        ),
+        )[1],
     )
     t0 = time.monotonic()
     assert app.run() == 0

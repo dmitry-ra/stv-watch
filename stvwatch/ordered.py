@@ -64,3 +64,10 @@ class Ordered:
         if self.head > 1024 and self.head * 2 > len(items):
             del items[: self.head]
             self.head = 0
+
+    def flush(self):
+        """The end of a run: places still held are let go, so that every line
+        left is written."""
+        for item in self.items[self.head :]:
+            item[3] = True
+        self.release()

@@ -270,11 +270,14 @@ def test_live_the_stream_clock_waits_for_the_reader(tmp_path):
     app = App(cli.parse_args(["--relay", "127.0.0.1:9", "--out", str(tmp_path)]))
 
     class Reader:
-        q, at_end = queue.Queue(), False
+        q, at_end, abandon = queue.Queue(), False, threading.Event()
 
         def waiting(self):
             return self.at_end
 
+    # no network client yet: nothing of one is still to come
+    before = time.time_ns()
+    assert before <= app.dry_bound() <= time.time_ns()
     app.rec = Reader()
     assert app.dry_bound() is None
     app.rec.at_end = True
@@ -282,6 +285,10 @@ def test_live_the_stream_clock_waits_for_the_reader(tmp_path):
     assert before - LIVE_LAG_NS <= app.dry_bound() <= time.time_ns() - LIVE_LAG_NS
     app.rec.q.put(("dg", None))
     assert app.dry_bound() is None
+    # its journal read to the end, the client gone: the wall clock again
+    app.rec.abandon.set()
+    before = time.time_ns()
+    assert before <= app.dry_bound() <= time.time_ns()
 
 
 # ------------------------------------------------------------------ how a run ends
@@ -291,7 +298,9 @@ class EndingClient:
 
     rc = 0
 
-    def __init__(self, ip, port, dump_path, log_path, name="", duration_ms=0, extra=()):
+    def __init__(
+        self, ip, port, dump_path, log_path, name="", duration_ms=0, extra=(), password=""
+    ):
         self.path, self.log_path = dump_path, log_path
 
     def start(self):
@@ -311,20 +320,24 @@ class EndingClient:
 
 
 @pytest.mark.parametrize(
-    "rc, extra, quit",
+    "rc, extra, quit, code",
     [
-        (0, ["--duration-ms", "60000"], "client left: time limit"),
-        (0, [], "client died (rc 0)"),
-        (3, ["--duration-ms", "60000"], "client died (rc 3)"),
-        (-9, [], "client died (rc -9)"),
+        (0, ["--duration-ms", "1"], "client left: time limit", 0),
+        (0, [], "client died (rc 0)", 4),
+        # gone with 0 before the bound: stopped from outside, not the bound
+        (0, ["--duration-ms", "60000"], "client died (rc 0)", 4),
+        (3, ["--duration-ms", "1"], "client died (rc 3)", 4),
+        (-9, [], "client died (rc -9)", 4),
     ],
 )
-def test_a_live_run_names_how_its_network_client_ended(tmp_path, monkeypatch, rc, extra, quit):
+def test_a_live_run_names_how_its_network_client_ended(
+    tmp_path, monkeypatch, rc, extra, quit, code
+):
     monkeypatch.setattr(source, "LiveClient", EndingClient)
     monkeypatch.setattr(EndingClient, "rc", rc)
-    monkeypatch.setattr(App, "precheck", lambda app: "")
+    monkeypatch.setattr(App, "precheck", lambda app, have: "")
     argv = ["--relay", "127.0.0.1:9", "--json", "--out", str(tmp_path), *extra]
-    assert App(cli.parse_args(argv)).run() == (0 if rc == 0 else 3)
+    assert App(cli.parse_args(argv)).run() == code
     (session,) = list(tmp_path.iterdir())
     assert meta_of(session)["quit"] == quit
     assert lines_of(session)[-1]["text"].startswith(quit + " -> ")
@@ -334,7 +347,7 @@ def test_a_signal_is_the_end_even_when_the_network_client_goes_first(tmp_path, m
     """Ctrl-C reaches the client too, which may be gone before the viewer
     looks: the run ended by the signal."""
     monkeypatch.setattr(source, "LiveClient", EndingClient)
-    monkeypatch.setattr(App, "precheck", lambda app: "")
+    monkeypatch.setattr(App, "precheck", lambda app, have: "")
     tick = App.tick
 
     def signalled(app, dry):

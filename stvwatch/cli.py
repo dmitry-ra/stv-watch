@@ -13,10 +13,13 @@ import time
 from datetime import timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import asr, rotate, serve, version
+from . import asr, passwords, rotate, serve, version
 from . import events as gamevents
-from .app import LIVE_DRAIN_MS, MAX_UTT_MS, App
+from .app import CODES, LIVE_DRAIN_MS, MAX_UTT_MS, App
 from .asr import weights
+from .stream.recording import Recording, RecordingError
+
+PASSWORD_ENV = passwords.ENV
 
 
 def default_out():
@@ -109,6 +112,25 @@ def parse_args(argv=None):
         "~/.local/share/stv-watch/sessions when XDG_DATA_HOME is unset)",
     )
     ap.add_argument("--name", default="stvwatch", help="client name shown on the relay")
+    ap.add_argument(
+        "--password-file",
+        metavar="PATH",
+        default=None,
+        help=f"live: the relay's tv_password, the first line of this file; else "
+        f"${PASSWORD_ENV}; else the line 'HOST:PORT PASSWORD' of the relay in "
+        "$XDG_CONFIG_HOME/stv-watch/passwords (mode 0600). Read again before every "
+        "connection attempt. Without one a relay that announces a password is refused. "
+        "It is sent to the relay only, never written to the session files or shown",
+    )
+    ap.add_argument(
+        "--keep-trying",
+        action="store_true",
+        help="live, for a window that should stay up: when the relay refuses us (before "
+        "connecting or with a standing refusal) or the network client dies, wait and try "
+        "again instead of exiting: 300 s after a refusal, doubled while the same one "
+        "repeats, up to 1800 s; 10 s after a client death, doubled up to 300 s; at once "
+        "when the password file changes",
+    )
     ap.add_argument(
         "--allow-last-slot",
         action="store_true",
@@ -265,6 +287,11 @@ def parse_args(argv=None):
         ap.error("--rotate is the engine's: an --attach screen writes no session")
     if a.relay is not None:
         a.relay = relay_addr(a.relay, ap)
+    if a.relay is None:
+        if a.password_file is not None:
+            ap.error("--password-file is for --relay: a recording holds no password")
+        if a.keep_trying:
+            ap.error("--keep-trying is for --relay")
     if a.follow:
         a.replay, a.speed, a.skip_ms = a.follow, 1.0, 0
     try:
@@ -307,6 +334,25 @@ def parse_args(argv=None):
     return a
 
 
+def password_source(a):
+    """The relay's password source; the first read here checks it, so that a
+    bad file or store stops the run before anything starts."""
+    src = passwords.Source(a.relay, a.password_file, os.environ.get(PASSWORD_ENV))
+    src.get()
+    return src
+
+
+def check_recording(a):
+    """A recording to replay or follow must exist and be one."""
+    if a.replay is None:
+        return
+    try:
+        Recording(a.replay)
+    except (OSError, RecordingError) as e:
+        why = getattr(e, "strerror", None) or str(e)
+        raise ValueError(f"--{'follow' if a.follow else 'replay'}: {why}: {a.replay}") from None
+
+
 def has_screen(a):
     """Whether the run shows live lines (App: Screen.tty)."""
     return bool(a.serve) or (not a.plain and sys.stdout.isatty())
@@ -316,6 +362,13 @@ def main(argv=None):
     a = parse_args(argv)
     if a.attach:
         return serve.attach(a)
+    # cheap checks first: a bad password or recording must not cost a weights download
+    try:
+        src = password_source(a)
+        check_recording(a)
+    except ValueError as e:
+        print(f"stv-watch: {e}", file=sys.stderr)
+        return CODES["usage"]
     engines = [(a.asr, asr.WEIGHTS)] if a.asr else []
     if a.live_asr and has_screen(a):
         engines.append((a.live_asr, asr.LIVE_WEIGHTS))
@@ -325,12 +378,15 @@ def main(argv=None):
                 weights.ensure(weights.PINS[name], a.models_dir)
         except (weights.WeightsError, KeyboardInterrupt) as e:
             print(f"stv-watch: {engine} weights not available: {e}", file=sys.stderr)
-            return 2
+            return CODES["usage"]
     try:
-        app = App(a)
+        app = App(a, passwords=src)
     except serve.ServeError as e:
         print(f"stv-watch: --serve {e}", file=sys.stderr)
-        return 2
+        return CODES["usage"]
+    except OSError as e:
+        print(f"stv-watch: cannot write the session under {a.out}: {e}", file=sys.stderr)
+        return CODES["io"]
     return app.run()
 
 

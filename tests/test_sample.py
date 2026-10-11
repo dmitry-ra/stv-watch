@@ -23,7 +23,7 @@ SAMPLE = os.path.join(HERE, "data", "sample.tvd")
 EXPECTED = os.path.join(HERE, "data", "sample.events.jsonl")
 SCHEMA = os.path.join(os.path.dirname(HERE), "docs", "events.schema.json")
 ARGS = ["--speed", "0", "--json", "--events", "all", "--debug", "--tz", "Europe/Berlin"]
-VIEWER_TYPES = ("conn", "net", "play", "tvd", "asr", "rotate", "done")
+VIEWER_TYPES = ("conn", "net", "play", "tvd", "asr", "rotate", "wait", "done")
 
 
 def replay(out, *extra):

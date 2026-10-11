@@ -17,10 +17,14 @@ import os
 import signal
 import sys
 import time
+import traceback
 
 from .. import rotate, times
 from . import dump as dumpfmt
 from . import supervisor, wire
+
+# The viewer passes the password to this process here, not in argv.
+PASSWORD_ENV = "STV_WATCH_PASSWORD"
 
 
 def _arm_parent_death(parent_pid):
@@ -87,7 +91,7 @@ def cmd_run(a):
         port=a.port,
         name=a.name,
         build=None if a.build == "auto" else a.build,
-        password=a.password,
+        password=os.environ.get(PASSWORD_ENV, "") if a.password is None else a.password,
         crc=None if a.crc == "auto" else int(a.crc, 0),
         seconds=a.duration_ms / 1000,
         fsync_ms=a.fsync_ms,
@@ -97,12 +101,20 @@ def cmd_run(a):
         next_path=next_path,
         on_next=on_next,
     )
-    sup = supervisor.Supervisor(opt, a.dump)
-    sup.stop = bool(stopping)
-
-    t0 = time.time()
-    print(f"[tvdump] {sup.endpoint} -> {a.dump}")
-    sup.run()
+    try:
+        sup = supervisor.Supervisor(opt, a.dump)
+        sup.stop = bool(stopping)
+        t0 = time.time()
+        print(f"[tvdump] {sup.endpoint} -> {a.dump}")
+        sup.run()
+    except dumpfmt.DumpError as e:
+        # the viewer reads these lines (source.CLIENT_DIED) and the code
+        print(f"[tvdump] write error: {e}")
+        return dumpfmt.WRITE_FAILED_RC
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc(file=sys.stdout)
+        print(f"[tvdump] crash: {type(e).__name__}: {e}")
+        return 1
     print(
         f"[tvdump] {time.time() - t0:.1f}s | sessions={sup.sessions} "
         f"reconnects={sup.reconnects} full={sup.reached_full} "
@@ -195,7 +207,12 @@ def parser():
     r.add_argument(
         "--build", default="auto", help="server build; auto = A2S_INFO version of the relay"
     )
-    r.add_argument("--password", default="", help="tv_password, if set")
+    r.add_argument(
+        "--password",
+        default=None,
+        help=f"tv_password of the relay (default: ${PASSWORD_ENV}); for manual tests only: "
+        "an argument is visible to every user in ps",
+    )
     r.add_argument(
         "--crc",
         default="auto",

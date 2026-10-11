@@ -156,11 +156,19 @@ def test_an_unknown_server_build_is_refused_before_taking_a_slot(tmp_path):
     with FakeRelay(version="12345") as r:
         p = watch(r, tmp_path)
         out, _ = p.communicate(timeout=60)
-        assert p.returncode == 2
+        assert p.returncode == 3
         assert (r.challenges, r.connections) == (0, 0)
-    (rec,) = [json.loads(ln) for ln in out.decode().splitlines() if '"refused' in ln]
+    recs = [json.loads(ln) for ln in out.decode().splitlines()]
+    (rec,) = [r for r in recs if r["type"] == "conn" and r["text"].startswith("refused")]
     assert "server build 12345" in rec["text"] and "tools/read_crc.py" in rec["text"]
     assert "docs/protocol.md" in rec["text"]
+    done = recs[-1]
+    assert (done["quit"], done["class"], done["cause"], done["rc"]) == (
+        "precheck",
+        "refused",
+        "unknown server build 12345",
+        3,
+    )
 
 
 def test_a_standing_refusal_ends_the_viewer_with_exit_code_3(tmp_path):
@@ -174,13 +182,21 @@ def test_a_standing_refusal_ends_the_viewer_with_exit_code_3(tmp_path):
     texts = [json.loads(ln)["text"] for ln in out.decode().splitlines()]
     assert any(t.startswith("[alarm] permanent failure:") for t in texts)
     assert meta_of(tmp_path)["quit"] == "alarm"
+    done = json.loads(out.decode().splitlines()[-1])
+    assert (done["quit"], done["class"], done["rc"], done["tvdump_rc"]) == (
+        "alarm",
+        "refused",
+        3,
+        3,
+    )
+    assert done["cause"] == "connect refused: '#GameUI_ServerRejectOldVersion'"
 
 
 def test_no_slot_is_taken_when_it_would_be_the_last_one(tmp_path):
     with FakeRelay(max_players=1) as r:
         p = watch(r, tmp_path)
         out, _ = p.communicate(timeout=60)
-        assert p.returncode == 2 and r.connections == 0
+        assert p.returncode == 3 and r.connections == 0
     assert b"--allow-last-slot" in out
 
 

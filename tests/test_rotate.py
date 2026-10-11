@@ -294,7 +294,9 @@ class FakeClient:
     ones the viewer passes; its log lines are written by hand, since the real
     one moves its own stdout."""
 
-    def __init__(self, ip, port, dump_path, log_path, name="", duration_ms=0, extra=()):
+    def __init__(
+        self, ip, port, dump_path, log_path, name="", duration_ms=0, extra=(), password=""
+    ):
         argv = ["run", "--dump", dump_path, "--ip", ip, "--port", str(port), *extra]
         self.a = netmain.parser().parse_args(argv)
         self.log_path = log_path
@@ -337,11 +339,11 @@ def test_live_the_session_follows_the_network_client_into_its_new_directory(tmp_
     viewer, reading the old journal to its NEXT_FILE record, goes on in that
     directory with every file of the session, the client's log too."""
     monkeypatch.setattr(source, "LiveClient", FakeClient)
-    monkeypatch.setattr(App, "precheck", lambda app: "")
+    monkeypatch.setattr(App, "precheck", lambda app, have: "")
     out = tmp_path / "o"
     args = cli.parse_args(
         ["--relay", "127.0.0.1:9", "--json", "--events", "all", "--out", str(out)]
-        + ["--rotate", EVERY_MINUTE, "--tz", "Asia/Tokyo", "--duration-ms", "60000"]
+        + ["--rotate", EVERY_MINUTE, "--tz", "Asia/Tokyo", "--duration-ms", "1000"]
     )
     assert App(args).run() == 0
     old, new = chain(out)

@@ -54,6 +54,10 @@ TYPE_NAMES = {
 EVENT_TYPES = {SESSION_START, SIGNON, BROKEN, RECONNECT, MAPCHANGE, SPLIT_SEEN, LEAVE, NEXT_FILE}
 
 
+# The network client's exit code when it could not write the journal.
+WRITE_FAILED_RC = 5
+
+
 class DumpError(Exception):
     """Dump I/O failed. Fatal by policy: a run that cannot write has no product."""
 
@@ -143,12 +147,17 @@ class DumpWriter:
     def close(self):
         if getattr(self, "_f", None) is None:
             return
+        f, self._f = self._f, None
         try:
-            self._f.flush()
-            self._sync()
+            f.flush()
+            os.fsync(f.fileno())
+        except OSError as e:
+            raise DumpError(f"dump write failed: {e}") from e
         finally:
-            self._f.close()
-            self._f = None
+            try:
+                f.close()
+            except OSError:
+                pass  # the buffer that failed to flush above
 
     def __enter__(self):
         return self

@@ -23,7 +23,7 @@ uv run stv-watch --follow SESSION_DIR/capture.tvd --json   # a live run's journa
 - `--events`: `all`, `default`, `none` or a comma list of `chat`, `console`,
   `connect`, `join`, `leave`, `death`, `team`, `name`, `server`, `sourcemod`;
   `-type` takes one out (`all,-server`). Voice and the viewer's own lines
-  (`conn`, `net`, `play`, `tvd`, `asr`, `done`) always come.
+  (`conn`, `net`, `play`, `tvd`, `asr`, `wait`, `done`) always come.
 - Bound every live run with `--duration-ms` under your shell tool's time limit,
   or run it in the background with stdout in a file. To stop early send SIGINT
   or SIGTERM (to `uv run` is fine): the client leaves the relay and frees its
@@ -47,7 +47,8 @@ uv run stv-watch --follow SESSION_DIR/capture.tvd --json   # a live run's journa
   `continued`, `speech_ms`, `slot`, `verified`), paired by `utt`. `verified`
   false: the voice data claims another player's SteamID; trust
   `slot_steamid64`.
-- The last line is `done`; its text ends with `-> SESSION_DIR`. There:
+- The last line is `done`: `quit`, `class`, `cause`, `rc`; its text ends with
+  `-> SESSION_DIR`. There:
   `events.jsonl` (the same lines, tail it while the run goes on),
   `transcript.tsv` (a row per utterance with text and its WAV under `audio/`),
   `feed.log`, `meta.json` (written at exit: `quit`, counters), and live only
@@ -63,13 +64,17 @@ uv run stv-watch --follow SESSION_DIR/capture.tvd --json   # a live run's journa
 
 ## Exit codes and pitfalls
 
-- 0 ended (a live `--duration-ms` run ends with `done client left: time limit`); 2
-  refused before connecting, a usage error, or the recognizer could not start;
-  3 the relay refuses us for good. On 2 or 3 report the `conn`/`tvd`/stderr
-  reason; do not retry in a loop.
+- 0 ended as asked; 1 a bug in stv-watch; 2 a usage error (options, password
+  file or store, weights, model); 3 the relay refuses us (before connecting or
+  for good); 4 the network client died; 5 the session cannot be written. Report
+  the `done` line's `cause`; do not retry in a loop. `--keep-trying` (waits out
+  3 and 4) is for windows your user keeps up, not for your own runs.
 - `refused: relay does not take anonymous login, auth protocol 3` usually means
   a game port was given. `uv run python -m stvwatch.net.a2s IP:GAMEPORT` prints
   `tv_port`, the port for `--relay` (absent: no SourceTV).
+- `refused: relay has tv_password` needs the password from your user, through
+  `--password-file PATH`, `STV_WATCH_PASSWORD` or their store
+  `~/.config/stv-watch/passwords`, never on the command line.
 - Connect only to relays your user named, one viewer per relay (more readers:
   `--follow` its `capture.tvd`), never `--allow-last-slot` unless asked.
 - Session files hold other players' voices, nicks, SteamIDs and chat: do not

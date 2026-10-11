@@ -22,4 +22,4 @@
 {"t_utc": "2025-10-07T09:40:06.001Z", "t_local": "2025-10-07 11:40:06", "type": "conn", "steamid64": 0, "nick": "", "text": "break: changelevel: server signalled changelevel"}
 {"t_utc": "2025-10-07T09:40:06.002Z", "t_local": "2025-10-07 11:40:06", "type": "conn", "steamid64": 0, "nick": "", "text": "left: net_Disconnect x2 (changelevel)"}
 {"t_utc": "2025-10-07T09:40:06.100Z", "t_local": "2025-10-07 11:40:06", "type": "conn", "steamid64": 0, "nick": "", "text": "attempt 2 failed: timed out"}
-{"t_utc": "2025-10-07T09:40:06.100Z", "t_local": "2025-10-07 11:40:06", "type": "done", "steamid64": 0, "nick": "", "text": "end of recording"}
+{"t_utc": "2025-10-07T09:40:06.100Z", "t_local": "2025-10-07 11:40:06", "type": "done", "steamid64": 0, "nick": "", "text": "end of recording", "quit": "end of recording", "class": "ok", "cause": "", "rc": 0, "retrying": false, "tvdump_rc": null}
