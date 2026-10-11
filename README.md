@@ -177,7 +177,7 @@ the engine itself, since `q` does different things there:
 
 | | local run | `--attach` screen |
 |---|---|---|
-| label of the rule over the block | `stv-watch 0.4.0`, blue | `stv-watch 0.4.0`, a middle dot, `attached`; magenta |
+| label of the rule over the block | `stv-watch VERSION`, blue | `stv-watch VERSION`, a middle dot, `attached`; magenta |
 | hint line | `q quit - stops the engine` | `q close screen - engine keeps running` |
 | one more block line | | `attach SOCKET  engine pid N` |
 

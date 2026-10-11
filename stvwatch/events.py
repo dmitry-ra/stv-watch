@@ -105,7 +105,6 @@ class GameEvents:
         self.team = {}  # account -> team, from player_team on this map
         self.alltalk = False  # sv_alltalk seen as 1 (server_cvar)
         self.counts = Counter()  # type -> events seen (shown or not), + join_repeat
-        self.kills = Counter()  # attacker label -> kills of others
         self.deaths = 0
         self.death_times = deque()
 
@@ -299,8 +298,6 @@ class GameEvents:
         if not self.muted:
             self.deaths += 1
             self.death_times.append(t)
-            if attacker and attacker != victim:
-                self.kills[anick or f"#{attacker}"] += 1
         if not attacker or attacker == victim:
             how = "killed self" if attacker == victim else "died"
             self.emit(
@@ -371,8 +368,4 @@ class GameEvents:
     def kill_summary(self, now_ns):
         while self.death_times and now_ns - self.death_times[0] > KILL_WINDOW_NS:
             self.death_times.popleft()
-        out = f"kills {self.deaths} {len(self.death_times)}/min"
-        if self.kills:
-            who, n = self.kills.most_common(1)[0]
-            out += f" top {who} {n}"
-        return out
+        return f"kills {self.deaths} {len(self.death_times)}/min"
