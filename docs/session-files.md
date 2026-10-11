@@ -19,8 +19,9 @@ directory and its files are made and opened, then the old `events.jsonl` gets
 its last line (a `rotate` line naming the new one), then the old files are
 closed; nothing is written to them after it. An utterance that starts before
 the cut and closes after it has its `talk` line in the old session and its
-`voice` line, `transcript.tsv` row and WAV in the new one. A period without any
-record gets no directory.
+`voice` line, `transcript.tsv` row and WAV in the session where it closes (the
+next one, or a later one if it stays open across several cuts). A period
+without any record gets no directory.
 
 With `--keep-trying` every network client after the first one of a session
 starts a new directory the same way, named by the time it starts: the `rotate`
@@ -100,7 +101,7 @@ paired by `utt`.
 
 - `utt`: the utterance's number in the run (1, 2, ...); every `talk` line has
   exactly one `voice` line with the same `utt`, later in the same session or in
-  the next one.
+  a later one.
 - `start_utc`: the utterance's first voice data. A `talk` line has it at its
   `t_utc`, except for a later piece of a monologue: that piece starts where the
   one before it was cut (its `end_utc`), and its `talk` line comes when the cut

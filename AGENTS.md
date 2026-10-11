@@ -113,7 +113,8 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
 - `transcript.tsv` there has a header and one row per utterance: start and end,
   `steamid64`, `nick`, `result`, `text`, the WAV file under `audio/` (relative
   to the directory), `speech_ms` and the slot check. `meta.json`, written at
-  exit, says how the run ended (`quit`) and holds the counters.
+  the start and again at exit, then says how the run ended (`quit`, `class`,
+  `cause`, `rc`) and holds the counters.
 - The first line also has `version`, the stv-watch build that wrote the
   session (`stv-watch --version`; `0.1.0+g976b9ae` from a git checkout off the
   release tag, with `.dirty` for uncommitted changes). Quote it when you report
@@ -128,7 +129,8 @@ Each line is an object with `t_utc`, `t_local` (only with `--tz`), `type`,
   rest by recording time). Each session has its own `meta.json` (`quit`
   `rotated`, counters since the run started). A rotation cuts the stream at
   its moment: an utterance that spans it has its `talk` line in one session
-  and its `voice` line, row and WAV in the next; pair them by `utt`.
+  and its `voice` line, row and WAV in the session where it closes (the next
+  or a later one); pair them by `utt`.
 
 ## Exit codes
 
