@@ -590,10 +590,13 @@ def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     assert p.returncode == 0
     recs = [json.loads(raw) for raw, _rc, _t in seen]
     assert all(b"\x1b" not in raw and raw.endswith(b"\n") for raw, _rc, _t in seen)
-    assert [r["type"] for r in recs if r["type"] != "voice"] == ["play", "net", "chat", "done"]
-    assert [(r["steamid64"], r["text"], r["result"]) for r in recs if r["type"] == "voice"] == [
-        (steamid64(1), "", "asr off")
+    talk = ("talk", "voice")
+    assert [r["type"] for r in recs if r["type"] not in talk] == ["play", "net", "chat", "done"]
+    assert [(r["type"], r["steamid64"], r["text"]) for r in recs if r["type"] in talk] == [
+        ("talk", steamid64(1), ""),
+        ("voice", steamid64(1), ""),
     ] * 2
+    assert {r["result"] for r in recs if r["type"] == "voice"} == {"asr off"}
     chat_rec = recs[[r["type"] for r in recs].index("chat")]
     assert (chat_rec["nick"], chat_rec["text"]) == ("nick", "between")
     assert {"t_utc", "type", "steamid64", "nick", "text"} <= set(chat_rec)
@@ -616,10 +619,11 @@ def test_json_monitor_lines_reach_a_pipe_reader_as_they_happen(tmp_path):
     assert "\x1b" not in out and not any("status" in ln for ln in lines)
     assert all(ln[2] == ":" and ln[5] == ":" and ln[8] == "." and ln[12] == " " for ln in lines)
     # a voice line is written when the utterance closes (time = its start):
-    # the chat datagram at 1.5 s is the one whose clock closes the first
+    # the chat datagram at 1.5 s is the one whose clock closes the first,
+    # before its own lines
     assert [ln[13:] for ln in lines if "nick" in ln or "voice" in ln] == [
-        "chat  nick: between",
         f"voice {steam2(account(1))}: asr off  0.1s",
+        "chat  nick: between",
         f"voice {steam2(account(1))}: asr off  0.1s",
     ]
     # --debug: the transport numbers on screen too
@@ -727,8 +731,10 @@ def test_events_jsonl_holds_what_json_prints_in_every_screen_mode(tmp_path):
     assert [json.loads(ln)["type"] for ln in want] == [
         "play",
         "net",
-        "chat",
+        "talk",
         "voice",
+        "chat",
+        "talk",
         "voice",
         "done",
     ]
@@ -768,8 +774,10 @@ def test_events_jsonl_is_flushed_line_by_line(tmp_path):
     app = make_app(tmp_path, "--plain")
     path = os.path.join(app.dir, "events.jsonl")
     app.event("conn", "first", "info", t_ns=T0)
+    app.out.release()
     assert [json.loads(ln)["text"] for ln in open(path)] == ["first"]
     app.event("conn", "second", "info", t_ns=T0)
+    app.out.release()
     assert [json.loads(ln)["text"] for ln in open(path)] == ["first", "second"]
     app.jsonl_fh.close()
 
@@ -780,6 +788,7 @@ def test_time_is_utc_unless_tz_names_a_zone_and_only_then_t_local(tmp_path):
     utc = make_app(tmp_path / "u", "--no-color")
     utc.screen = Lines()
     utc.event("conn", "x", "info", t_ns=T0)
+    utc.out.release()
     assert json.loads(open(os.path.join(utc.dir, "events.jsonl")).read()) == {
         "t_utc": "2025-10-07T09:40:00.000Z",
         "type": "conn",
@@ -794,6 +803,7 @@ def test_time_is_utc_unless_tz_names_a_zone_and_only_then_t_local(tmp_path):
         app.pacer = Pacer(False)
         app.now = T0
         app.event("conn", "x", "info", t_ns=T0)
+        app.out.release()
         rec = json.loads(open(os.path.join(app.dir, "events.jsonl")).read())
         assert rec["t_local"] == f"2025-10-07 {clock}:00" and rec["t_utc"].endswith("09:40:00.000Z")
         assert list(rec)[:3] == ["t_utc", "t_local", "type"]
@@ -1294,8 +1304,8 @@ def test_players_are_keyed_by_steamid_and_named_from_the_stream_only(tmp_path):
     ]
     assert [(f[1], f[2].split(" ")[0]) for f in feed if f[1]] == [
         (str(sid), "connect"),
-        (str(sid), "chat"),
         (str(sid), "voice"),
+        (str(sid), "chat"),
         (str(sid), "name"),
         (str(sid), "voice"),
     ]
@@ -1356,6 +1366,7 @@ def test_a_kill_names_both_steamids_in_feed_log_and_with_debug(tmp_path, debug):
     f.ev("player_death", userid=12, attacker=11, weapon="ar2")
     app.game.out = f.take()
     app.game_lines()
+    app.out.release()
     shown = [text_of(sp)[13:] for sp in app.screen.fed]
     logged = [
         ln.split("\t") for ln in (next(tmp_path.iterdir()) / "feed.log").read_text().splitlines()

@@ -112,6 +112,7 @@ class Recording:
         f.close()
         self.size = os.path.getsize(path)
         self.truncated_tail = False
+        self.waiting = False  # follow: at the end of what the writer has written
 
     def __iter__(self):
         index = 0
@@ -184,11 +185,13 @@ class Recording:
             while len(buf) < n and not self.stop():
                 if time.monotonic() - idle_since > self.idle_s:
                     break
+                self.waiting = True
                 time.sleep(self.poll_s)
                 more = f.read(n - len(buf))
                 if more:
                     buf += more
                     idle_since = time.monotonic()
+            self.waiting = False
             return buf
 
         return read

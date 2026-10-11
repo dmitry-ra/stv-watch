@@ -27,6 +27,7 @@ from .asr.parakeet import level_peak
 from .model import NS, Channel, Conn, Traffic
 from .net import a2s, wire
 from .net import dump as dumpfmt
+from .ordered import Ordered
 from .render import Screen, clean
 from .serve import ServedScreen
 from .stream.framing import Framer
@@ -42,6 +43,9 @@ CLOSE_S = 1.0  # end of speech: this long without frames from the channel
 MAX_UTT_MS = 400_000
 LIVE_DRAIN_MS = 20_000  # --drain-ms unless a replay ended by itself
 CUT_FROM = 0.6  # a monologue piece ends at a pause in the last 40 % of --max-utt-ms
+# live: a record reaches us this long after its receive time at most (the
+# network client flushes each one, the reader polls every 50 ms)
+LIVE_LAG_NS = 1_000_000_000
 TSV_HEAD = (
     "t_start_utc",
     "t_end_utc",
@@ -69,6 +73,7 @@ SLOT_HEAD = ("slot", "verified", "slot_steamid64")
 # kills and other server notices dimmest. Game lines are painted whole, except
 # chat and voice, which keep their cyan nick; our own lines keep the blue tag.
 LINE_STYLE = {
+    "talk": "green",  # stream only: on screen the voice line says "talking"
     "voice": {
         "talking": "green",
         "partial": "partial",
@@ -150,6 +155,7 @@ class ChannelAudio:
         self.open = False
         self.index = 0
         self.key = None  # (sid, index) of the open utterance
+        self.from_client = None  # slot of the last frame
         self.reset_stats()
 
     def reset_stats(self):
@@ -203,8 +209,11 @@ class Utt:
     """One utterance = one live line in the feed: talking -> recognizing ->
     final text (or no speech)."""
 
-    def __init__(self, key, sid, start_ns):
+    def __init__(self, key, sid, start_ns, n=0):
         self.key, self.sid, self.start_ns = key, sid, start_ns
+        self.n = n  # `utt` of its talk and voice lines
+        self.place = None  # its voice line's place in the stream, once closed
+        self.pcm = None  # the audio, until its WAV is written with the line
         self.end_ns = 0
         self.state = "talking"
         self.details = ""  # transport summary, set when it closes
@@ -267,6 +276,10 @@ class App:
         self.now = 0
         self.build = version.build()
         self.version_due = False  # run(): the session's first line names the build
+        self.out = Ordered()
+        # the stream clock: no record still to come is older (0: no record yet)
+        self.t_stream = 0
+        self.utt_n = 0
         # replay and --follow: by the records' time here; live the network
         # client rotates its journal and we follow its NEXT_FILE record
         self.rotation = (
@@ -334,11 +347,25 @@ class App:
         return d
 
     def rotate(self, t_ns, new_dir):
-        """The session goes on in `new_dir` from the record at `t_ns`. Its
-        files are open before the old events.jsonl names them in its last
-        line, and only then are the old ones closed. Voice that has no line
-        yet (still talking, or waiting for its text) goes along with its WAV:
-        an utterance is never split between sessions."""
+        """The session goes on in `new_dir` from the moment `t_ns`: a cut of
+        the stream, made when every line before it is written. What the
+        network client logged before it stays in the old session."""
+        if self.logtail is not None:
+            for line in self.logtail.lines():
+                self.event("tvd", clean(line), "info", t_ns)
+            self.logtail = source.LogTail(os.path.join(new_dir, "tvdump.log"))
+        new_abs = os.path.abspath(new_dir)
+        text = f"session goes on in {new_abs}"
+        nxt = {"next_dir": new_abs, "next_events": os.path.join(new_abs, "events.jsonl")}
+        rec = {"type": "rotate", "text": text, "extra": nxt}
+        spans = [(f"{'rotate':<5} ", "blue"), (text, line_style("rotate"))]
+        self.show(spans, t_ns)
+        self.out.put(t_ns, lambda t: self._rotate_files(t, new_dir, rec, spans))
+
+    def _rotate_files(self, t_ns, new_dir, rec, logged):
+        """The new session's files are open before the old events.jsonl names
+        them in its last line; then the old ones close, and the new
+        events.jsonl starts with where it came from and the build."""
         old_dir, old_meta = self.dir, self.meta
         old_files = (self.feed_fh, self.jsonl_fh, self.tsv_fh)
         old_abs, new_abs = os.path.abspath(old_dir), os.path.abspath(new_dir)
@@ -347,14 +374,7 @@ class App:
         err = self.screen.stderr_open(os.path.join(new_dir, "stderr.log"))
         self.meta = self._meta(new_dir, rotated_utc=utc_iso(t_ns), prev_dir=old_abs)
         self.write_meta(self.meta)
-        self._move_voice(old_dir, new_dir)
-        if self.logtail is not None:
-            for line in self.logtail.lines():
-                self.event("tvd", clean(line), "info")
-            self.logtail = source.LogTail(os.path.join(new_dir, "tvdump.log"))
-        text = f"session goes on in {new_abs}"
-        nxt = {"next_dir": new_abs, "next_events": os.path.join(new_abs, "events.jsonl")}
-        self.event("rotate", text, None, t_ns, {"type": "rotate", "text": text, "extra": nxt})
+        self.write(rec, t_ns, logged)
         old_meta.update(end_utc=utc_iso(time.time_ns()), quit="rotated", next_dir=new_abs)
         old_meta.update(self.totals())
         self.write_meta(old_meta)
@@ -363,31 +383,16 @@ class App:
         self.dir = new_dir
         self.feed_fh, self.jsonl_fh, self.tsv_fh = files
         self.screen.stderr_to(err)
-        # the new session's first line: where it came from and which build
-        # wrote it; on the screen the old session's last line says it all
+        # on the screen the old session's last line says it all
         v = self.build["version"]
         text = f"session goes on from {old_abs}"
         prev = {"prev_dir": old_abs, "prev_events": os.path.join(old_abs, "events.jsonl")}
-        line = self.json_line(
-            {"type": "rotate", "text": text, "extra": dict(prev, version=v)}, t_ns
-        )
-        self.jsonl(line)
-        if self.a.json:
-            self.screen.feed([(line, "")], t_ns)
         tag = [(f"{'rotate':<5} ", "blue"), (text, line_style("rotate"))]
-        self.log(tag + [(f"  [stv-watch {v}]", "dim")], t_ns)
-
-    def _move_voice(self, old_dir, new_dir):
-        """WAVs of utterances that are still waiting for their text."""
-        for utt in self.utts.values():
-            wav = utt.meta.get("wav")
-            if not wav:
-                continue
-            try:
-                os.makedirs(os.path.join(new_dir, "audio"), exist_ok=True)
-                os.replace(os.path.join(old_dir, wav), os.path.join(new_dir, wav))
-            except OSError:
-                pass
+        self.write(
+            {"type": "rotate", "text": text, "extra": dict(prev, version=v)},
+            t_ns,
+            tag + [(f"  [stv-watch {v}]", "dim")],
+        )
 
     def _on_table(self, payload, start, end):
         mid, entries = self.tables.feed(payload, start, end, self.framer.cur_session)
@@ -425,10 +430,26 @@ class App:
         return t.user + t.system
 
     # ---------------------------------------------------------------- feed
-    def feed(self, spans, t_ns=None, rec=None, full=None):
-        """One feed line; with --json the record instead (type and text if
-        no record is given), events.jsonl always. feed.log gets `full` if given."""
-        t_ns = t_ns or self.now or time.time_ns()
+    def stamp(self, t_ns=None):
+        """A line's time: its event's, else now on the recording's clock;
+        None in a replay before its first record (Ordered.start)."""
+        if t_ns:
+            return t_ns
+        if self.live:
+            return time.time_ns()
+        return self.t_stream or None
+
+    def show(self, spans, t_ns):
+        """The screen's copy of a line, at once; --json shows the stream."""
+        if not self.a.json:
+            t = t_ns or self.now or time.time_ns()
+            self.screen.feed([(local(t, self.tz) + " ", "stamp")] + spans, t)
+
+    def feed(self, spans, t_ns=None, rec=None, full=None, place=None):
+        """One feed line: on the screen now, in the stream (events.jsonl,
+        --json, feed.log with `full` if given) in its order; type and text
+        if no record is given. `place`: a held place of the stream it joins."""
+        t_ns = self.stamp(t_ns)
         if rec is None:
             rec = {
                 "type": spans[0][0].strip() if len(spans) > 1 else "info",
@@ -441,13 +462,25 @@ class App:
             rec = dict(rec, extra=dict(rec.get("extra") or {}, version=v))
             tail = [(f"  [stv-watch {v}]", "dim")]
             spans, full = spans + tail, full and full + tail
+        self.show(spans, t_ns)
+        logged, sid = full or spans, rec.get("steamid64", 0)
+
+        def write(t):
+            self.write(rec, t, logged, sid)
+
+        if place is None:
+            self.out.put(t_ns, write)
+        else:
+            self.out.add(place, write)
+
+    def write(self, rec, t_ns, logged=None, sid=0):
+        """A line of the stream, due now: events.jsonl, --json and feed.log."""
         line = self.json_line(rec, t_ns)
         self.jsonl(line)
         if self.a.json:
             self.screen.feed([(line, "")], t_ns)
-        else:
-            self.screen.feed([(local(t_ns, self.tz) + " ", "stamp")] + spans, t_ns)
-        self.log(full or spans, t_ns, rec.get("steamid64", 0))
+        if logged is not None:
+            self.log(logged, t_ns, sid)
 
     def json_line(self, rec, t_ns):
         out = {"t_utc": utc_iso(t_ns)}
@@ -474,14 +507,14 @@ class App:
         self.feed_fh.write(f"{utc_iso(t_ns)}\t{sid or ''}\t{text}\n")
         self.feed_fh.flush()
 
-    def event(self, tag, text, state=None, t_ns=None, rec=None):
+    def event(self, tag, text, state=None, t_ns=None, rec=None, place=None):
         if (
             self.follow
             and self.pacer is not None
             and self.pacer.skipping(t_ns or self.now or time.time_ns())
         ):
             return  # the journal's past: state only
-        self.feed([(f"{tag:<5} ", "blue"), (text, line_style(tag, state))], t_ns, rec)
+        self.feed([(f"{tag:<5} ", "blue"), (text, line_style(tag, state))], t_ns, rec, place=place)
 
     # ---------------------------------------------------------------- input items
     def handle_event(self, t_ns, rtype, data):
@@ -500,14 +533,19 @@ class App:
         if rtype == dumpfmt.SESSION_START:
             c.sessions = f.get("session", c.sessions + 1)
             c.state, c.state_ns = "signon", t_ns
-            self.event("conn", f"session #{c.sessions} open ({f.get('endpoint', '')})", "info")
+            self.event(
+                "conn", f"session #{c.sessions} open ({f.get('endpoint', '')})", "info", t_ns
+            )
         elif rtype == dumpfmt.RECONNECT:
             if not f.get("ok", True):
                 c.attempts_failed += 1
                 c.last_error = str(f.get("error", ""))
                 c.state, c.state_ns = "retry", t_ns
                 self.event(
-                    "conn", f"attempt {f.get('attempt')} failed: {clean(c.last_error)}", "warn"
+                    "conn",
+                    f"attempt {f.get('attempt')} failed: {clean(c.last_error)}",
+                    "warn",
+                    t_ns,
                 )
             else:
                 c.state, c.state_ns = "connecting", t_ns
@@ -516,17 +554,23 @@ class App:
             if name == "FULL":
                 took = (t_ns - c.state_ns) / NS if c.state_ns else 0.0
                 c.state, c.state_ns, c.full_ns = "FULL", t_ns, t_ns
-                self.event("conn", f"FULL on {clean(c.map) or '?'} ({took:.1f} s after open)", "ok")
+                self.event(
+                    "conn", f"FULL on {clean(c.map) or '?'} ({took:.1f} s after open)", "ok", t_ns
+                )
             else:
                 c.state = "signon:" + name
         elif rtype == dumpfmt.BROKEN:
             c.state, c.state_ns = "broken", t_ns
-            self.event("conn", f"break: {f.get('cause')}: {clean(f.get('detail', ''))}", "warn")
+            self.event(
+                "conn", f"break: {f.get('cause')}: {clean(f.get('detail', ''))}", "warn", t_ns
+            )
         elif rtype == dumpfmt.MAPCHANGE:
-            self.event("conn", f"map change -> {clean(f.get('map', ''))}", "info")
+            self.event("conn", f"map change -> {clean(f.get('map', ''))}", "info", t_ns)
         elif rtype == dumpfmt.LEAVE:
             c.state, c.state_ns = "left", t_ns
-            self.event("conn", f"left: net_Disconnect x{f.get('sent')} ({f.get('why')})", "info")
+            self.event(
+                "conn", f"left: net_Disconnect x{f.get('sent')} ({f.get('why')})", "info", t_ns
+            )
         elif rtype == dumpfmt.NEXT_FILE and self.live and f.get("path"):
             # our network client rotated its journal: the session goes with it
             self.rotate(t_ns, os.path.dirname(f["path"]))
@@ -539,16 +583,19 @@ class App:
         self.check_traffic(t)
         self.traffic.inbound(t, len(dg.data), wire.classify(dg.data) == "split")
         self.check_traffic(t)
-        self.game.muted = self.pacer.skipping(t)
+        skipping = self.pacer.skipping(t)
+        self.game.muted = skipping
         self.framer.feed(dg)
         msgs = self.framer.voice[:]
         del self.framer.voice[:]
+        if not skipping:
+            # what this datagram's silence closes is in the stream before its lines
+            self.play_t0 = self.play_t0 or t
+            self.seg.clock(t)
+            self.process_closed()
         self.game_lines()
-        if self.pacer.skipping(t):
+        if skipping:
             return
-        self.play_t0 = self.play_t0 or t
-        self.seg.clock(t)
-        self.process_closed()
         for m in msgs:
             p = steamvoice.parse(m.data)
             if not p.crc_ok or p.error:
@@ -683,6 +730,7 @@ class App:
         if s is None or not s.items or s.items[-1][1] is not f:
             return
         ca = self.audio[sid]
+        ca.from_client = cf.from_client
         if not ca.open:
             ca.open, ca.start_ns, ca.index = True, cf.t_ns, ca.index + 1
             ch.talking = True
@@ -763,7 +811,7 @@ class App:
             "closed_ns": closed,  # a monologue piece ends before it is cut: lag from the cut
             "why": why,
             "audio_s": len(pcm) / SR,
-            "wav": self.write_wav(sid, ca, pcm),
+            "wav": self.wav_name(sid, ca, pcm),
         }
         self.counters["utterances"] += 1
         ch.utterances += 1
@@ -779,6 +827,8 @@ class App:
             utt.nick, utt.spectator = ch.nick, self.game.unheard(sid)
             utt.slot, utt.verified, utt.slot_owner = facts.slot, facts.verified(), facts.slot_owner
             utt.meta = meta
+            utt.pcm = pcm if meta["wav"] else None
+            utt.place = self.out.put(closed)
         if self.asr is None or not len(pcm):
             self.finalize(utt, "", meta)
         elif not self.asr.utterance(sid, pcm, meta):
@@ -789,8 +839,7 @@ class App:
         if keep_open:
             ca.start_ns = t_ns
             ca.index += 1
-            self.speech_start(ch, ca, ca.start_ns)
-            self.utts[ca.key].cont = True
+            self.speech_start(ch, ca, ca.start_ns, closed)
             if rest is not None:
                 ca.parts, ca.nsamp = [rest], len(rest)
             return
@@ -798,14 +847,22 @@ class App:
         ca.seg_id = -1
         ch.talking = False
 
-    def speech_start(self, ch, ca, t_ns):
-        """A live line for the new utterance."""
+    def speech_start(self, ch, ca, t_ns, cut_ns=None):
+        """A live line for the new utterance, and its talk line in the stream:
+        at its first frame, or for a monologue piece at the cut that starts it."""
         ca.key = (ch.sid64, ca.index)
-        utt = self.utts[ca.key] = Utt(ca.key, ch.sid64, t_ns)
+        self.utt_n += 1
+        utt = self.utts[ca.key] = Utt(ca.key, ch.sid64, t_ns, self.utt_n)
+        utt.cont = cut_ns is not None
         utt.first = ch.utterances == 0
         self.screen.live_open(ca.key, self.progress(utt), t_ns)
         if self.live_asr is not None:
             self.live_asr.open(ca.key)
+        self.refresh_name(ch)
+        extra = {"utt": utt.n, "start_utc": utc_iso(t_ns), "continued": utt.cont}
+        extra["slot"] = ca.from_client
+        rec = {"type": "talk", "steamid64": ch.sid64, "nick": ch.nick, "text": "", "extra": extra}
+        self.out.put(cut_ns or t_ns, lambda t: self.write(rec, t))
 
     def details(self, ca, t_ns, why, audio_s):
         """Transport summary of a closed utterance: audio s / arrival span s,
@@ -864,11 +921,16 @@ class App:
             out.append((" " + utt.details if self.a.debug else f" {utt.audio_s:.1f}s", "dim"))
         return out
 
-    def write_wav(self, sid, ca, pcm):
+    def wav_name(self, sid, ca, pcm):
+        """audio/NAME.wav of an utterance, written with its line; '' for none."""
         if self.a.no_audio or not len(pcm):
             return ""
         name = f"{local(ca.start_ns, self.tz, '%H%M%S')}_{sid}_{ca.index}.wav"
-        path = os.path.join(self.dir, "audio", name)
+        return os.path.join("audio", name)
+
+    def write_wav(self, wav, pcm):
+        """-> `wav`, written into the session the line goes to; '' if it failed."""
+        path = os.path.join(self.dir, wav)
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with wave.open(path, "wb") as w:
@@ -879,7 +941,7 @@ class App:
         except OSError:
             return ""
         self.counters["wav"] += 1
-        return os.path.join("audio", name)
+        return wav
 
     # ---------------------------------------------------------------- recognizer results
     def handle_result(self, r):
@@ -896,7 +958,11 @@ class App:
                 self.event("asr", f"{self.model} failed: {clean(err)}", "failed")
             return
         if kind == "error":
-            self.event("asr", f"error on {r[1]}: {clean(r[2])}", "error")
+            # in the stream right before the line of the utterance it failed on
+            utt = self.utts.get(r[3].get("key"))
+            place = utt.place if utt is not None else None
+            t = place[0] if place is not None else None
+            self.event("asr", f"error on {r[1]}: {clean(r[2])}", "error", t, place=place)
             return
         if kind == "partial":
             utt = self.utts.get(r[1])
@@ -924,7 +990,8 @@ class App:
 
     def finalize(self, utt, text, meta):
         """The utterance's live line becomes its final line: who and what was
-        said, bright; transport and recognition numbers, dim."""
+        said, bright; transport and recognition numbers, dim. In the stream
+        its voice line, WAV and transcript row take the place held for it."""
         if utt is None:
             return
         del self.utts[utt.key]
@@ -943,12 +1010,11 @@ class App:
                 ch.nospeech += 1
                 self.counters["nospeech"] += 1
             said = [(": " + label, line_style("voice", "no text"))]
-            self.voice_close(utt, ch, head, said, "", label, tail, speech)
         else:
             ch.finals += 1
             self.counters["phrases"] += 1
             said = [(": ", ""), (text, line_style("voice", "text"))]
-            self.voice_close(utt, ch, head, said, text, "", tail, speech)
+        rec, full = self.voice_close(utt, ch, head, said, text, label, tail, speech, t_end)
         row = [
             utc_iso(utt.start_ns),
             utc_iso(t_end),
@@ -957,7 +1023,7 @@ class App:
             self.model or "",
             label or "text",
             text,
-            meta.get("wav", ""),
+            "",
             "" if speech is None else str(speech),
             str(meta.get("asr_ms", 0)),
             str(round(lag * 1000)),
@@ -969,13 +1035,25 @@ class App:
             {True: "true", False: "false", None: ""}[utt.verified],
             str(owner_sid(utt.slot_owner)) if utt.verified is False else "",
         ]
-        self.tsv_fh.write("\t".join(f.replace("\t", " ").replace("\n", " ") for f in row) + "\n")
-        self.tsv_fh.flush()
+        wav, pcm = meta.get("wav", ""), utt.pcm
+        utt.pcm = None
 
-    def voice_close(self, utt, ch, head, said, text, label, tail, speech=None):
-        """Final line of an utterance. On screen: who, what and how long, the
-        transport and recognition numbers only with --debug; feed.log and
-        --json always get them all."""
+        def write(t):
+            row[7] = self.write_wav(wav, pcm) if wav and pcm is not None else ""
+            self.tsv_fh.write(
+                "\t".join(f.replace("\t", " ").replace("\n", " ") for f in row) + "\n"
+            )
+            self.tsv_fh.flush()
+            self.write(rec, t, full, ch.sid64)
+
+        place = utt.place if utt.place is not None else self.out.put(self.stamp(t_end))
+        self.out.add(place, write)
+        self.out.ready(place)
+
+    def voice_close(self, utt, ch, head, said, text, label, tail, speech, t_end):
+        """Final line of an utterance. On screen now: who, what and how long,
+        the transport and recognition numbers only with --debug. -> the
+        stream's record and feed.log line, which always get them all."""
         nick, spectator = self.speaker(utt, ch)
         who = (
             [self.VOICE_TAG]
@@ -988,27 +1066,23 @@ class App:
         full = who + [("  " + tail + ("" if utt.slot is None else f" slot {utt.slot}"), "dim")]
         spans = full if self.a.debug else who + [(f"  {utt.audio_s:.1f}s", "dim")]
         extra = {
+            "utt": utt.n,
+            "start_utc": utc_iso(utt.start_ns),
+            "end_utc": utc_iso(t_end),
             "result": label or "text",
             "continued": utt.cont,
             "spectator": spectator,
             "details": tail.strip(),
-            "t_end_utc": utc_iso(utt.end_ns or self.now),
         }
         if speech is not None:
             extra["speech_ms"] = speech
         extra["slot"], extra["verified"] = utt.slot, utt.verified
         if utt.verified is False:
             extra["slot_steamid64"] = owner_sid(utt.slot_owner)
-        line = self.json_line(
-            {"type": "voice", "steamid64": ch.sid64, "nick": nick, "text": text, "extra": extra},
-            utt.start_ns,
-        )
-        self.jsonl(line)
-        if self.a.json:
-            self.screen.live_close(utt.key, [(line, "")], t_ns=utt.start_ns)
-        else:
+        if not self.a.json:
             self.screen.live_close(utt.key, head + spans, [("^ ", "dim")], utt.start_ns)
-        self.log(full, utt.start_ns, ch.sid64)
+        rec = {"type": "voice", "steamid64": ch.sid64, "nick": nick, "text": text, "extra": extra}
+        return rec, full
 
     # ---------------------------------------------------------------- status block
     BLOCK_LINES = 6
@@ -1405,7 +1479,8 @@ class App:
             t = item[1].t_ns if item[0] == "dg" else item[1]
             if self.past_end(t):
                 self.held = None
-                self.quit, self.quit_why = True, "duration"
+                self.advance(self.play_t0 + self.a.duration_ms * 1_000_000)
+                self.quit, self.quit_why = True, "time limit"
                 return False
             wait = self.pacer.due(t)
             if wait > 0:
@@ -1416,6 +1491,7 @@ class App:
                 continue
             self.held = None
             self.pacer.seen(t)
+            self.advance(t)
             if self.rotation is not None and not self.pacer.skipping(t):
                 start = self.rotation.due(t)
                 if start is not None:
@@ -1424,6 +1500,37 @@ class App:
                 self.handle_dg(item[1])
             else:
                 self.handle_event(*item[1:])
+
+    def advance(self, t_ns):
+        """The stream clock to `t_ns`: no record still to come is older. A
+        stop of the traffic it reveals goes in at its moment, and the lines
+        up to it are written."""
+        if t_ns <= self.t_stream:
+            return
+        if not self.t_stream:
+            self.out.start(t_ns)
+        self.t_stream = t_ns
+        self.check_traffic(t_ns)
+        self.out.release(t_ns)
+
+    def dry_bound(self):
+        """With no record at hand, how far the stream clock may go: live and
+        --follow the wall clock less the journal's lag, while the reader
+        waits at its end; a replay its paced clock, short of the record it
+        holds back. None: no further than the last record."""
+        if self.rec is None:
+            return None
+        if self.live or self.follow:
+            if not self.rec.q.empty() or not self.rec.waiting():
+                return None
+            return time.time_ns() - LIVE_LAG_NS
+        if self.held is None:
+            return None
+        t = self.held[1].t_ns if self.held[0] == "dg" else self.held[1]
+        bound = min(self.pacer.media_now(), t)
+        if self.a.duration_ms and self.play_t0:
+            bound = min(bound, self.play_t0 + self.a.duration_ms * 1_000_000)
+        return bound
 
     def past_end(self, t_ns):
         """Replay with --duration-ms: the recording time `t_ns` is beyond the bound."""
@@ -1435,13 +1542,10 @@ class App:
     def tick(self, dry):
         """Clock-driven work, done when the input queue is drained."""
         if dry and not self.pacer.skipping(self.pacer.media_now()):
-            mnow = self.pacer.media_now()
-            if mnow > self.now:
-                self.now = mnow
-            self.seg.clock(self.now)
-            self.process_closed()
-        if dry:
-            self.check_traffic(self.now)
+            self.now = max(self.now, self.pacer.media_now())
+            bound = self.dry_bound()
+            if bound is not None:
+                self.advance(bound)
         while True:
             try:
                 self.handle_result(self.q_out.get_nowait())
@@ -1465,6 +1569,7 @@ class App:
                 self.event("tvd", clean(line), "fail" if line.startswith("[alarm]") else "info")
                 if line.startswith("[alarm]"):
                     self.quit, self.quit_why = True, "alarm"
+        self.out.release(self.t_stream)
         k = self.screen.key()
         if k in ("q", "Q"):
             self.ask_stop("key q")
@@ -1475,16 +1580,17 @@ class App:
             return
         kind, gap = tr
         if kind == "stopped":
+            quiet = self.traffic.quiet
             self.event(
                 "net",
-                f"traffic stopped (no datagrams for {gap:.1f} s)",
+                f"traffic stopped (no datagrams for {quiet / NS:.1f} s)",
                 "fail",
-                self.traffic.last_ns,
+                self.traffic.last_ns + quiet,
             )
         elif kind == "resumed":
-            self.event("net", f"traffic resumed after {gap:.1f} s", "ok")
+            self.event("net", f"traffic resumed after {gap:.1f} s", "ok", now)
         else:
-            self.event("net", "traffic started", "ok")
+            self.event("net", "traffic started", "ok", now)
 
     def render(self, force=False):
         t = time.monotonic()
@@ -1504,22 +1610,15 @@ class App:
             self.screen.draw((), now)
 
     def loop(self):
-        a = self.a
         while not self.quit:
             dry = self.pump()
             self.tick(dry)
             self.render()
-            if (
-                a.duration_ms
-                and not self.live
-                and self.play_t0
-                and self.now - self.play_t0 >= a.duration_ms * 1_000_000
-            ):
-                self.quit, self.quit_why = True, "duration"
-            if self.live and not self.client.alive():
+            if self.live and not self.quit and not self.client.alive():
                 self.quit, self.quit_why = True, "client exited"
             if (
                 not self.live
+                and not self.quit
                 and self.rec.done.is_set()
                 and self.rec.q.empty()
                 and self.held is None
@@ -1588,6 +1687,9 @@ class App:
                 self.event("conn", "leaving relay ...", "info")
                 self.render(force=True)
                 rc = self.client_rc = self.client.stop()
+                if self.quit_why == "client exited":
+                    timed = rc == 0 and self.a.duration_ms
+                    self.quit_why = "client left: time limit" if timed else f"client died (rc {rc})"
                 if rc is None:
                     self.event(
                         "conn", "network client killed: relay keeps the slot up to 300 s", "fail"
@@ -1606,7 +1708,7 @@ class App:
             if self.logtail is not None:
                 for line in self.logtail.lines():
                     self.event("tvd", clean(line), "info")
-            self.seg.flush(self.now)
+            self.seg.flush(self.t_stream or self.now)
             self.process_closed()
             if self.live_asr is not None:
                 self.live_asr.stop()
@@ -1626,6 +1728,9 @@ class App:
                 self.tick(False)
             for utt in list(self.utts.values()):
                 self.finalize(utt, "", dict(utt.meta, result="not recognized before exit"))
+            if not self.t_stream:
+                self.out.start(time.time_ns())
+            self.out.release()
             if self.client is not None and self.a2s_before is not None:
                 ok, after, text = self.slot_check()
                 self.event("conn", text, "ok" if ok else "fail")
@@ -1639,6 +1744,7 @@ class App:
             self.meta.update(self.totals())
             self.event("done", f"{self.quit_why or 'stopped'} -> {self.dir}")
         finally:
+            self.out.release()
             self.write_meta(self.meta)
             now = self.clock()
             final = self.block(now) if self.screen.tty else []

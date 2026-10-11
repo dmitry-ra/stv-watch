@@ -80,7 +80,7 @@ def test_replay_duration_bounds_what_is_shown_even_at_max_speed(tmp_path):
     args = ("--speed", "0", "--duration-ms", "1000", "--json", "--events", "all")
     lines = [json.loads(ln) for ln in replay(tmp_path, *args)]
     shown = max(r["t_utc"] for r in lines if r["type"] not in ("play", "done"))
-    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "duration")
+    assert (shown, lines[-1]["text"].split(" -> ")[0]) == ("2025-10-07T09:40:01.100Z", "time limit")
 
 
 def test_the_build_is_named_once_at_the_start_and_in_meta(tmp_path):
@@ -145,7 +145,7 @@ def check(value, schema, where="$"):
 def test_every_line_matches_the_schema(tmp_path):
     with open(SCHEMA, encoding="utf-8") as f:
         schema = json.load(f)
-    assert schema["properties"]["type"]["enum"] == ["voice", *ge.TYPES, *VIEWER_TYPES]
+    assert schema["properties"]["type"]["enum"] == ["talk", "voice", *ge.TYPES, *VIEWER_TYPES]
     with_tz = replay(tmp_path / "a", *ARGS)
     plain = replay(tmp_path / "b", "--speed", "0", "--json", "--events", "all")
     seen = set()
@@ -213,6 +213,7 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
         ("voice", "no speech", True),
         ("voice", "recognition failed", False),
         ("asr", None, False),
+        ("talk", None, False),
     } <= seen
     assert check(dict(CHAT, channel="all", ent=1, result="text"), schema) == ["$: result on 'chat'"]
     assert check(dict(CHAT, channel="all", ent=1, speech_ms=1), schema) == [
@@ -220,12 +221,21 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
     ]
     voice = dict(CHAT, type="voice", result="text", continued=False, spectator=False, details="")
     assert check(voice, schema) == [
-        "$: t_end_utc missing",
+        "$: utt missing",
+        "$: start_utc missing",
+        "$: end_utc missing",
         "$: slot missing",
         "$: verified missing",
     ]
-    voice = dict(voice, t_end_utc=CHAT["t_utc"], slot=3, verified=False, slot_steamid64=1)
+    t = CHAT["t_utc"]
+    voice = dict(voice, utt=1, start_utc=t, end_utc=t, slot=3, verified=False, slot_steamid64=1)
     assert check(voice, schema) == []
+    talk = dict(CHAT, type="talk", utt=1, start_utc=t, continued=False, slot=None)
+    assert check(talk, schema) == []
+    assert check(dict(talk, end_utc=t, result="text"), schema) == [
+        "$: result on 'talk'",
+        "$: end_utc on 'talk'",
+    ]
     assert check(dict(voice, verified=None), schema) == ["$: slot_steamid64 on 'voice'"]
     assert check(dict(voice, slot=None, verified=None, slot_steamid64=None), schema) == [
         "$.slot_steamid64: None is not integer",

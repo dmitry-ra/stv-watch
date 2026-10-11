@@ -177,20 +177,22 @@ def replay(rec, out, *extra):
 
 
 @pytest.mark.parametrize("asr", [False, True])
-def test_a_rotation_takes_along_the_voice_that_has_no_line_yet(rec, tmp_path, monkeypatch, asr):
-    """Without a recognizer alice's line is written when she stops, before the
-    minute; with one her text is still being waited for at the minute, so her
-    line, row and WAV go to the new session. Bob talks across the minute: all
-    of him is in the new one, from his real start."""
+def test_a_rotation_cuts_the_stream_at_its_moment_whatever_the_recognizer_does(
+    rec, tmp_path, monkeypatch, asr
+):
+    """alice talks and is done before the minute: all of her in the old
+    session, even while her text is still being waited for at the cut. Bob
+    talks across the minute: his talk line in the old session, his voice line,
+    row and WAV in the new one, paired by utt. Nothing after the rotate line."""
     ready = []  # what the new directory holds when the old events.jsonl names it
-    event = App.event
+    write = App.write
 
-    def watched(app, tag, *rest):
-        if tag == "rotate":
-            ready.append(sorted(os.listdir(rest[-1]["extra"]["next_dir"])))
-        return event(app, tag, *rest)
+    def watched(app, rec, *rest):
+        if "next_dir" in (rec.get("extra") or {}):
+            ready.append(sorted(os.listdir(rec["extra"]["next_dir"])))
+        return write(app, rec, *rest)
 
-    monkeypatch.setattr(App, "event", watched)
+    monkeypatch.setattr(App, "write", watched)
     extra = []
     if asr:
         engine = Engine()
@@ -199,31 +201,38 @@ def test_a_rotation_takes_along_the_voice_that_has_no_line_yet(rec, tmp_path, mo
         extra = ["--asr", "parakeet"]
     old, new = replay(rec, tmp_path / "o", "--rotate", EVERY_MINUTE, *extra)
     files = ["events.jsonl", "feed.log", "meta.json", "stderr.log", "transcript.tsv"]
-    assert ready == [sorted(files + (["audio"] if asr else []))]
+    assert ready == [files]
     a, b = lines_of(old), lines_of(new)
     assert [r["type"] for r in a].count("rotate") == [r["type"] for r in b].count("rotate") == 1
-    assert (a[-1]["t_utc"], a[-1]["next_dir"]) == (iso(60), str(new))
+    assert (a[-1]["type"], a[-1]["t_utc"], a[-1]["next_dir"]) == ("rotate", iso(60), str(new))
     assert (b[0]["type"], b[0]["prev_dir"], b[0]["prev_events"]) == (
         "rotate",
         str(old),
         str(old / "events.jsonl"),
     )
     assert b[0]["version"] == meta_of(new)["version"]
+    assert max(r["t_utc"] for r in a) == iso(60) <= min(r["t_utc"] for r in b)
     chats = {s.name: [r["text"] for r in lines_of(s) if r["type"] == "chat"] for s in (old, new)}
     assert chats == {old.name: ["before"], new.name: ["after"]}
     said = {
-        s.name: [(r["nick"], r["t_utc"]) for r in lines_of(s) if r["type"] == "voice"]
+        s.name: [
+            (r["type"], r["nick"], r["utt"], r["start_utc"]) for r in lines_of(s) if "utt" in r
+        ]
         for s in (old, new)
     }
-    alice, bob = ("alice", iso(55.06)), ("bob", iso(59.06))
-    if asr:
-        assert said == {old.name: [], new.name: [alice, bob]}
-    else:
-        assert said == {old.name: [alice], new.name: [bob]}
+    alice, bob = ("alice", 1, iso(55.06)), ("bob", 2, iso(59.06))
+    assert said == {
+        old.name: [("talk", *alice), ("voice", *alice), ("talk", *bob)],
+        new.name: [("voice", *bob)],
+    }
     for s in (old, new):
         rows = rows_of(s)
-        assert [(r["nick"], r["t_start_utc"]) for r in rows] == said[s.name]
+        voice = [r for r in lines_of(s) if r["type"] == "voice"]
+        assert [(r["nick"], r["t_start_utc"]) for r in rows] == [
+            (r["nick"], r["start_utc"]) for r in voice
+        ]
         assert sorted(r["audio"] for r in rows) == wavs(s)
+        assert {r["result"] for r in voice} == {"text" if asr else "asr off"}
     m_old, m_new = meta_of(old), meta_of(new)
     assert (m_old["quit"], m_old["next_dir"]) == ("rotated", str(new))
     assert (m_new["prev_dir"], m_new["rotated_utc"], m_new["quit"]) == (
@@ -332,7 +341,7 @@ def test_live_the_session_follows_the_network_client_into_its_new_directory(tmp_
     out = tmp_path / "o"
     args = cli.parse_args(
         ["--relay", "127.0.0.1:9", "--json", "--events", "all", "--out", str(out)]
-        + ["--rotate", EVERY_MINUTE, "--tz", "Asia/Tokyo"]
+        + ["--rotate", EVERY_MINUTE, "--tz", "Asia/Tokyo", "--duration-ms", "60000"]
     )
     assert App(args).run() == 0
     old, new = chain(out)
@@ -351,7 +360,9 @@ def test_live_the_session_follows_the_network_client_into_its_new_directory(tmp_
         for s in (old, new)
     }
     assert seen == {old.name: ["[tvdump] early", "before"], new.name: ["[tvdump] late", "after"]}
-    assert meta_of(new)["prev_dir"] == str(old) and meta_of(new)["quit"] == "client exited"
+    assert (
+        meta_of(new)["prev_dir"] == str(old) and meta_of(new)["quit"] == "client left: time limit"
+    )
     # a replay of the first journal stops at its end, a follower goes on
     assert sum(1 for _ in Recording(str(old / "capture.tvd"))) == len(caps[0]) - 1
     follow = Recording(str(old / "capture.tvd"), follow=True, idle_s=0.2)
