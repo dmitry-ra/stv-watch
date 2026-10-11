@@ -21,7 +21,10 @@ that recording gives the same lines the live run printed.
 - [uv](https://docs.astral.sh/uv/). uv provides the interpreter and the
   environment with the dependencies, all wheels from PyPI (about 60 MB of
   downloads): numpy, opuslib-next-bundled (the Opus decoder, libopus inside),
-  onnxruntime, onnx-asr and sherpa-onnx (speech recognition).
+  onnxruntime, onnx-asr and sherpa-onnx (speech recognition). onnxruntime 1.29
+  and later on Linux sends usage events to Microsoft by default; stv-watch sets
+  `ORT_DISABLE_TELEMETRY=1` before loading it, unless you set that variable
+  yourself.
 - For `--asr parakeet`: 2.55 GB of disk for the model weights (Parakeet and
   Silero VAD) and about 2.6 GB of memory while it runs. `--live-asr nemotron`
   adds 0.68 GB of disk and about 1 GB of memory.
@@ -207,7 +210,7 @@ the engine itself, since `q` does different things there:
 
 | | local run | `--attach` screen |
 |---|---|---|
-| label of the rule over the block | `stv-watch 0.4.0`, blue | `stv-watch 0.4.0`, a middle dot, `attached`; magenta |
+| label of the rule over the block | `stv-watch VERSION`, blue | `stv-watch VERSION`, a middle dot, `attached`; magenta |
 | hint line | `q quit - stops the engine` | `q close screen - engine keeps running` |
 | one more block line | | `attach SOCKET  engine pid N` |
 
