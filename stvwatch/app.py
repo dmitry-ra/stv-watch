@@ -13,13 +13,12 @@ import signal
 import threading
 import time
 import wave
-from datetime import datetime, timezone
 from itertools import pairwise
 
 import numpy as np
 
 from . import events as gamevents
-from . import source, version
+from . import rotate, source, version
 from .asr import build_live
 from .asr import recognizer as asrmod
 from .asr import vad as vadmod
@@ -32,6 +31,7 @@ from .render import Screen, clean
 from .serve import ServedScreen
 from .stream.framing import Framer
 from .stream.userinfo import STEAMID64_BASE, NickBook, StringTables
+from .times import local, stamp, tz_label, utc_iso
 from .voice import audio, steamvoice
 from .voice.segments import ChannelFrame, Segmenter
 
@@ -92,6 +92,7 @@ LINE_STYLE = {
     "play": "",
     "tvd": {"info": "dim", "fail": "red"},
     "asr": {"ready": "", "failed": "red", "error": "red"},
+    "rotate": "",
     "done": "",
 }
 HUD_PRINTTALK = 3
@@ -111,25 +112,6 @@ def game_state(r):
     if r["type"] == "server":
         return "talk" if r["extra"].get("dest") == HUD_PRINTTALK else "other"
     return None
-
-
-def local(t_ns, tz, fmt=None):
-    """Time in `tz`; on screen always with milliseconds (HH:MM:SS.mmm)."""
-    if fmt is not None:
-        return datetime.fromtimestamp(t_ns / NS, tz).strftime(fmt)
-    return datetime.fromtimestamp(t_ns // NS, tz).strftime("%H:%M:%S") + ".%03d" % (
-        t_ns % NS // 1_000_000
-    )
-
-
-def tz_label(tz):
-    return getattr(tz, "key", None) or "UTC"
-
-
-def utc_iso(t_ns):
-    return (
-        datetime.fromtimestamp(t_ns / NS, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    )
 
 
 def hms(seconds):
@@ -285,17 +267,46 @@ class App:
         self.now = 0
         self.build = version.build()
         self.version_due = False  # run(): the session's first line names the build
-        self.screen = self._screen()
-        self.dir = self._session_dir()
-        self.feed_fh = open(os.path.join(self.dir, "feed.log"), "a", encoding="utf-8")
-        # what --json prints, in any screen mode; errors as on the --json stdout
-        self.jsonl_fh = open(
-            os.path.join(self.dir, "events.jsonl"), "a", encoding="utf-8", errors="replace"
+        # replay and --follow: by the records' time here; live the network
+        # client rotates its journal and we follow its NEXT_FILE record
+        self.rotation = (
+            rotate.Schedule(a.rotate, self.tz, self.started_ns)
+            if a.rotate and not self.live
+            else None
         )
-        self.tsv_fh = open(os.path.join(self.dir, "transcript.tsv"), "a", encoding="utf-8")
-        if self.tsv_fh.tell() == 0:
-            head = TSV_HEAD + (("t_local",) if a.tz_given else ()) + SLOT_HEAD
-            self.tsv_fh.write("\t".join(head) + "\n")
+        self.screen = self._screen()
+        self.dir = self._session_dir(self.started_ns)
+        self.feed_fh, self.jsonl_fh, self.tsv_fh = self._open_files(self.dir)
+        self.meta = self._meta(self.dir, start_utc=utc_iso(self.started_ns))
+
+    def _open_files(self, d):
+        """feed.log, events.jsonl, transcript.tsv of a session directory."""
+        feed = open(os.path.join(d, "feed.log"), "a", encoding="utf-8")
+        # what --json prints, in any screen mode; errors as on the --json stdout
+        jsonl = open(os.path.join(d, "events.jsonl"), "a", encoding="utf-8", errors="replace")
+        tsv = open(os.path.join(d, "transcript.tsv"), "a", encoding="utf-8")
+        if tsv.tell() == 0:
+            head = TSV_HEAD + (("t_local",) if self.a.tz_given else ()) + SLOT_HEAD
+            tsv.write("\t".join(head) + "\n")
+            tsv.flush()
+        return feed, jsonl, tsv
+
+    def _meta(self, d, **more):
+        return {
+            "version": self.build["version"],
+            "build": self.build,
+            "args": vars(self.a),
+            "model": self.model,
+            "dir": d,
+            "tz": tz_label(self.tz),
+            "pid": os.getpid(),
+            "start_utc": utc_iso(time.time_ns()),
+            **more,
+        }
+
+    def write_meta(self, meta):
+        with open(os.path.join(meta["dir"], "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=1, default=str)
 
     # ---------------------------------------------------------------- setup
     def _screen(self):
@@ -306,17 +317,77 @@ class App:
             return ServedScreen(a.serve, hello)
         return Screen(plain=a.plain, color=False if a.no_color else None)
 
-    def _session_dir(self):
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    def _session_dir(self, t_ns, make=True):
+        """<UTC time>_<what>_<pid>: the start of the run, or of the period a
+        rotated session opens ("{stamp}" with make=False: the template the
+        network client fills)."""
         what = (
             self.a.relay.replace(":", "_")
             if self.live
             else ("follow-" if self.follow else "replay-")
             + os.path.splitext(os.path.basename(self.a.replay))[0]
         )
-        d = os.path.join(self.a.out, f"{stamp}_{what}_{os.getpid()}")
-        os.makedirs(d, exist_ok=True)
+        when = stamp(t_ns) if make else "{stamp}"
+        d = os.path.join(self.a.out, f"{when}_{what}_{os.getpid()}")
+        if make:
+            os.makedirs(d, exist_ok=True)
         return d
+
+    def rotate(self, t_ns, new_dir):
+        """The session goes on in `new_dir` from the record at `t_ns`. Its
+        files are open before the old events.jsonl names them in its last
+        line, and only then are the old ones closed. Voice that has no line
+        yet (still talking, or waiting for its text) goes along with its WAV:
+        an utterance is never split between sessions."""
+        old_dir, old_meta = self.dir, self.meta
+        old_files = (self.feed_fh, self.jsonl_fh, self.tsv_fh)
+        old_abs, new_abs = os.path.abspath(old_dir), os.path.abspath(new_dir)
+        os.makedirs(new_dir, exist_ok=True)
+        files = self._open_files(new_dir)
+        err = self.screen.stderr_open(os.path.join(new_dir, "stderr.log"))
+        self.meta = self._meta(new_dir, rotated_utc=utc_iso(t_ns), prev_dir=old_abs)
+        self.write_meta(self.meta)
+        self._move_voice(old_dir, new_dir)
+        if self.logtail is not None:
+            for line in self.logtail.lines():
+                self.event("tvd", clean(line), "info")
+            self.logtail = source.LogTail(os.path.join(new_dir, "tvdump.log"))
+        text = f"session goes on in {new_abs}"
+        nxt = {"next_dir": new_abs, "next_events": os.path.join(new_abs, "events.jsonl")}
+        self.event("rotate", text, None, t_ns, {"type": "rotate", "text": text, "extra": nxt})
+        old_meta.update(end_utc=utc_iso(time.time_ns()), quit="rotated", next_dir=new_abs)
+        old_meta.update(self.totals())
+        self.write_meta(old_meta)
+        for fh in old_files:
+            fh.close()
+        self.dir = new_dir
+        self.feed_fh, self.jsonl_fh, self.tsv_fh = files
+        self.screen.stderr_to(err)
+        # the new session's first line: where it came from and which build
+        # wrote it; on the screen the old session's last line says it all
+        v = self.build["version"]
+        text = f"session goes on from {old_abs}"
+        prev = {"prev_dir": old_abs, "prev_events": os.path.join(old_abs, "events.jsonl")}
+        line = self.json_line(
+            {"type": "rotate", "text": text, "extra": dict(prev, version=v)}, t_ns
+        )
+        self.jsonl(line)
+        if self.a.json:
+            self.screen.feed([(line, "")], t_ns)
+        tag = [(f"{'rotate':<5} ", "blue"), (text, line_style("rotate"))]
+        self.log(tag + [(f"  [stv-watch {v}]", "dim")], t_ns)
+
+    def _move_voice(self, old_dir, new_dir):
+        """WAVs of utterances that are still waiting for their text."""
+        for utt in self.utts.values():
+            wav = utt.meta.get("wav")
+            if not wav:
+                continue
+            try:
+                os.makedirs(os.path.join(new_dir, "audio"), exist_ok=True)
+                os.replace(os.path.join(old_dir, wav), os.path.join(new_dir, wav))
+            except OSError:
+                pass
 
     def _on_table(self, payload, start, end):
         mid, entries = self.tables.feed(payload, start, end, self.framer.cur_session)
@@ -373,9 +444,9 @@ class App:
         line = self.json_line(rec, t_ns)
         self.jsonl(line)
         if self.a.json:
-            self.screen.feed([(line, "")])
+            self.screen.feed([(line, "")], t_ns)
         else:
-            self.screen.feed([(local(t_ns, self.tz) + " ", "dim")] + spans)
+            self.screen.feed([(local(t_ns, self.tz) + " ", "stamp")] + spans, t_ns)
         self.log(full or spans, t_ns, rec.get("steamid64", 0))
 
     def json_line(self, rec, t_ns):
@@ -456,6 +527,9 @@ class App:
         elif rtype == dumpfmt.LEAVE:
             c.state, c.state_ns = "left", t_ns
             self.event("conn", f"left: net_Disconnect x{f.get('sent')} ({f.get('why')})", "info")
+        elif rtype == dumpfmt.NEXT_FILE and self.live and f.get("path"):
+            # our network client rotated its journal: the session goes with it
+            self.rotate(t_ns, os.path.dirname(f["path"]))
 
     def handle_dg(self, dg):
         t = dg.t_ns
@@ -729,7 +803,7 @@ class App:
         ca.key = (ch.sid64, ca.index)
         utt = self.utts[ca.key] = Utt(ca.key, ch.sid64, t_ns)
         utt.first = ch.utterances == 0
-        self.screen.live_open(ca.key, self.progress(utt))
+        self.screen.live_open(ca.key, self.progress(utt), t_ns)
         if self.live_asr is not None:
             self.live_asr.open(ca.key)
 
@@ -765,7 +839,7 @@ class App:
         ch = self.channels[utt.sid]
         nick, spectator = self.speaker(utt, ch)
         out = (
-            [(local(utt.start_ns, self.tz) + " ", "dim"), self.VOICE_TAG]
+            [(local(utt.start_ns, self.tz) + " ", "stamp"), self.VOICE_TAG]
             + self.name_spans(nick, utt.sid)
             + self.slot_mark(utt)
             + self.spec_mark(spectator)
@@ -857,7 +931,7 @@ class App:
         ch = self.channels[utt.sid]
         t_end = utt.end_ns or meta.get("end_ns") or self.now
         lag = max(0.0, (self.now - (meta.get("closed_ns") or t_end)) / NS)
-        head = [(local(utt.start_ns, self.tz) + " ", "dim")]
+        head = [(local(utt.start_ns, self.tz) + " ", "stamp")]
         tail = utt.details + (
             "" if self.asr is None else f" asr {meta.get('asr_ms', 0) / 1000:.2f}s +{lag:.1f}s"
         )
@@ -931,19 +1005,24 @@ class App:
         )
         self.jsonl(line)
         if self.a.json:
-            self.screen.live_close(utt.key, [(line, "")])
+            self.screen.live_close(utt.key, [(line, "")], t_ns=utt.start_ns)
         else:
-            self.screen.live_close(utt.key, head + spans, cont=[("^ ", "dim")])
+            self.screen.live_close(utt.key, head + spans, [("^ ", "dim")], utt.start_ns)
         self.log(full, utt.start_ns, ch.sid64)
 
     # ---------------------------------------------------------------- status block
     BLOCK_LINES = 6
 
-    def block(self):
+    def clock(self):
+        return self.now or time.time_ns()
+
+    def block(self, now=None):
         """Fixed height: rule, connection, traffic, voice, recognizer, hint.
         By default what a watcher acts on; transport and recognizer internals
-        with --debug. Per-speaker details live in the speaker's line."""
-        now = self.now or time.time_ns()
+        with --debug. Per-speaker details live in the speaker's line. The
+        clock, `now`, has a style of its own: an --attach screen shows it in
+        its own zone."""
+        now = self.clock() if now is None else now
         dbg = self.a.debug
         c, tr = self.conn, self.traffic
         L = [[(f" stv-watch {self.build['version']} ", "bar")]]
@@ -978,7 +1057,7 @@ class App:
             head += [(f"  seen {len(self.nicks.by_account)} players", "dim")]
             if c.sessions > 1:
                 head += [(f"  sess {c.sessions}", "dim")]
-        head += [("  " + local(now, self.tz) + " " + tz_label(self.tz), "dim")]
+        head += [("  ", ""), (local(now, self.tz) + " " + tz_label(self.tz), "clock")]
         L.append(head)
 
         if tr.flowing:
@@ -1164,17 +1243,8 @@ class App:
     # ---------------------------------------------------------------- run
     def run(self):
         a = self.a
-        meta = {
-            "version": self.build["version"],
-            "build": self.build,
-            "args": vars(a),
-            "model": self.model,
-            "dir": self.dir,
-            "tz": tz_label(self.tz),
-            "pid": os.getpid(),
-            "start_utc": utc_iso(self.started_ns),
-        }
         self.version_due = True
+        self.write_meta(self.meta)
         self.screen.start(os.path.join(self.dir, "stderr.log"))
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(sig, self._on_signal)
@@ -1220,7 +1290,20 @@ class App:
                     return 2
             if self.live:
                 ip, port = a.relay.rsplit(":", 1)
-                cap = os.path.join(self.dir, "capture.tvd")
+                # absolute: the client runs in the package's directory
+                cap = os.path.abspath(os.path.join(self.dir, "capture.tvd"))
+                rot = []
+                if a.rotate:
+                    rot = [
+                        "--rotate",
+                        a.rotate,
+                        "--rotate-tz",
+                        tz_label(self.tz),
+                        "--rotate-dir",
+                        os.path.abspath(self._session_dir(0, make=False)),
+                        "--rotate-log",
+                        "tvdump.log",
+                    ]
                 self.client = source.LiveClient(
                     ip,
                     int(port),
@@ -1228,7 +1311,7 @@ class App:
                     os.path.join(self.dir, "tvdump.log"),
                     name=a.name,
                     duration_ms=a.duration_ms,
-                    extra=["--stv-version", self.build["version"]],
+                    extra=["--stv-version", self.build["version"]] + rot,
                 )
                 self.event(
                     "conn",
@@ -1260,7 +1343,7 @@ class App:
             self.rec.start()
             self.loop()
         finally:
-            self.shutdown(meta)
+            self.shutdown()
         # the network client gave up on its own: a standing refusal (alarm) or
         # an abnormal exit; the session holds what it saw until then
         if self.live and (self.quit_why == "alarm" or self.client_rc != 0):
@@ -1333,6 +1416,10 @@ class App:
                 continue
             self.held = None
             self.pacer.seen(t)
+            if self.rotation is not None and not self.pacer.skipping(t):
+                start = self.rotation.due(t)
+                if start is not None:
+                    self.rotate(t, self._session_dir(start))
             if item[0] == "dg":
                 self.handle_dg(item[1])
             else:
@@ -1404,16 +1491,17 @@ class App:
         if not force and t - self.last_render < 0.25 and not self.screen.pending:
             return
         self.last_render = t
+        now = self.clock()
         if self.screen.tty:
             for utt in self.utts.values():
-                self.screen.live_update(utt.key, self.progress(utt))
-            self.screen.draw(self.block())
+                self.screen.live_update(utt.key, self.progress(utt), utt.start_ns)
+            self.screen.draw(self.block(now), now)
         else:
             if not self.a.monitor and t - self.last_status_line >= self.a.status_every_ms / 1000:
                 self.last_status_line = t
-                for spans in self.block()[1:-1]:
-                    self.screen.feed([("status ", "dim")] + spans)
-            self.screen.draw(())
+                for spans in self.block(now)[1:-1]:
+                    self.screen.feed([("status ", "dim")] + spans, now)
+            self.screen.draw((), now)
 
     def loop(self):
         a = self.a
@@ -1438,7 +1526,62 @@ class App:
             ):
                 self.quit, self.quit_why = True, "end of recording"
 
-    def shutdown(self, meta):
+    def totals(self):
+        """meta.json's counters: totals since the run started, in a rotated
+        session's too."""
+        out = {
+            "traffic": {
+                "in": self.traffic.total_pkts,
+                "bytes": self.traffic.total_bytes,
+                "split_parts": self.traffic.total_splits,
+                "stops": self.traffic.stops,
+                "out": self.traffic.total_out,
+            },
+            "framer": dict(self.framer.counters),
+            "segments": dict(self.seg.counters),
+            "counters": dict(self.counters),
+            "conn": {
+                k.removesuffix("_ns") + "_utc" if k.endswith("_ns") else k: (
+                    (utc_iso(v) if v else None) if k.endswith("_ns") else v
+                )
+                for k, v in vars(self.conn).items()
+            },
+            "game_events": dict(self.game.counts),
+            "speakers": {
+                str(s): {
+                    "nick": ch.nick,
+                    "audio_ms": ch.frames * 20,
+                    "frames": ch.frames,
+                    "utterances": ch.utterances,
+                    "phrases": ch.finals,
+                }
+                for s, ch in self.channels.items()
+            },
+        }
+        if self.asr is not None:
+            out["asr"] = {
+                "state": self.asr.state,
+                "error": self.asr.error,
+                "load_ms": round(self.asr.load_s * 1000),
+                "audio_ms": round(self.asr.stats.total_audio * 1000),
+                "compute_ms": round(self.asr.stats.total_compute * 1000),
+                "jobs": self.asr.stats.jobs,
+            }
+        if self.live_asr is not None:
+            lv = self.live_asr
+            out["live_asr"] = {
+                "engine": self.a.live_asr,
+                "state": lv.state,
+                "error": lv.error,
+                "load_ms": round(lv.load_s * 1000),
+                "audio_ms": round(lv.stats.total_audio * 1000),
+                "compute_ms": round(lv.stats.total_compute * 1000),
+                "dropped_ms": round(lv.dropped_s * 1000),
+                "drops": lv.drops,
+            }
+        return out
+
+    def shutdown(self):
         try:
             rc = None
             if self.client is not None:
@@ -1486,71 +1629,20 @@ class App:
             if self.client is not None and self.a2s_before is not None:
                 ok, after, text = self.slot_check()
                 self.event("conn", text, "ok" if ok else "fail")
-                meta["slot_released"] = ok
-                meta["relay_before"] = self.a2s_before
-                meta["relay_with_us"] = self.with_us
-                meta["relay_after"] = after
-            meta.update(
-                {
-                    "end_utc": utc_iso(time.time_ns()),
-                    "quit": self.quit_why,
-                    "tvdump_rc": rc,
-                    "traffic": {
-                        "in": self.traffic.total_pkts,
-                        "bytes": self.traffic.total_bytes,
-                        "split_parts": self.traffic.total_splits,
-                        "stops": self.traffic.stops,
-                        "out": self.traffic.total_out,
-                    },
-                    "framer": dict(self.framer.counters),
-                    "segments": dict(self.seg.counters),
-                    "counters": self.counters,
-                    "conn": {
-                        k.removesuffix("_ns") + "_utc" if k.endswith("_ns") else k: (
-                            (utc_iso(v) if v else None) if k.endswith("_ns") else v
-                        )
-                        for k, v in vars(self.conn).items()
-                    },
-                    "game_events": dict(self.game.counts),
-                    "speakers": {
-                        str(s): {
-                            "nick": ch.nick,
-                            "audio_ms": ch.frames * 20,
-                            "frames": ch.frames,
-                            "utterances": ch.utterances,
-                            "phrases": ch.finals,
-                        }
-                        for s, ch in self.channels.items()
-                    },
-                }
+                self.meta["slot_released"] = ok
+                self.meta["relay_before"] = self.a2s_before
+                self.meta["relay_with_us"] = self.with_us
+                self.meta["relay_after"] = after
+            self.meta.update(
+                {"end_utc": utc_iso(time.time_ns()), "quit": self.quit_why, "tvdump_rc": rc}
             )
-            if self.asr is not None:
-                meta["asr"] = {
-                    "state": self.asr.state,
-                    "error": self.asr.error,
-                    "load_ms": round(self.asr.load_s * 1000),
-                    "audio_ms": round(self.asr.stats.total_audio * 1000),
-                    "compute_ms": round(self.asr.stats.total_compute * 1000),
-                    "jobs": self.asr.stats.jobs,
-                }
-            if self.live_asr is not None:
-                lv = self.live_asr
-                meta["live_asr"] = {
-                    "engine": self.a.live_asr,
-                    "state": lv.state,
-                    "error": lv.error,
-                    "load_ms": round(lv.load_s * 1000),
-                    "audio_ms": round(lv.stats.total_audio * 1000),
-                    "compute_ms": round(lv.stats.total_compute * 1000),
-                    "dropped_ms": round(lv.dropped_s * 1000),
-                    "drops": lv.drops,
-                }
+            self.meta.update(self.totals())
             self.event("done", f"{self.quit_why or 'stopped'} -> {self.dir}")
         finally:
-            with open(os.path.join(self.dir, "meta.json"), "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=1, default=str)
-            final = self.block() if self.screen.tty else []
-            self.screen.stop(final[:-1])
+            self.write_meta(self.meta)
+            now = self.clock()
+            final = self.block(now) if self.screen.tty else []
+            self.screen.stop(final[:-1], now)
             self.feed_fh.close()
             self.jsonl_fh.close()
             self.tsv_fh.close()

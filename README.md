@@ -160,6 +160,36 @@ Times are in UTC. `--tz` takes an IANA zone name for the screen and the files
 uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin
 ```
 
+An `--attach` screen takes its own `--tz`; without it, it shows the engine's zone.
+
+### Session rotation
+
+A run that lasts for weeks can start a new session directory on a schedule,
+so old sessions can be removed whole. `--rotate` takes a standard 5-field cron
+schedule (minute, hour, day of month, month, day of week), read in the `--tz`
+zone (UTC without it) and in the recording's time: a replay of a recording
+rotates where the live run would have. Off by default.
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin --rotate "0 6 * * *"   # 06:00 daily
+```
+
+Every file of the session goes on in the new directory, `capture.tvd` too; the
+connection to the relay stays. The new directory is made and its files opened
+first; then the old `events.jsonl` gets its last line, of type `rotate`, with
+the absolute paths of the new directory and its `events.jsonl`:
+
+```json
+{"t_utc": "2026-10-11T03:00:00.012Z", "t_local": "2026-10-11 06:00:00", "type": "rotate", "steamid64": 0, "nick": "", "text": "session goes on in /data/s/20261011T030000Z_RELAY_IP_27020_4242", "next_dir": "/data/s/20261011T030000Z_RELAY_IP_27020_4242", "next_events": "/data/s/20261011T030000Z_RELAY_IP_27020_4242/events.jsonl"}
+```
+
+A reader of `events.jsonl` that meets it opens `next_events` and reads on from
+its first line, a `rotate` line with `prev_dir`, `prev_events` and `version`.
+An utterance is never split: one still being spoken or recognized at the
+rotation is written, WAV and all, in the new session, with its real start time.
+A schedule cron would misread (not 5 fields) or that never fires is refused at
+the start.
+
 ### A headless engine and its screens
 
 `--serve SOCKET` runs the viewer without a terminal UI: it connects, records,
@@ -194,8 +224,8 @@ line. A client that does not keep up is dropped and reconnects; the engine never
 waits for a screen. The engine's stdout gets its finished feed lines (as
 `--plain` without status lines); a socket file left by an engine that died is
 taken over, one that a live engine serves is refused. A screen and an engine of
-different socket protocol versions (0.4.0 brought protocol 2) do not work
-together: the screen names both versions and exits.
+different socket protocol versions (0.4.0 brought protocol 2, 0.5.0 protocol 3)
+do not work together: the screen names both versions and exits.
 
 ### For scripts and agents
 
@@ -246,7 +276,8 @@ Each run writes a directory under `$XDG_DATA_HOME/stv-watch/sessions`
 (`~/.local/share/stv-watch/sessions` when `XDG_DATA_HOME` is unset; `--out`
 chooses another parent): `capture.tvd` (live only), `events.jsonl`, `feed.log`,
 `transcript.tsv`, `audio/` (a WAV per utterance), `meta.json`, `tvdump.log`
-(live only), `stderr.log`. See [docs/session-files.md](docs/session-files.md).
+(live only), `stderr.log`; with `--rotate` a directory per period. See
+[docs/session-files.md](docs/session-files.md).
 
 ## A server on an unknown build
 

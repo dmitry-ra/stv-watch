@@ -56,13 +56,13 @@ class Lines:
     def __init__(self):
         self.closed, self.fed = [], []
 
-    def live_open(self, key, spans):
+    def live_open(self, key, spans, t_ns=None):
         pass
 
-    def feed(self, spans):
+    def feed(self, spans, t_ns=None):
         self.fed.append(spans)
 
-    def live_close(self, key, spans, cont=()):
+    def live_close(self, key, spans, cont=(), t_ns=None):
         self.closed.append(spans)
 
 
@@ -451,7 +451,7 @@ def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine, mo
 
     engine.open, engine.delay = held, 0.3
     shutdown = App.shutdown
-    monkeypatch.setattr(App, "shutdown", lambda app, meta: (gate.set(), shutdown(app, meta)))
+    monkeypatch.setattr(App, "shutdown", lambda app: (gate.set(), shutdown(app)))
     rec = str(tmp_path / "demo.tvd")
     demo(rec)
     rc, session, lines, rows = replay(rec, tmp_path / "o", "--asr", "parakeet", "--drain-ms", "0")
@@ -468,10 +468,10 @@ def test_what_the_engine_has_not_done_by_the_drain_is_named(tmp_path, engine, mo
 class StubScreen(Lines):
     tty, pending = False, []
 
-    def draw(self, block):
+    def draw(self, block, t_ns=None):
         pass
 
-    def stop(self, final=()):
+    def stop(self, final=(), t_ns=None):
         pass
 
     def key(self):
@@ -489,7 +489,7 @@ def held_until_exit(engine, monkeypatch, delay):
 
     engine.open, engine.delay = held, delay
     shutdown = App.shutdown
-    monkeypatch.setattr(App, "shutdown", lambda app, meta: (gate.set(), shutdown(app, meta)))
+    monkeypatch.setattr(App, "shutdown", lambda app: (gate.set(), shutdown(app)))
 
 
 def voice_rows(session):
@@ -533,9 +533,9 @@ def test_a_stop_during_the_drain_ends_it_and_finishes_the_utterance_in_the_engin
     monkeypatch.setattr(
         App,
         "shutdown",
-        lambda app, meta: (
+        lambda app: (
             threading.Timer(0.2, app._on_signal, (signal.SIGTERM, None)).start(),
-            drain(app, meta),
+            drain(app),
         ),
     )
     t0 = time.monotonic()
@@ -625,7 +625,7 @@ def test_live_a_signal_waits_the_live_bound_then_the_utterance_in_the_engine(
         app.finish_utterance(sid, ca.start_ns + 10**9, "clock")
     app._on_signal(signal.SIGTERM, None)
     t0 = time.monotonic()
-    app.shutdown({})
+    app.shutdown()
     assert time.monotonic() - t0 < 1.8
     assert [r for _t, r in voice_rows(next(tmp_path.iterdir()))] == ["text"] + [
         "not recognized before exit"
