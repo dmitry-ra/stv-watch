@@ -16,10 +16,34 @@ dependencies = [
     "sherpa-onnx-core==1.13.8",
 ]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
     "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Games/Entertainment :: First Person Shooters",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
+keywords = [
+    "sourcetv",
+    "hltv",
+    "half-life-2",
+    "hl2dm",
+    "source-engine",
+    "voice-chat",
+    "speech-recognition",
+    "transcription",
+]
+
+[project.urls]
+Repository = "https://github.com/dmitry-ra/stv-watch"
+Documentation = "https://github.com/dmitry-ra/stv-watch#readme"
+Issues = "https://github.com/dmitry-ra/stv-watch/issues"
+Changelog = "https://github.com/dmitry-ra/stv-watch/releases"
 
 [project.scripts]
 stv-watch = "stvwatch.cli:main"
@@ -30,6 +54,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["stvwatch"]
+
+# The tests run from an unpacked sdist: they read tests/data and exercise tools/.
+[tool.hatch.build.targets.sdist]
+include = ["/stvwatch", "/tests", "/tools", "/docs", "/AGENTS.md"]
 
 [dependency-groups]
 dev = [
