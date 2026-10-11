@@ -379,3 +379,25 @@ def test_a_bad_password_source_stops_before_any_weights_are_fetched(tmp_path, mo
     argv = ["--relay", "192.0.2.1:27020", "--asr", "parakeet", "--out", str(tmp_path / "o")]
     assert cli.main(argv + ["--password-file", str(tmp_path / "missing")]) == 2
     assert fetched == [] and "password" in capsys.readouterr().err
+
+
+def test_a_meta_json_that_fails_at_the_end_leaves_no_done_that_says_otherwise(
+    tmp_path, monkeypatch
+):
+    out = tmp_path / "out"
+    app = app_for(
+        ["--replay", SAMPLE, "--speed", "0", "--json", "--out", str(out)], monkeypatch, tmp_path
+    )
+    real = App.write_meta
+
+    def write_meta(self, meta):
+        if "end_utc" in meta:
+            self.io_failed(OSError(28, "No space left on device"), "meta.json")
+            return
+        real(self, meta)
+
+    monkeypatch.setattr(App, "write_meta", write_meta)
+    assert app.run() == 5
+    (session,) = sessions(out)
+    done = [x for x in lines_of(session) if x["type"] == "done"]
+    assert all(fields(x)["rc"] == 5 for x in done)

@@ -1955,10 +1955,15 @@ class App:
             self.meta["relay_after"] = after
 
     def write_done(self):
-        """The session's last line says how the run ended, in fields."""
-        cls, cause = self.outcome or ("bug", "the run ended without a recorded reason")
-        label = self.quit_why or "stopped"
-        rc = CODES[cls]
+        """The session's last line says how the run ended, in fields. meta.json
+        goes first: when it cannot be written the run becomes io and the
+        session takes no more lines, so done never contradicts the exit code."""
+
+        def outcome():
+            cls, cause = self.outcome or ("bug", "the run ended without a recorded reason")
+            return cls, cause, self.quit_why or "stopped", CODES[cls]
+
+        cls, cause, label, rc = outcome()
         self.meta.update(
             {
                 "end_utc": utc_iso(time.time_ns()),
@@ -1972,6 +1977,8 @@ class App:
         try:
             self.meta.update(self.totals())
         finally:
+            self.write_meta(self.meta)
+            cls, cause, label, rc = outcome()
             text = f"{label} -> {self.dir}"
             extra = {
                 "quit": label,
@@ -1981,10 +1988,7 @@ class App:
                 "retrying": False,
                 "tvdump_rc": self.client_rc,
             }
-            try:
-                self.event("done", text, None, None, {"type": "done", "text": text, "extra": extra})
-            finally:
-                self.write_meta(self.meta)
+            self.event("done", text, None, None, {"type": "done", "text": text, "extra": extra})
 
     def close(self):
         now = self.clock()
