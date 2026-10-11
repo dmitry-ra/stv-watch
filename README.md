@@ -90,7 +90,7 @@ uv run stv-watch --replay capture.tvd --skip-ms 600000 --duration-ms 60000
 ```
 
 `--duration-ms` also bounds a live run: the viewer leaves the relay after that
-much wall time. `--follow` watches the `capture.tvd` of a live run while it is
+much wall time (`quit` in `meta.json` says `client left: time limit`). `--follow` watches the `capture.tvd` of a live run while it is
 being written, with no connection of its own, so more people can watch one
 connection; what the file held before only sets the state, and the feed starts
 with what comes next. It waits for more until `q` or a signal, also once the
@@ -257,12 +257,14 @@ the time the replay started, so the names do not sort in the order of the
 run. `--json` prints both `rotate` lines, so its output is the sessions'
 `events.jsonl` one after the other; the screen shows only the first.
 
-An utterance is never split: one still being spoken or recognized at the
-rotation is written, WAV and all, in the new session, with its real start time.
-A replay at `--speed 0` with `--asr` reads far ahead of the recognizer, so
-most voice then lands in later sessions than the ones it was spoken in; at a
-pace the recognizer keeps up with (in a test with a dozen speakers `--speed 4`
-was enough) the voice lands where the live run put it.
+A rotation cuts the stream of events (see For scripts and agents) at its
+moment: every line before it is in the old session, every line from it on in
+the new one, the same live and in a replay at any speed, with `--asr` or
+without. An utterance that starts before the cut and closes after it has its
+`talk` line in the old session and its `voice` line, `transcript.tsv` row and
+WAV in the new one; `utt` pairs them. `capture.tvd` is cut by the receive time
+of the packets at the same moment, so the last voice data of such an utterance
+is in the next file.
 
 Each session has its own `meta.json`, written when it starts and when it ends
 (`quit` is `rotated` for all but the last); its counters are totals since the
@@ -315,7 +317,7 @@ do not work together: the screen names both versions and exits.
 
 ### For scripts and agents
 
-`--json` prints one JSON object per line, flushed as each event happens; no
+`--json` prints one JSON object per line, flushed as it is written; no
 escape sequences, no status lines:
 
 ```sh
@@ -324,11 +326,18 @@ uv run stv-watch --relay RELAY_IP:27020 --json --events all
 
 ```json
 {"t_utc": "2025-10-07T09:40:00.200Z", "type": "chat", "steamid64": 76561201960265729, "nick": "alice", "text": "hello", "channel": "all", "ent": 1}
-{"t_utc": "2025-10-07T09:40:09.060Z", "type": "voice", "steamid64": 76561201960265729, "nick": "alice", "text": "see you", "result": "text", "continued": false, "spectator": false, "details": "1.0s/0.9s fr 50 plc 0 gap 0 33kb/s press 1 msg 17 -2 0% arr 17 p50 60 max 60ms +1.1s asr 0.24s +0.9s", "t_end_utc": "2025-10-07T09:40:11.050Z", "speech_ms": 820, "slot": 1, "verified": true}
+{"t_utc": "2025-10-07T09:40:09.060Z", "type": "talk", "steamid64": 76561201960265729, "nick": "alice", "text": "", "utt": 3, "start_utc": "2025-10-07T09:40:09.060Z", "continued": false, "slot": 1}
+{"t_utc": "2025-10-07T09:40:11.050Z", "type": "voice", "steamid64": 76561201960265729, "nick": "alice", "text": "see you", "utt": 3, "start_utc": "2025-10-07T09:40:09.060Z", "end_utc": "2025-10-07T09:40:11.050Z", "result": "text", "continued": false, "spectator": false, "details": "1.0s/0.9s fr 50 plc 0 gap 0 33kb/s press 1 msg 17 -2 0% arr 17 p50 60 max 60ms +1.1s asr 0.24s +0.9s", "speech_ms": 820, "slot": 1, "verified": true}
 ```
 
-A voice line is written when the utterance is recognized, so it can come after
-lines of later events; its `t_utc` is when the speaker started.
+Lines come in the order of `t_utc`, the moment of the event on the recording's
+clock (live, when its packet arrived), and a replay writes the same lines at
+any speed. An utterance is two lines with the same `utt`: `talk` when the
+player starts, `voice` when it closes (a second after his last voice data), with
+`start_utc`, `end_utc` and the text. With `--asr` the stream waits for that
+text: from the close of an utterance until it is recognized (live, usually
+under a second) the lines after it are held back. The screen shows no `talk`
+lines: there the player's voice line says `talking` until the text replaces it.
 
 The fields are `t_utc`, `t_local` (only with `--tz`), `type`, `steamid64`, `nick`,
 `text` and the extra fields of the type; the format is
@@ -349,7 +358,8 @@ mkdir -p ~/.pi/agent/skills && ln -s "$PWD/skills/stv-watch" ~/.pi/agent/skills/
 The skill finds the clone through the link, so it stays current with
 `git pull`.
 
-Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording),
+Exit codes: 0 when the run ended (q, a signal, `--duration-ms`, end of a recording;
+`meta.json` names which in `quit`),
 2 when the relay was refused before connecting, the command line is wrong, no
 engine serves the socket given to `--attach` or it speaks another protocol version,
 the socket of `--serve` is taken or the recognizer could not start (its weights

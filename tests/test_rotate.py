@@ -360,6 +360,9 @@ def test_live_the_session_follows_the_network_client_into_its_new_directory(tmp_
         for s in (old, new)
     }
     assert seen == {old.name: ["[tvdump] early", "before"], new.name: ["[tvdump] late", "after"]}
+    # live, the clock is the records': their lines carry their receive time
+    chats = [r for s in (old, new) for r in lines_of(s) if r["type"] == "chat"]
+    assert [r["t_utc"] for r in chats] == [iso(52), iso(65)]
     assert (
         meta_of(new)["prev_dir"] == str(old) and meta_of(new)["quit"] == "client left: time limit"
     )

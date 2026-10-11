@@ -53,7 +53,7 @@ def timeline():
     """09:40:00-09:41:15 UTC. alice: a phrase at 5 s, a 32 s monologue from
     20 s that --max-utt-ms 30000 cuts in two, and a phrase at 63 s that only
     the traffic after a gap closes; bob talks across the minute; the relay is
-    silent from 64 to 70 s; a chat line at 10, 40 and 72 s."""
+    silent from 64 to 70 s; a chat line at 10, 60 (on the minute) and 72 s."""
     plan = voice_plan(
         [
             (5.0, ALICE, tone(2.0)),
@@ -64,7 +64,7 @@ def timeline():
     )
     slots = {ALICE: 1, BOB: 2}
     timed = [(0.0, players)]
-    for k, (t, text) in enumerate(((10.0, "one"), (40.0, "two"), (72.0, "three"))):
+    for k, (t, text) in enumerate(((10.0, "one"), (60.0, "two"), (72.0, "three"))):
         timed.append(
             (
                 t,
@@ -119,10 +119,11 @@ def check_stream(sessions):
                 assert r["utt"] in talks and r["utt"] not in voices
                 tk, talk = talks[r["utt"]]
                 assert k - tk in (0, 1)
-                assert (r["steamid64"], r["start_utc"], r["continued"]) == (
+                assert (r["steamid64"], r["start_utc"], r["continued"], r["slot"]) == (
                     talk["steamid64"],
                     talk["start_utc"],
                     talk["continued"],
+                    talk["slot"],
                 )
                 assert r["start_utc"] <= r["end_utc"] <= r["t_utc"]
                 voices[r["utt"]] = r
@@ -163,6 +164,7 @@ def test_the_stream_is_in_time_order_and_each_talk_has_one_voice(rec, tmp_path, 
     assert len(sessions) == (2 if "--rotate" in extra else 1)
     lines = check_stream(sessions)
     said = [(r["type"], r["nick"], r["utt"], r["continued"]) for r in lines if "utt" in r]
+    assert {(r["nick"], r["slot"]) for r in lines if "utt" in r} == {("alice", 1), ("bob", 2)}
     assert said == [
         ("talk", "alice", 1, False),
         ("voice", "alice", 1, False),
@@ -184,6 +186,8 @@ def test_the_stream_is_in_time_order_and_each_talk_has_one_voice(rec, tmp_path, 
     assert by[("voice", 5)]["t_utc"] == iso(70.0) > stopped["t_utc"]
     if "--rotate" in extra:
         old, new = (lines_of(s) for s in sessions)
+        # what happens at the cut is the new session's
+        assert (new[1]["type"], new[1]["text"], new[1]["t_utc"]) == ("chat", "two", iso(60))
         assert ("talk", 4) in {(r["type"], r.get("utt")) for r in old}
         assert ("voice", 4) in {(r["type"], r.get("utt")) for r in new}
         bob = [r["audio"] for r in rows_of(sessions[1]) if r["nick"] == "bob"]
