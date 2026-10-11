@@ -169,8 +169,9 @@ A `rotate` line of a restart under `--keep-trying` also has `reason`
 `done` is written on every way out that leaves the process running long
 enough, a crash included. It is missing only when the process was killed
 (SIGKILL, the OOM killer) or `events.jsonl` itself could not be written; then
-`meta.json` has no `end_utc`. A run with `--keep-trying` that is waiting ends
-its `events.jsonl` with a `wait` line.
+`meta.json` has no `end_utc`. While a run with `--keep-trying` waits, its last
+line so far is the `wait` of the failed attempt; when that run ends, `done`
+still follows it.
 
 ## feed.log
 

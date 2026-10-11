@@ -1494,8 +1494,8 @@ class App:
             cause, text = refused
             self.event("conn", "refused: " + text, "fail")
             return "refused", "precheck", cause
-        if origin == "store" and not self.a2s_before["password"]:
-            pw = ""  # the store is for a relay that asks
+        if not (self.a2s_before or {}).get("password"):
+            pw = ""  # sent only to a relay that asks for one
         if self.model and self.asr is None and not self.load_asr():
             return None
         if self.client is not None:

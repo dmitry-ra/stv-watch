@@ -104,6 +104,25 @@ def test_the_right_password_joins_and_is_in_no_file_and_no_argv(tmp_path, via):
         assert C2S_CONNECT in f.read()
 
 
+@pytest.mark.parametrize("via", ["file", "env"])
+def test_a_given_password_is_not_sent_to_a_relay_that_asks_for_none(tmp_path, via):
+    pw_file = tmp_path / "pw"
+    pw_file.write_text(SECRET + "\n")
+    extra = ["--password-file", str(pw_file)] if via == "file" else []
+    env = {"STV_WATCH_PASSWORD": SECRET} if via == "env" else None
+    with FakeRelay() as r:
+        p = watch(r, tmp_path / "out", *extra, env=env)
+        try:
+            assert r.wait(lambda: r.connected() == 1)
+            p.send_signal(signal.SIGINT)
+            p.communicate(timeout=60)
+        finally:
+            if p.poll() is None:
+                p.kill()
+        assert p.returncode == 0
+        assert r.passwords == [""]
+
+
 def test_a_wrong_password_is_a_standing_refusal_that_ends_the_viewer(tmp_path):
     with FakeRelay(password="the-right-one") as r:
         p = watch(r, tmp_path, env={"STV_WATCH_PASSWORD": SECRET})
