@@ -273,7 +273,7 @@ epoch ns), `u16` length and the relay's address. Then records:
 | `0x15` | a `-2` split part was seen (JSON: `length`) |
 | `0x16` | we left (JSON: `why`, `sent` = net_Disconnect copies) |
 | `0x17` | `--rotate`: the last record; the recording goes on in the file `path` (JSON), absolute |
-| `0x18` | the game (JSON: `game`, `hl2dm` or `tf2`): the first record of every file, a rotated one too, stamped when the file was opened; a file without one (written before 0.7.0) is HL2DM |
+| `0x18` | the game (JSON: `game`, `hl2dm` or `tf2`): the first record of every file, a rotated one too, stamped when the file was opened; a file without one (written before 0.7.0) is replayed as `--game` says, by default HL2DM |
 
 `version` in a session start is the stv-watch version that wrote the record;
 the event records are JSON, so it needed no change of the format, and files

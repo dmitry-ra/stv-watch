@@ -77,6 +77,12 @@ def get(name):
         raise ValueError(f"unknown game {name!r} (games: {', '.join(NAMES)})") from None
 
 
+def titles():
+    """'A, B or C' of the games' titles, for the command line's description."""
+    t = [g.title for g in GAMES.values()]
+    return t[0] if len(t) == 1 else ", ".join(t[:-1]) + " or " + t[-1]
+
+
 def by_folder(folder):
     """A2S_INFO folder -> Game, or None for a game stv-watch does not know."""
     return next((g for g in GAMES.values() if g.folder == folder), None)

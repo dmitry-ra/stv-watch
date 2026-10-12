@@ -57,8 +57,7 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         prog="stv-watch",
         allow_abbrev=False,
-        description="Watch a SourceTV relay of Half-Life 2: Deathmatch or Team Fortress 2: "
-        "voice chat with an "
+        description=f"Watch a SourceTV relay of {games.titles()}: voice chat with an "
         "optional transcript, game chat and events, connection and traffic, live or from a "
         "recording.",
     )
@@ -119,7 +118,8 @@ def parse_args(argv=None):
         default=None,
         help=f"the relay's game (default {games.DEFAULT}); a relay of another game is refused "
         "before connecting. A recording names its own: --replay and --follow take it from "
-        "there (recordings from before 0.7.0 are hl2dm)",
+        f"there; one from before 0.7.0 names none and is {games.DEFAULT} unless --game says "
+        "otherwise",
     )
     ap.add_argument(
         "--password-file",

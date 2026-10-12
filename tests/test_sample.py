@@ -18,6 +18,7 @@ from make_sample import build, build_tf2
 from stvwatch import events as ge
 from stvwatch import version
 from stvwatch.net import dump
+from stvwatch.stream.recording import game_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAMPLE = os.path.join(HERE, "data", "sample.tvd")
@@ -79,6 +80,19 @@ def test_replay_of_the_sample_gives_the_expected_events(tmp_path, _make, sample,
         assert normal(lines) == f.read().splitlines()
     (session,) = list((tmp_path / "o").iterdir())
     assert (session / "events.jsonl").read_text(encoding="utf-8").splitlines() == lines
+
+
+def test_an_hl2dm_capture_with_its_game_record_replays_as_one_without(tmp_path):
+    """The HL2DM sample is from before the record; every capture since 0.7.0
+    starts with one."""
+    rec = str(tmp_path / "with_record.tvd")
+    build(rec, game="hl2dm")
+    assert (game_of(rec), game_of(SAMPLE)) == ("hl2dm", None)
+    lines = replay(tmp_path / "o", *ARGS, sample=rec)
+    with open(EXPECTED, encoding="utf-8") as f:
+        assert normal(lines) == f.read().splitlines()
+    (session,) = list((tmp_path / "o").iterdir())
+    assert json.loads((session / "meta.json").read_text())["game"] == "hl2dm"
 
 
 def test_replay_duration_bounds_what_is_shown_even_at_max_speed(tmp_path):

@@ -8,8 +8,9 @@ Format (little-endian, version 1):
   record:  u64 t_ns | u8 type | u32 len | data
 
 Every file, a rotated one too, starts with a GAME record naming the game
-profile, so a replay decodes it as the live run did; a file without one is
-HL2DM, the only game before the record existed.
+profile, so a replay decodes it as the live run did. A file without one was
+written before 0.7.0 (or by another tool): a replay takes the game of
+--game, by default HL2DM, the only game before the record existed.
 
 Times are UTC Unix-epoch nanoseconds (`time.time_ns()`), absolute. Datagram
 records carry raw bytes; event records carry UTF-8 JSON - events are rare, so
