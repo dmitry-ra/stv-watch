@@ -184,16 +184,35 @@ def write_entries(w, entries, max_entries=USERINFO_MAX, fixed_bits=0):
 
 
 def snap(data):
-    """b"SNAP" and a raw Snappy block of literals, 65536 bytes at most each."""
+    """b"SNAP" and a raw Snappy block: literals and 2-byte-offset copies of
+    repeats found greedily, so the input is not in the block as it is."""
     out, n = bytearray(b"SNAP"), len(data)
     while True:
         out.append((n & 0x7F) | (0x80 if n > 0x7F else 0))
         n >>= 7
         if not n:
             break
-    for at in range(0, len(data), 65536):
-        chunk = data[at : at + 65536]
-        out += bytes([61 << 2]) + (len(chunk) - 1).to_bytes(2, "little") + chunk
+    seen, lit, i = {}, bytearray(), 0
+
+    def flush():
+        if lit:
+            out.extend(bytes([61 << 2]) + (len(lit) - 1).to_bytes(2, "little") + lit)
+            lit.clear()
+
+    while i < len(data):
+        at = seen.get(data[i : i + 4])
+        seen[data[i : i + 4]] = i
+        if at is None or i - at > 0xFFFF or len(data) - i < 4:
+            lit.append(data[i])
+            i += 1
+            continue
+        k = 4
+        while k < 64 and i + k < len(data) and data[at + k] == data[i + k]:
+            k += 1
+        flush()
+        out.extend(bytes([(k - 1) << 2 | 2]) + (i - at).to_bytes(2, "little"))
+        i += k
+    flush()
     return bytes(out)
 
 

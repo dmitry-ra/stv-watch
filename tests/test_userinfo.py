@@ -89,8 +89,8 @@ def test_a_compressed_create_decodes_like_a_plain_one(pack):
     entries = userinfo_entries(
         (("alice", u(account(1)), account(1), 11, 0), ("bob", "BOT", 0, 12, 1))
     )
-    blob = lzss(b"abcabcabcabc" * 3)
-    assert userinfo.lzss(blob) == b"abcabcabcabc" * 3
+    blob = pack(b"abcabcabcabc" * 3)
+    assert userinfo.decompress(blob) == b"abcabcabcabc" * 3
     assert len(blob) < 8 + len(b"abc" * 12)  # back references, not literals only
     plain, packed = StringTables(), StringTables()
     assert feed(plain, msg(write_create, entries)) == feed(
