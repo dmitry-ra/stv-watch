@@ -335,7 +335,7 @@ def build_tf2(path):
         [(2, voice_payload(steamid64(2), n=5))],
     )
     dg(850, lambda w: chat_with_location(w, "bob", "sentry up", "BLU Base"))
-    dg(900, death(userid=12, attacker=11, weapon="scattergun", assister=14))
+    dg(900, death(userid=12, attacker=11, weapon="scattergun", assister=14, death_flags=0x81))
     dg(1000, death(userid=11, attacker=12, weapon="sniperrifle", customkill=1, assister=-1))
     dg(
         1100,

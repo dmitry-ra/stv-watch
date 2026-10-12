@@ -18,6 +18,7 @@ can be 0 too (Steam auth pending, a server without Steam): that is not a bot.
 import struct
 from typing import NamedTuple
 
+from ..net import codec
 from ..net.wire import BitReader
 
 STEAMID64_BASE = 76561197960265728
@@ -90,6 +91,14 @@ def lzss(blob):
     if len(out) != size:
         raise ValueError(f"lzss size {len(out)} != {size}")
     return bytes(out)
+
+
+def decompress(blob):
+    """NET_BufferToBufferDecompress: `LZSS` or `SNAP` and a raw Snappy block
+    (a TF2 relay's userinfo of 33 players came so); other data is taken as is."""
+    if blob[:4] == codec.SNAP_MAGIC:
+        return codec.uncompress(blob[4:])
+    return lzss(blob)
 
 
 def _read_cstring(br):
@@ -193,7 +202,7 @@ class StringTables:
                 t, touched = self._create(br)
             else:
                 t, touched = self._update(br)
-        except (EOFError, ValueError, IndexError):
+        except (EOFError, ValueError, IndexError, codec.SnappyError):
             self.errors += 1
             return mid, []
         if t is None or t.name != "userinfo":
@@ -217,7 +226,7 @@ class StringTables:
             return t0, []
         if compressed:
             br.read_ulong()  # uncompressed size, LZSS repeats it
-            data = lzss(br.read_bytes(br.read_ulong()))
+            data = decompress(br.read_bytes(br.read_ulong()))
             return t0, t0.parse(BitReader(data), count)
         return t0, t0.parse(br, count)
 

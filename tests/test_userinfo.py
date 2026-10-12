@@ -9,6 +9,7 @@ from helpers import (
     account,
     lzss,
     player_info,
+    snap,
     userinfo_entries,
     write_create,
     write_entries,
@@ -83,7 +84,8 @@ def test_fixed_size_user_data_is_read_by_its_bit_count():
     assert br.read_ubit(6) == 0x2A
 
 
-def test_a_compressed_create_decodes_like_a_plain_one():
+@pytest.mark.parametrize("pack", [lzss, snap])
+def test_a_compressed_create_decodes_like_a_plain_one(pack):
     entries = userinfo_entries(
         (("alice", u(account(1)), account(1), 11, 0), ("bob", "BOT", 0, 12, 1))
     )
@@ -92,10 +94,10 @@ def test_a_compressed_create_decodes_like_a_plain_one():
     assert len(blob) < 8 + len(b"abc" * 12)  # back references, not literals only
     plain, packed = StringTables(), StringTables()
     assert feed(plain, msg(write_create, entries)) == feed(
-        packed, msg(write_create, entries, compressed=lzss)
+        packed, msg(write_create, entries, compressed=pack)
     )
     assert packed.owner(0, 1) == Player(account(1), "alice", 11)
-    assert userinfo.lzss(b"raw bytes") == b"raw bytes"
+    assert userinfo.decompress(b"raw bytes") == b"raw bytes"
 
 
 def test_tables_are_numbered_per_connection_and_start_over():

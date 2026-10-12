@@ -183,6 +183,20 @@ def write_entries(w, entries, max_entries=USERINFO_MAX, fixed_bits=0):
             w.write_bytes(ud)
 
 
+def snap(data):
+    """b"SNAP" and a raw Snappy block of literals, 65536 bytes at most each."""
+    out, n = bytearray(b"SNAP"), len(data)
+    while True:
+        out.append((n & 0x7F) | (0x80 if n > 0x7F else 0))
+        n >>= 7
+        if not n:
+            break
+    for at in range(0, len(data), 65536):
+        chunk = data[at : at + 65536]
+        out += bytes([61 << 2]) + (len(chunk) - 1).to_bytes(2, "little") + chunk
+    return bytes(out)
+
+
 def lzss(data):
     """CLZSS::Compress, greedy: literals and back references of 2..16 bytes
     within 4 KiB, then the end mark."""
