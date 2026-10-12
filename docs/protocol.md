@@ -151,7 +151,11 @@ quoting the spawn count of the latest server info. At NEW it sends its client
 info with the SendTable CRC of the build. It promotes itself to FULL once world
 data flows. A map change starts the ladder again; the supervisor
 (`net/supervisor.py`) reconnects with a growing delay after a break, and polls
-slowly after a refusal that retrying will not change.
+slowly after a refusal that retrying will not change. The delay starts over
+only after a session that held FULL for 10 s: a TF2 relay, after a map change
+of its own, sent us back to CONNECTED a tenth of a second after FULL on every
+connect for 100 s, and a map change at the 2 s floor would have reconnected
+every 6 s.
 
 The first packet is the one a real game client sends after `B`, recorded from
 one: `tests/data/connected_reply.bin`, 480 bytes, sequence 1, flags
