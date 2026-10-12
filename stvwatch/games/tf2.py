@@ -36,6 +36,9 @@ GAME = Game(
     title="Team Fortress 2",
     folder="tf",
     server_app=232250,
+    server_binary="srcds_linux64",
+    bin_dir="bin/linux64",
+    test_map="ctf_2fort",
     module="stvwatch/games/tf2.py",
     # g_SendTableCRC of engine_srv.so of the build (tools/read_crc.py)
     crc_by_build={

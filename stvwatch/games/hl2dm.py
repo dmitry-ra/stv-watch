@@ -46,6 +46,9 @@ GAME = Game(
     title="Half-Life 2: Deathmatch",
     folder="hl2mp",
     server_app=232370,
+    server_binary="srcds_linux",
+    bin_dir="bin",
+    test_map="dm_lockdown",
     module="stvwatch/games/hl2dm.py",
     # g_SendTableCRC of engine_srv.so of the build (tools/read_crc.py)
     crc_by_build={

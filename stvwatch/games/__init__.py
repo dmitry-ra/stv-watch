@@ -5,8 +5,9 @@ on the wire) and voice are the engine's and the same for every game here. A
 profile holds the rest: the SendTable CRC of each server build, the order of
 user message registration (ids are that order, no names travel), the chat
 format names, the teams, the game's own player_death fields, who may not
-hear whom, the userinfo we connect with, and the folder A2S_INFO reports, by
-which a relay of another game is told apart before connecting.
+hear whom, the userinfo we connect with, the folder A2S_INFO reports (by
+which a relay of another game is told apart before connecting) and how to run
+a dedicated server of the game for the tools.
 
 There is no default game below the command line: every consumer takes a
 profile, so a caller that forgot it fails instead of decoding as HL2DM.
@@ -36,6 +37,9 @@ class Game:
     title: str
     folder: str  # A2S_INFO folder, the server's -game directory
     server_app: int  # SteamCMD app of the dedicated server
+    server_binary: str  # its launcher, in the install's root
+    bin_dir: str  # where that launcher's engine_srv.so lives
+    test_map: str  # a stock map for a local server
     module: str  # where crc_by_build lives, for the refusal's hint
     crc_by_build: dict
     user_messages: tuple

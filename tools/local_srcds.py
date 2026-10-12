@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """A loopback-only srcds with SourceTV, for exercising the client offline.
 
-    uv run python tools/local_srcds.py SRCDS_DIR [LOG] [--game tf2]
+    uv run python tools/local_srcds.py SRCDS_DIR [LOG] [--game GAME]
 
-SRCDS_DIR is a dedicated server install of Half-Life 2: Deathmatch (SteamCMD
-app 232370, the directory holding srcds_linux) or, with --game tf2, of Team
-Fortress 2 (app 232250, srcds_linux64). The relay listens on 127.0.0.1:27920;
+SRCDS_DIR is a dedicated server install of the game (its profile in
+stvwatch/games/ names the SteamCMD app, the launcher and a stock map; --help
+lists them). The relay listens on 127.0.0.1:27920;
 connect with `stv-watch --relay 127.0.0.1:27920 --allow-last-slot [--game
 tf2]`. Bots: `hl2mp_bot_add` or `tf_bot_add N` at the srcds console, or cmd().
 
@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 
+from stvwatch import games
 from stvwatch.net import a2s
 
 
@@ -90,11 +91,11 @@ def _kill(handle):
             pass
 
 
-# game -> (-game folder, launcher, its library directory, a stock map)
-GAMES = {
-    "hl2dm": ("hl2mp", "srcds_linux", "bin", "dm_lockdown"),
-    "tf2": ("tf", "srcds_linux64", "bin/linux64", "ctf_2fort"),
-}
+def server_apps():
+    return "; ".join(
+        f"{g.name}: SteamCMD app {g.server_app}, {g.server_binary}, map {g.test_map}"
+        for g in games.GAMES.values()
+    )
 
 
 class LocalSrcds:
@@ -107,10 +108,12 @@ class LocalSrcds:
         game_map=None,
         maxplayers=4,
         extra=(),
-        game="hl2dm",
+        *,
+        game,
     ):
-        self.folder, self.binary, self.libdir, stock_map = GAMES[game]
-        game_map = game_map or stock_map
+        g = games.get(game)
+        self.folder, self.binary, self.libdir = g.folder, g.server_binary, g.bin_dir
+        game_map = game_map or g.test_map
         self.srv_dir = srv_dir
         self.log_path = log_path
         self.port = port
@@ -267,9 +270,9 @@ class LocalSrcds:
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="loopback srcds with SourceTV")
-    ap.add_argument("srv_dir")
+    ap.add_argument("srv_dir", help="dedicated server install: " + server_apps())
     ap.add_argument("log", nargs="?", default="srcds.log")
-    ap.add_argument("--game", choices=sorted(GAMES), default="hl2dm")
+    ap.add_argument("--game", choices=games.NAMES, default=games.DEFAULT)
     ap.add_argument("--map", default=None)
     a = ap.parse_args()
     with LocalSrcds(a.srv_dir, log_path=a.log, game=a.game, game_map=a.map) as s:

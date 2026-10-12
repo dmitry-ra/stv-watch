@@ -12,6 +12,8 @@ import time
 
 import pytest
 
+from stvwatch import games
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(os.path.dirname(HERE), "tools")
 sys.path.insert(0, TOOLS)
@@ -49,11 +51,23 @@ def start_stand_in(tmp_path):
     exe = tmp_path / "srcds_linux"
     exe.write_text(STAND_IN)
     exe.chmod(0o755)
-    s = local_srcds.LocalSrcds(str(tmp_path), log_path=str(tmp_path / "log")).start()
+    s = local_srcds.LocalSrcds(str(tmp_path), log_path=str(tmp_path / "log"), game="hl2dm").start()
     end = time.monotonic() + 10
     while len(tree(s.proc.pid)) < 2 and time.monotonic() < end:
         time.sleep(0.05)
     return s
+
+
+@pytest.mark.parametrize("name", games.NAMES)
+def test_a_local_server_is_the_one_its_game_profile_names(tmp_path, name):
+    g = games.get(name)
+    s = local_srcds.LocalSrcds(str(tmp_path), game=name)
+    assert (s.folder, s.binary, s.libdir, s.game_map) == (
+        g.folder,
+        g.server_binary,
+        g.bin_dir,
+        g.test_map,
+    )
 
 
 def stop_and_check(s, monkeypatch):

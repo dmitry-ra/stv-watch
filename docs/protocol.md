@@ -45,15 +45,28 @@ signon ladder, the string tables, game events (described on the wire by
 - `user_messages`: the names of user message ids. No table of names travels:
   an id is the index of the message's `Register()` call in the game library,
   and the games register different lists (HL2DM 35, TF2 86), so HudMsg is id
-  6 in one and 21 in the other. `tools/read_usermessages.py SRCDS_DIR --game
-  tf2` reads the order from `server_srv.so` of a dedicated server (the string
+  6 in one and 21 in the other. `uv run python tools/read_usermessages.py
+  SRCDS_DIR --game tf2` reads the order from `server_srv.so` of a dedicated server (the string
   arguments of `RegisterUserMessages()`, `RegisterHapticMessages()` and
   `RegisterScriptMessages()`, in the order the code loads them); for both
   games it matches the lists of the public Source SDK 2013;
 - `chat_prefix`: SayText2 formats of players' chat (`HL2MP_Chat_*`,
-  `TF_Chat_*`; `TF_Chat_Team_Loc` carries a third parameter, the place);
-- `teams` (TF2: 2 RED, 3 BLU), and for TF2's `player_death` the `death_flags`
-  bit of a faked death and the names of `customkill` values.
+  `TF_Chat_*`; a `_Loc` format carries a third parameter, the place, in
+  every game alike);
+- `teams` (TF2: 2 RED, 3 BLU);
+- `death_details`: the game's own `player_death` fields as text and extra
+  fields of the `death` line (TF2: the assister, `customkill` names, the
+  `death_flags` bit of a faked death; HL2DM has none);
+- `unheard`: whose voice the players may not hear (both games: a spectator's,
+  unless `sv_alltalk` is 1);
+- `userinfo`: the cvars of `net_SetConVar` at CONNECTED (TF2 sends the same
+  set as HL2DM);
+- `server_app`, `server_binary`, `bin_dir`, `test_map`: how the tools below
+  install and start a dedicated server of the game.
+
+Below the command line every part of stv-watch takes the profile as an
+argument and has no default of its own: `--game` defaults to `hl2dm` in the
+argument parsers only, so a forgotten profile is an error, never HL2DM.
 
 TF2's `player_death` has 26 keys; besides those HL2DM has, stv-watch reads
 `assister` (a userid, -1 for none), `customkill` and `death_flags`. The game
@@ -203,7 +216,7 @@ build, stv-watch refuses relays on it until its CRC is added. To get it:
    HL2DM, 232250 for TF2; TF2's is about 15 GB, and an update of an install
    fetches only what changed):
    `steamcmd +force_install_dir /path/to/srcds +login anonymous +app_update 232250 +quit`
-2. Run `python3 tools/read_crc.py /path/to/srcds --game tf2` (`--game hl2dm`
+2. Run `uv run python tools/read_crc.py /path/to/srcds --game tf2` (`--game hl2dm`
    is the default). It starts the server on loopback (LAN only, no SourceTV,
    `-nobreakpad`), waits for the map to load and reads `g_SendTableCRC` from
    the memory of `engine_srv.so` (the symbol's offset is taken with
@@ -213,7 +226,7 @@ build, stv-watch refuses relays on it until its CRC is added. To get it:
    build number is what A2S_INFO reports as `version` for a server of that
    build (stv-watch's refusal names it), and `PatchVersion` in the install's
    `GAME/steam.inf`.
-4. Run `python3 tools/read_usermessages.py /path/to/srcds --game tf2` and
+4. Run `uv run python tools/read_usermessages.py /path/to/srcds --game tf2` and
    compare the list with `user_messages` of the profile: an update that adds
    a message in the middle moves every id after it, and chat would be read
    as another message (a misparse, not a wrong line: every body is checked
