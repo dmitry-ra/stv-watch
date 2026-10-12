@@ -102,7 +102,7 @@ def cut(src, t_from, t_to):
             )
             if p is None:
                 continue
-            bot = p.friends_id == 0
+            bot = p.bot
             acc = 0 if bot else fake(p.friends_id)
             name = f"bot{p.userid}" if bot else f"player{accounts[p.friends_id]}"
             new = player_info(name, "BOT" if bot else f"[U:1:{acc}]", acc, p.userid)
