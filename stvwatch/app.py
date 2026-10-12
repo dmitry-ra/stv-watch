@@ -19,7 +19,7 @@ from itertools import pairwise
 import numpy as np
 
 from . import events as gamevents
-from . import passwords, rotate, source, version
+from . import games, passwords, rotate, source, version
 from .asr import build_live
 from .asr import recognizer as asrmod
 from .asr import vad as vadmod
@@ -292,7 +292,8 @@ class App:
         self.audio = {}
         self.seg = Segmenter(close_s=CLOSE_S)
         self.counters = {"payload_bad": 0, "phrases": 0, "nospeech": 0, "utterances": 0, "wav": 0}
-        self.game = gamevents.GameEvents(a.event_types)
+        self.profile = games.get(getattr(a, "game", None))
+        self.game = gamevents.GameEvents(a.event_types, self.profile)
         self.framer = Framer(
             keep_fates=False,
             on_table=self._on_table,
@@ -370,6 +371,7 @@ class App:
         return {
             "version": self.build["version"],
             "build": self.build,
+            "game": self.profile.name,
             "args": vars(self.a),
             "model": self.model,
             "dir": d,
@@ -1402,13 +1404,15 @@ class App:
             self.with_us = players
 
     def precheck(self, have_password):
-        """Refuse a relay we must not take (client.precheck: silent, unknown
-        build, password, Steam login, no free slot left for anyone else after
-        us). -> '' or (cause, the text of the conn line)."""
+        """Refuse a relay we must not take (client.precheck: silent, another
+        game, unknown build, password, Steam login, no free slot left for
+        anyone else after us). -> '' or (class, cause, the text of the conn
+        line)."""
         ok, why, facts = source.client.precheck(
             self.a.relay,
             allow_last_slot=self.a.allow_last_slot,
             have_password=have_password,
+            profile=self.profile,
         )
         self.conn.players, self.conn.max_players = (
             facts["spectators_before"],
@@ -1419,29 +1423,55 @@ class App:
         if ok:
             self.a2s_before = facts  # the slot check after leaving
             return ""
+        if why.startswith("wrong_game "):
+            folder = why.split(" ", 1)[1]
+            other = games.by_folder(folder)
+            if other is None:
+                return (
+                    "refused",
+                    f"relay serves {folder}",
+                    (
+                        f"relay serves the game {folder!r}, which stv-watch does not know "
+                        f"(games: {', '.join(g.name for g in games.GAMES.values())})"
+                    ),
+                )
+            cause = f"relay serves {other.name}, not {self.profile.name}"
+            return "usage", cause, f"{cause} (A2S folder {folder}): use --game {other.name}"
         if why.startswith("unknown_build "):
             build = why.split(" ", 1)[1]
-            return f"unknown server build {build}", (
-                f"relay runs server build {build}, whose SendTable CRC this version does "
-                "not know; guessing it would cost the relay a connection per guess. "
-                "Extract it with tools/read_crc.py and add it to stvwatch/net/builds.py "
-                '(docs/protocol.md, "Server builds")'
+            return (
+                "refused",
+                f"unknown server build {build}",
+                (
+                    f"relay runs {self.profile.name} server build {build}, whose SendTable CRC "
+                    "this version does not know; guessing it would cost the relay a connection "
+                    "per guess. Extract it with tools/read_crc.py and add it to "
+                    f'{self.profile.module} (docs/protocol.md, "Server builds")'
+                ),
             )
         if why == "few_free_slots":
             slots = f"relay slots {facts['spectators_before']}/{facts['max_spectators']}"
-            return f"{slots}, no free slot after us", (
-                f"{slots}: no free slot would remain "
-                "after us (use --allow-last-slot to take the last one)"
+            return (
+                "refused",
+                f"{slots}, no free slot after us",
+                (
+                    f"{slots}: no free slot would remain "
+                    "after us (use --allow-last-slot to take the last one)"
+                ),
             )
         if why == "password":
-            return "relay has tv_password, none given", (
-                "relay has tv_password (A2S visibility=1); give it with --password-file, "
-                f"{passwords.ENV} or a line 'HOST:PORT PASSWORD' in {passwords.store_path()}"
+            return (
+                "refused",
+                "relay has tv_password, none given",
+                (
+                    "relay has tv_password (A2S visibility=1); give it with --password-file, "
+                    f"{passwords.ENV} or a line 'HOST:PORT PASSWORD' in {passwords.store_path()}"
+                ),
             )
         if why == "relay_silent":
-            return "relay does not answer A2S_INFO", "relay does not answer A2S_INFO"
+            return "refused", "relay does not answer A2S_INFO", "relay does not answer A2S_INFO"
         text = why.replace("auth_", "relay does not take anonymous login, auth protocol ")
-        return text, text
+        return "refused", text, text
 
     def slot_check(self):
         """The slot rule (client.slot_freed): fewer spectators after we
@@ -1590,9 +1620,9 @@ class App:
         if self.quit:
             return None
         if refused:
-            cause, text = refused
+            klass, cause, text = refused
             self.event("conn", "refused: " + text, "fail")
-            return "refused", "precheck", cause
+            return klass, "precheck", cause
         if not (self.a2s_before or {}).get("password"):
             pw = ""  # sent only to a relay that asks for one
         if self.model and self.asr is None and not self.load_asr():
@@ -1635,7 +1665,7 @@ class App:
             os.path.join(d, "tvdump.log"),
             name=a.name,
             duration_ms=duration_ms,
-            extra=["--stv-version", self.build["version"]] + rot,
+            extra=["--stv-version", self.build["version"], "--game", self.profile.name] + rot,
             password=pw,
         )
         self.event(

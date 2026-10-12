@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Server build -> SendTable CRC, and the permanent/temporary failure split.
+"""(game, server build) -> SendTable CRC, and the permanent/temporary failure split.
 
 The CRC is a property of the build, and the build is public in A2S_INFO
 `version`, so the client never has to guess it. An unknown build is an alarm
 for a human (how to extract a new CRC: docs/protocol.md, "Server builds"), not a
 reason to try candidates: every wrong guess is a fresh connection on the relay.
+The tables are in the game profiles (stvwatch/games/).
 """
 
-# Extracted from engine_srv.so of the matching build (g_SendTableCRC).
-CRC_BY_BUILD = {
-    "10889068": 0xD9B6082D,
-    "9540945": 0x35B19FD9,
-}
+from .. import games
 
 PERMANENT = "permanent"
 TEMPORARY = "temporary"
@@ -19,7 +16,7 @@ TEMPORARY = "temporary"
 # Reasons that will not change until someone edits the server or this table.
 # Matched as substrings, lower-case: the protocol carries text, not codes.
 _PERMANENT_MARKS = (
-    "unknown build",  # ours: not in CRC_BY_BUILD
+    "unknown build",  # ours: not in the game's crc_by_build
     "different class tables",  # wrong CRC
     "rejectoldversion",
     "rejectnewversion",
@@ -38,13 +35,18 @@ class UnknownBuild(Exception):
     pass
 
 
-def crc_for(build):
+def known(build, game=None):
+    return str(build) in games.get(game).crc_by_build
+
+
+def crc_for(build, game=None):
+    g = games.get(game)
     try:
-        return CRC_BY_BUILD[str(build)]
+        return g.crc_by_build[str(build)]
     except KeyError:
         raise UnknownBuild(
-            "unknown build %s: add its CRC to stvwatch/net/builds.py, see "
-            "docs/protocol.md" % build
+            "unknown build %s of %s: add its CRC to %s, see docs/protocol.md"
+            % (build, g.name, g.module)
         ) from None
 
 

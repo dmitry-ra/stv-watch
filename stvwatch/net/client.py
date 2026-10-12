@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """The one way to put a live client on a relay.
 
-    ok, why, facts = precheck("IP:PORT", game="IP:PORT")
+    ok, why, facts = precheck("IP:PORT", game="IP:PORT", profile=games.get("tf2"))
     c = LiveClient("IP", PORT, "x.tvd", "x.log", name="stvwatch", duration_ms=0)
     c.start(); ...; rc = c.stop()
     released, after = slot_released("IP:PORT", facts["spectators_before"])
 
 Rules enforced here rather than by each caller:
   * precheck before connecting, nothing sent that takes a slot: the relay
-    answers A2S, has no tv_password unless we were given one, runs a build
-    with a known CRC, accepts
+    answers A2S, serves the game of our profile (A2S folder), has no
+    tv_password unless we were given one, runs a build with a known CRC, accepts
     anonymous login (getchallenge auth protocol), and keeps a slot free for
     real spectators after we join (unless allow_last_slot); optionally the
     game server has humans;
@@ -29,6 +29,7 @@ import subprocess
 import sys
 import time
 
+from .. import games
 from . import a2s, builds, handshake, wire
 
 # The child imports this same package, whatever the caller's cwd.
@@ -77,9 +78,11 @@ def precheck(
     info=None,
     auth=None,
     have_password=False,
+    profile=None,
 ):
     """-> (ok, why, facts). `why` is a short reason word (+ detail)."""
     info, auth = info or safe_info, auth or auth_proto
+    profile = profile or games.get(None)
     gi = info(game) if game else None
     ri = info(relay)
     facts = {
@@ -90,10 +93,13 @@ def precheck(
         "max_spectators": None if ri is None else ri["max_players"],
         "version": None if ri is None else ri["version"],
         "password": None if ri is None else bool(ri["visibility"]),
+        "folder": None if ri is None else ri["folder"],
     }
     if ri is None:
         return False, "relay_silent", facts
-    if str(ri["version"]) not in builds.CRC_BY_BUILD:
+    if ri["folder"] != profile.folder:
+        return False, "wrong_game %s" % ri["folder"], facts
+    if not builds.known(ri["version"], profile.name):
         return False, "unknown_build %s" % ri["version"], facts
     if ri["visibility"] and not have_password:
         return False, "password", facts

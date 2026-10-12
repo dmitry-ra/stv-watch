@@ -14,7 +14,7 @@ recorded as a RECONNECT record so the gap is explained rather than mysterious.
 import socket
 import time
 
-from .. import version
+from .. import games, version
 from . import a2s, builds, handshake, wire
 from . import dump as dumpfmt
 from . import session as sess
@@ -25,7 +25,8 @@ class Options:
         self.ip = kw.get("ip", "127.0.0.1")
         self.port = kw.get("port", 27020)
         self.name = kw.get("name", "tvdump")
-        # None = auto: build from the relay's A2S_INFO, CRC from builds.py.
+        self.game = kw.get("game") or games.DEFAULT  # the profile's name
+        # None = auto: build from the relay's A2S_INFO, CRC from the profile.
         self.build = kw.get("build")
         self.password = kw.get("password", "")
         self.crc = kw.get("crc")  # build-specific; 0 is rejected
@@ -63,6 +64,7 @@ class Supervisor:
         self.dump = dumpfmt.DumpWriter(
             dump_path,
             self.endpoint,
+            game=opt.game,
             fsync_ms=opt.fsync_ms,
             next_path=opt.next_path,
             on_next=opt.on_next,
@@ -182,7 +184,7 @@ class Supervisor:
                 return self._resolve_failed(attempt, "a2s: %s" % e)
         if crc is None:
             try:
-                crc = builds.crc_for(build)
+                crc = builds.crc_for(build, self.opt.game)
             except builds.UnknownBuild as e:
                 return self._resolve_failed(attempt, str(e))
         if (build, crc) != (self.build, self.crc):

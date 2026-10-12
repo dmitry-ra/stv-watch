@@ -7,6 +7,7 @@ account, so no SteamID here belongs to a person.
 
 import struct
 
+from stvwatch.games.hl2dm import GAME as HL2DM
 from stvwatch.net import dump, messages, netchan, wire
 from stvwatch.stream import streamevents as se
 from stvwatch.stream.userinfo import STEAMID64_BASE
@@ -63,7 +64,7 @@ def chat(w, nick, text, fmt="HL2MP_Chat_All", ent=1):
     """A SayText2 chat line as the game sends it."""
     usermessage(
         w,
-        se.USER_MESSAGES.index("SayText2"),
+        HL2DM.user_messages.index("SayText2"),
         body(
             lambda b: (
                 b.write_byte(ent),

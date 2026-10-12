@@ -1,12 +1,14 @@
 """Write tests/data/sample.tvd: a synthetic recording with one of every game
 event, voice messages around them, a split packet, a lost sequence gap and the
-session lifecycle records the network client writes.
+session lifecycle records the network client writes; and
+tests/data/sample_tf2.tvd, the same for Team Fortress 2.
 
-    uv run python tests/make_sample.py [OUT.tvd]
+    uv run python tests/make_sample.py [OUT.tvd [OUT_TF2.tvd]]
 
-The recording is built only from the client's own writers, so it stays in step
-with the wire format; tests/data/sample.events.jsonl is what a replay of it
-gives (tests/test_sample.py checks both).
+The recordings are built only from the client's own writers, so they stay in
+step with the wire format; tests/data/sample.events.jsonl and
+sample_tf2.events.jsonl are what a replay of them gives (tests/test_sample.py
+checks both).
 """
 
 import json
@@ -31,6 +33,8 @@ from helpers import (
     write_voice,
 )
 
+from stvwatch.games.hl2dm import GAME as HL2DM
+from stvwatch.games.tf2 import GAME as TF2
 from stvwatch.net import dump, netchan, wire
 from stvwatch.stream import streamevents as se
 
@@ -58,9 +62,58 @@ def bits_into(w, src):
         w.write_one_bit(src.get_bytes()[i >> 3] >> (i & 7))
 
 
-def event_list(w):
+# TF2's own descriptors, keys and types as a relay of build 11087207 sends them
+# (types: 3 long)
+TF2_DEATH_KEYS = [
+    (4, "userid"),
+    (3, "victim_entindex"),
+    (3, "inflictor_entindex"),
+    (4, "attacker"),
+    (1, "weapon"),
+    (4, "weaponid"),
+    (3, "damagebits"),
+    (4, "customkill"),
+    (4, "assister"),
+    (1, "weapon_logclassname"),
+    (4, "stun_flags"),
+    (4, "death_flags"),
+    (6, "silent_kill"),
+    (4, "playerpenetratecount"),
+    (1, "assister_fallback"),
+    (4, "kill_streak_total"),
+    (4, "kill_streak_wep"),
+    (4, "kill_streak_assist"),
+    (4, "kill_streak_victim"),
+    (4, "ducks_streaked"),
+    (4, "duck_streak_total"),
+    (4, "duck_streak_assist"),
+    (4, "duck_streak_victim"),
+    (6, "rocket_jump"),
+    (3, "weapon_def_index"),
+    (4, "crit_type"),
+]
+TF2_EVENTS = {
+    3: ("player_death", TF2_DEATH_KEYS),
+    4: EVENTS[4],
+    5: (
+        "player_team",
+        [
+            (4, "userid"),
+            (5, "team"),
+            (5, "oldteam"),
+            (6, "disconnect"),
+            (6, "autoteam"),
+            (6, "silent"),
+            (1, "name"),
+        ],
+    ),
+    6: EVENTS[6],
+}
+
+
+def event_list(w, events=EVENTS):
     lst = wire.BitWriter()
-    for eid, (name, keys) in EVENTS.items():
+    for eid, (name, keys) in events.items():
         lst.write_ubit(eid, 9)
         lst.write_string(name)
         for t, k in keys:
@@ -68,18 +121,20 @@ def event_list(w):
             lst.write_string(k)
         lst.write_ubit(0, 3)
     w.write_ubit(se.SVC_GAMEEVENTLIST, wire.NETMSG_TYPE_BITS)
-    w.write_ubit(len(EVENTS), 9)
+    w.write_ubit(len(events), 9)
     w.write_ubit(lst.nbits(), 20)
     bits_into(w, lst)
 
 
-def game_event(w, eid, **vals):
+def game_event(w, eid, events=EVENTS, **vals):
     ev = wire.BitWriter()
     ev.write_ubit(eid, 9)
-    for t, k in EVENTS[eid][1]:
-        v = vals[k]
+    for t, k in events[eid][1]:
+        v = vals.get(k, "" if t == 1 else 0)
         if t == 1:
             ev.write_string(v)
+        elif t == 3:
+            ev.write_long(v)
         elif t == 4:
             ev.write_ubit(v & 0xFFFF, 16)
         elif t == 5:
@@ -91,34 +146,34 @@ def game_event(w, eid, **vals):
     bits_into(w, ev)
 
 
-def text_msg(w, dest, msg, *params):
+def text_msg(w, dest, msg, *params, game=HL2DM):
     def fill(b):
         b.write_byte(dest)
         b.write_string(msg)
         for p in params:
             b.write_string(p)
 
-    usermessage(w, se.USER_MESSAGES.index("TextMsg"), body(fill))
+    usermessage(w, game.user_messages.index("TextMsg"), body(fill))
 
 
 def say_text(w, ent, text):
     usermessage(
         w,
-        se.USER_MESSAGES.index("SayText"),
+        HL2DM.user_messages.index("SayText"),
         body(lambda b: (b.write_byte(ent), b.write_string(text), b.write_byte(1))),
     )
 
 
-def hud_msg(w, text):
+def hud_msg(w, text, game=HL2DM):
     def fill(b):
         b.write_byte(1)  # channel
         b.write_ubit(0, 2 * 32 + 9 * 8 + 4 * 32)  # position, colours, effect, times
         b.write_string(text)
 
-    usermessage(w, se.USER_MESSAGES.index("HudMsg"), body(fill))
+    usermessage(w, game.user_messages.index("HudMsg"), body(fill))
 
 
-def server_info(w):
+def server_info(w, gamedir="hl2mp", game_map="dm_sample"):
     """svc_ServerInfo with the trailing replay bit, as current builds send it."""
     w.write_ubit(wire.SVC_SERVERINFO, wire.NETMSG_TYPE_BITS)
     w.write_ubit(wire.PROTOCOL_VERSION, 16)
@@ -132,8 +187,8 @@ def server_info(w):
     w.write_byte(16)  # max clients
     w.write_long(0x3C888889)  # tick interval, 1/66 s as float bits
     w.write_byte(ord("l"))
-    w.write_string("hl2mp")
-    w.write_string("dm_sample")
+    w.write_string(gamedir)
+    w.write_string(game_map)
     w.write_string("sky_day01_01")
     w.write_string("Sample server")
     w.write_one_bit(0)  # not a replay
@@ -233,8 +288,96 @@ def build(path):
             w.write(rtype, data, t_ns=T0 + ms * 1_000_000)
 
 
+def build_tf2(path):
+    """Chat in the TF2 formats, a join, teams RED and BLU, kills with an
+    assister, a headshot, a backstab and a faked death, a HudMsg under TF2's
+    id (KeyHintText's in HL2DM), voice, a leave."""
+    u = lambda acc: f"[U:1:{acc}]"  # noqa: E731
+    seq = [0]
+
+    def nxt():
+        seq[0] += 1
+        return seq[0]
+
+    timed = []
+
+    def ev(ms, rtype, **f):
+        timed.append((ms, rtype, json.dumps(f, sort_keys=True).encode()))
+
+    def dg(ms, fill, voices=()):
+        timed.append((ms, dump.DATAGRAM_IN, unreliable(nxt(), fill, voices)))
+
+    def death(**f):
+        return lambda w: game_event(w, 3, TF2_EVENTS, **f)
+
+    def team(**f):
+        return lambda w: game_event(w, 5, TF2_EVENTS, **f)
+
+    ev(0, dump.RECONNECT, attempt=1, ok=True)
+    ev(1, dump.SESSION_START, session=1, attempt=1, endpoint="127.0.0.1:27020")
+    tables = userinfo_create(
+        ("alice", u(ALICE), ALICE, 11), ("bob", u(BOB), BOB, 12), ("Heavy", "BOT", 0, 13)
+    )
+    sv = lambda w: server_info(w, "tf", "ctf_sample")  # noqa: E731
+    first = stream(sv, lambda w: event_list(w, TF2_EVENTS), lambda w: bits_into(w, tables))
+    timed.append((100, dump.DATAGRAM_IN, reliable_packet(nxt(), first)))
+    ev(150, dump.SIGNON, state=6, name="FULL")
+    voice = [(1, voice_payload(steamid64(1)))]
+    dg(200, lambda w: chat(w, "alice", "hello", fmt="TF_Chat_All"), voice)
+    dg(300, lambda w: bits_into(w, userinfo_update(("carol", u(CAROL), CAROL, 14, 4))))
+    dg(400, lambda w: text_msg(w, 1, "#Game_connected", "carol", "", "", "", game=TF2))
+    dg(500, team(userid=14, team=2, oldteam=0, autoteam=1, name="carol"))
+    dg(600, team(userid=12, team=3, oldteam=1, name="bob"))
+    dg(700, lambda w: hud_msg(w, "ctf_sample by nobody", game=TF2))
+    dg(
+        800,
+        lambda w: chat(w, "bob", "\x01push \x03mid", fmt="TF_Chat_Team_Loc", ent=2),
+        [(2, voice_payload(steamid64(2), n=5))],
+    )
+    dg(850, lambda w: chat_with_location(w, "bob", "sentry up", "BLU Base"))
+    dg(900, death(userid=12, attacker=11, weapon="scattergun", assister=14))
+    dg(1000, death(userid=11, attacker=12, weapon="sniperrifle", customkill=1, assister=-1))
+    dg(
+        1100,
+        death(userid=14, attacker=12, weapon="knife", customkill=2, death_flags=0x20, assister=-1),
+    )
+    dg(1200, death(userid=13, attacker=0, weapon="world", assister=-1))
+    dg(1300, death(userid=11, attacker=11, weapon="tf_projectile_rocket", assister=-1))
+    dg(1400, lambda w: chat(w, "alice", "nice shot", fmt="TF_Chat_AllDead"))
+    quit_ = dict(userid=14, reason="Disconnect by user.", name="carol", networkid=u(CAROL), bot=0)
+    dg(1500, lambda w: game_event(w, 4, TF2_EVENTS, **quit_))
+    for ms in range(1520, 3000, 20):
+        dg(ms, lambda w: None)
+    ev(3000, dump.LEAVE, why="deadline", sent=2)
+    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="tf2") as w:
+        for ms, rtype, data in timed:
+            w.write(rtype, data, t_ns=T0 + ms * 1_000_000)
+
+
+def chat_with_location(w, nick, text, where):
+    """TF_Chat_Team_Loc: the third parameter is the place."""
+    usermessage(
+        w,
+        TF2.user_messages.index("SayText2"),
+        body(
+            lambda b: (
+                b.write_byte(2),
+                b.write_byte(1),
+                b.write_string("TF_Chat_Team_Loc"),
+                b.write_string(nick),
+                b.write_string(text),
+                b.write_string(where),
+                b.write_string(""),
+            )
+        ),
+    )
+
+
 if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, "data", "sample.tvd")
+    out_tf2 = sys.argv[2] if len(sys.argv) > 2 else os.path.join(here, "data", "sample_tf2.tvd")
     build(out)
-    print(out, os.path.getsize(out), "bytes")
+    build_tf2(out_tf2)
+    for p in (out, out_tf2):
+        print(p, os.path.getsize(p), "bytes")

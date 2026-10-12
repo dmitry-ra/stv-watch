@@ -24,6 +24,7 @@ from helpers import (
     write_voice,
 )
 
+from stvwatch.games.hl2dm import GAME as HL2DM
 from stvwatch.net import dump, messages, netchan, wire
 from stvwatch.stream import streamevents as se
 from stvwatch.stream.framing import Framer, frame
@@ -446,7 +447,7 @@ def test_chain_decodes_text_events_and_flags_bad_length():
         w.write_one_bit(ev.get_bytes()[i >> 3] >> (i & 7))
     # SayText whose declared length is one byte longer than its body.
     st = body(lambda b: (b.write_byte(0), b.write_string("x"), b.write_byte(1)))
-    usermessage(w, se.USER_MESSAGES.index("SayText"), st, st.nbits() + 8)
+    usermessage(w, HL2DM.user_messages.index("SayText"), st, st.nbits() + 8)
     fr.feed(
         Datagram(0, 1, 0, netchan.build_packet(5, 1, 0x1234, 0, unreliable=w.get_bytes() + b"\x00"))
     )

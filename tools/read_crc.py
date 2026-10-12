@@ -22,8 +22,8 @@ import sys
 import time
 
 
-def symbol_offset(srv_dir):
-    so = os.path.join(srv_dir, "bin", "engine_srv.so")
+def symbol_offset(srv_dir, rel="bin/engine_srv.so"):
+    so = os.path.join(srv_dir, rel)
     out = subprocess.run(["readelf", "-sW", so], capture_output=True, text=True, check=True)
     for line in out.stdout.splitlines():
         f = line.split()
@@ -37,15 +37,19 @@ def main():
     ap.add_argument("srcds_dir")
     ap.add_argument("--offset", type=lambda v: int(v, 0), default=None)
     ap.add_argument("--log", default="srcds.log")
+    ap.add_argument("--game", default="hl2mp")
+    ap.add_argument("--map", default="dm_lockdown")
+    ap.add_argument("--binary", default="srcds_linux")
+    ap.add_argument("--engine", default="bin/engine_srv.so")
     a = ap.parse_args()
     d = os.path.abspath(a.srcds_dir)
-    off = a.offset if a.offset is not None else symbol_offset(d)
+    off = a.offset if a.offset is not None else symbol_offset(d, a.engine)
     print(f"g_SendTableCRC at offset 0x{off:x} of engine_srv.so")
-    env = dict(os.environ, LD_LIBRARY_PATH=f"{d}:{d}/bin")
+    env = dict(os.environ, LD_LIBRARY_PATH=f"{d}:{d}/{os.path.dirname(a.engine)}")
     cmd = [
-        f"{d}/srcds_linux",
+        f"{d}/{a.binary}",
         "-game",
-        "hl2mp",
+        a.game,
         "-console",
         "-norestart",
         "-nohltv",
@@ -59,7 +63,7 @@ def main():
         "+maxplayers",
         "2",
         "+map",
-        "dm_lockdown",
+        a.map,
         "+rcon_password",
         "",
     ]

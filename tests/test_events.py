@@ -33,9 +33,9 @@ from voicegen import payload as steam_voice
 from stvwatch import events as ge
 from stvwatch.app import SLOT_HEAD, TSV_HEAD, App
 from stvwatch.cli import default_out, parse_args
+from stvwatch.games.hl2dm import GAME as HL2DM
 from stvwatch.net import dump, netchan, wire
 from stvwatch.source import Pacer
-from stvwatch.stream import streamevents as se
 from stvwatch.stream.userinfo import STEAMID64_BASE, Player
 
 CREATE, UPDATE = ge.STRING_TABLE_CREATE, ge.STRING_TABLE_UPDATE
@@ -464,7 +464,7 @@ def short_message(name, head, strings):
             b.write_string(p)
 
     w = wire.BitWriter()
-    usermessage(w, se.USER_MESSAGES.index(name), body(fill))
+    usermessage(w, HL2DM.user_messages.index(name), body(fill))
     return w.get_bytes() + b"\x00"
 
 

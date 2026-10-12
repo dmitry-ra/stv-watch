@@ -13,11 +13,11 @@ import time
 from datetime import timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import asr, passwords, rotate, serve, version
+from . import asr, games, passwords, rotate, serve, version
 from . import events as gamevents
 from .app import CODES, LIVE_DRAIN_MS, MAX_UTT_MS, App
 from .asr import weights
-from .stream.recording import Recording, RecordingError
+from .stream.recording import Recording, RecordingError, game_of
 
 PASSWORD_ENV = passwords.ENV
 
@@ -57,7 +57,8 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         prog="stv-watch",
         allow_abbrev=False,
-        description="Watch a SourceTV relay of Half-Life 2: Deathmatch: voice chat with an "
+        description="Watch a SourceTV relay of Half-Life 2: Deathmatch or Team Fortress 2: "
+        "voice chat with an "
         "optional transcript, game chat and events, connection and traffic, live or from a "
         "recording.",
     )
@@ -112,6 +113,14 @@ def parse_args(argv=None):
         "~/.local/share/stv-watch/sessions when XDG_DATA_HOME is unset)",
     )
     ap.add_argument("--name", default="stvwatch", help="client name shown on the relay")
+    ap.add_argument(
+        "--game",
+        choices=games.NAMES,
+        default=None,
+        help=f"the relay's game (default {games.DEFAULT}); a relay of another game is refused "
+        "before connecting. A recording names its own: --replay and --follow take it from "
+        "there (recordings from before 0.7.0 are hl2dm)",
+    )
     ap.add_argument(
         "--password-file",
         metavar="PATH",
@@ -343,14 +352,23 @@ def password_source(a):
 
 
 def check_recording(a):
-    """A recording to replay or follow must exist and be one."""
+    """A recording to replay or follow must exist and be one; its game is the
+    run's (a.game)."""
     if a.replay is None:
+        a.game = a.game or games.DEFAULT
         return
+    opt = "--follow" if a.follow else "--replay"
     try:
         Recording(a.replay)
+        recorded = game_of(a.replay)
     except (OSError, RecordingError) as e:
         why = getattr(e, "strerror", None) or str(e)
-        raise ValueError(f"--{'follow' if a.follow else 'replay'}: {why}: {a.replay}") from None
+        raise ValueError(f"{opt}: {why}: {a.replay}") from None
+    if recorded is not None and recorded not in games.GAMES:
+        raise ValueError(f"{opt}: a recording of {recorded!r}, a game this version does not know")
+    if a.game and recorded and a.game != recorded:
+        raise ValueError(f"{opt}: the recording is of {recorded}, not --game {a.game}")
+    a.game = recorded or a.game or games.DEFAULT
 
 
 def has_screen(a):

@@ -1,5 +1,6 @@
-"""The synthetic recording in data/: what its replay must give, line for line,
-and the JSON line format checked against docs/events.schema.json.
+"""The synthetic recordings in data/ (HL2DM and TF2): what their replay must
+give, line for line, and the JSON line format checked against
+docs/events.schema.json.
 
 After a deliberate change of the output, regenerate the expectation with
 `uv run python tests/test_sample.py` and review the diff.
@@ -12,7 +13,7 @@ import subprocess
 import sys
 
 import pytest
-from make_sample import build
+from make_sample import build, build_tf2
 
 from stvwatch import events as ge
 from stvwatch import version
@@ -21,13 +22,16 @@ from stvwatch.net import dump
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAMPLE = os.path.join(HERE, "data", "sample.tvd")
 EXPECTED = os.path.join(HERE, "data", "sample.events.jsonl")
+SAMPLE_TF2 = os.path.join(HERE, "data", "sample_tf2.tvd")
+EXPECTED_TF2 = os.path.join(HERE, "data", "sample_tf2.events.jsonl")
+SAMPLES = [(build, SAMPLE, EXPECTED), (build_tf2, SAMPLE_TF2, EXPECTED_TF2)]
 SCHEMA = os.path.join(os.path.dirname(HERE), "docs", "events.schema.json")
 ARGS = ["--speed", "0", "--json", "--events", "all", "--debug", "--tz", "Europe/Berlin"]
 VIEWER_TYPES = ("conn", "net", "play", "tvd", "asr", "rotate", "wait", "done")
 
 
-def replay(out, *extra):
-    cmd = [sys.executable, "-B", "-m", "stvwatch.cli", "--replay", SAMPLE, "--out", str(out)]
+def replay(out, *extra, sample=SAMPLE):
+    cmd = [sys.executable, "-B", "-m", "stvwatch.cli", "--replay", sample, "--out", str(out)]
     p = subprocess.run(
         cmd + list(extra),
         capture_output=True,
@@ -57,17 +61,21 @@ def normal(lines):
     return out
 
 
-def test_the_sample_is_what_the_generator_writes(tmp_path):
+@pytest.mark.parametrize("make, sample, _expected", SAMPLES)
+def test_the_sample_is_what_the_generator_writes(tmp_path, make, sample, _expected):
     fresh = str(tmp_path / "fresh.tvd")
-    build(fresh)
-    a, b = dump.DumpReader(SAMPLE), dump.DumpReader(fresh)
+    make(fresh)
+    a, b = dump.DumpReader(sample), dump.DumpReader(fresh)
     assert a.endpoint == b.endpoint
-    assert list(a) == list(b)
+    # the game record is stamped when the file opens, like the header
+    records = lambda r: [(0, *x[1:]) if x[1] == dump.GAME else x for x in r]  # noqa: E731
+    assert records(a) == records(b)
 
 
-def test_replay_of_the_sample_gives_the_expected_events(tmp_path):
-    lines = replay(tmp_path / "o", *ARGS)
-    with open(EXPECTED, encoding="utf-8") as f:
+@pytest.mark.parametrize("_make, sample, expected", SAMPLES)
+def test_replay_of_the_sample_gives_the_expected_events(tmp_path, _make, sample, expected):
+    lines = replay(tmp_path / "o", *ARGS, sample=sample)
+    with open(expected, encoding="utf-8") as f:
         assert normal(lines) == f.read().splitlines()
     (session,) = list((tmp_path / "o").iterdir())
     assert (session / "events.jsonl").read_text(encoding="utf-8").splitlines() == lines
@@ -150,6 +158,7 @@ def test_every_line_matches_the_schema(tmp_path):
     assert schema["properties"]["type"]["enum"] == ["talk", "voice", *ge.TYPES, *VIEWER_TYPES]
     with_tz = replay(tmp_path / "a", *ARGS)
     plain = replay(tmp_path / "b", "--speed", "0", "--json", "--events", "all")
+    with_tz += replay(tmp_path / "c", *ARGS, sample=SAMPLE_TF2)
     seen = set()
     for ln in with_tz + plain:
         r = json.loads(ln)
@@ -280,9 +289,10 @@ def test_the_schema_holds_each_type_to_its_own_fields(line, errors):
 if __name__ == "__main__":
     import tempfile
 
-    build(SAMPLE)
-    with tempfile.TemporaryDirectory() as d:
-        lines = normal(replay(d, *ARGS))
-    with open(EXPECTED, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    print(SAMPLE, EXPECTED, len(lines), "lines")
+    for make, sample, expected in SAMPLES:
+        make(sample)
+        with tempfile.TemporaryDirectory() as d:
+            lines = normal(replay(d, *ARGS, sample=sample))
+        with open(expected, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        print(sample, expected, len(lines), "lines")
