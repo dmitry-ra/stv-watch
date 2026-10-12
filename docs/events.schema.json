@@ -87,6 +87,7 @@
   "allOf": [
     {"if": {"properties": {"type": {"const": "voice"}}}, "then": {"required": ["utt", "start_utc", "end_utc", "result", "continued", "spectator", "details", "slot"]}},
     {"if": {"properties": {"type": {"const": "voice"}}, "not": {"required": ["bot"]}}, "then": {"required": ["verified"]}},
+    {"if": {"properties": {"type": {"enum": ["talk", "voice"]}}}, "then": {"properties": {"bot": {"const": true}}}},
     {"if": {"properties": {"type": {"const": "talk"}}}, "then": {"required": ["utt", "start_utc", "continued", "slot"]}},
     {"if": {"properties": {"type": {"const": "chat"}}}, "then": {"required": ["channel", "ent"]}},
     {"if": {"properties": {"type": {"const": "connect"}}}, "then": {"required": ["userid"]}},

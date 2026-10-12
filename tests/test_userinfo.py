@@ -200,8 +200,14 @@ def test_a_cut_of_a_relay_stream_map_change_join_leave_and_voice():
 
 def test_a_steamid_reads_as_steam2_for_a_player_and_as_steam3_otherwise():
     """A player as STEAM_0:x:n; an anonymous game server (the SourceTV voice
-    signature) with its instance, a persistent one without, as `status`."""
+    signature) with its instance, a persistent one without, as `status`; an
+    anonymous user with its instance too; types without a letter as i."""
+
+    def sid(kind, acc, inst=0):
+        return 1 << 56 | kind << 52 | inst << 32 | acc
+
     assert [
         userinfo.steam_text(s)
         for s in (userinfo.STEAMID64_BASE + 13, 90090551102330503, 85568392920039424 + 12345)
-    ] == ["STEAM_0:1:6", "[A:1:1234567:4321]", "[G:1:12345]"]
+        + (sid(9, 5), sid(10, 6, 7), sid(11, 8))
+    ] == ["STEAM_0:1:6", "[A:1:1234567:4321]", "[G:1:12345]", "[i:1:5]", "[a:1:6:7]", "[i:1:8]"]

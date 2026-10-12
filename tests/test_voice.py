@@ -842,7 +842,9 @@ def forged_recording(path):
     from her slot; alice's SteamID comes from her slot, then from bob's (a
     forged payload); carol talks from slot 5 before and after the server
     puts her there; dave talks from slot 6, empty all along; SourceTV talks
-    signed with the server's SteamID; eve's slot sends erin's SteamID. Then
+    signed with the server's SteamID; eve's slot sends erin's SteamID;
+    SourceTV talks again, and alice's slot signs one message as the server
+    (a forged bot). Then
     the map changes: new tables, bob alone in slot 1, and he talks."""
     names = ("alice", "bob", "carol", "dave", "erin")
     sid = {k: steamid64(n) for n, k in enumerate(names, 1)}
@@ -866,6 +868,7 @@ def forged_recording(path):
         (6000, "dave", [6] * 4),
         (8000, "SourceTV", [3] * 6),
         (10000, "erin", [4] * 6),
+        (11000, "SourceTV", [3, 3, 3, 1, 3, 3]),
     ]
     for t0, name, slots in talks:
         for k, slot in enumerate(slots):
@@ -915,13 +918,25 @@ def test_voice_lines_say_whether_the_slot_is_the_speakers(tmp_path):
         (sid["dave"], "", 6, None, None),
         (SERVER_SID, "SourceTV", 3, "-", None),
         (sid["erin"], "", 4, False, 0),
+        (SERVER_SID, "", 1, False, sid["alice"]),
         (sid["bob"], "bob", 1, True, None),
     ]
     talk = sorted((r for r in lines if r["type"] == "talk"), key=lambda r: r["t_utc"])
-    bots = [None] * 4 + [True] + [None] * 2
-    assert [r.get("bot") for r in talk] == [r.get("bot") for r in voice] == bots
+    bots = [None] * 4 + [True] + [None] * 3
+    assert [r.get("bot") for r in voice] == bots
+    # the forged message comes after the talk line: only the voice line drops bot
+    assert [r.get("bot") for r in talk] == bots[:6] + [True, None]
     # carol is not in the table yet when she starts
-    assert [r["nick"] for r in talk] == ["alice", "alice", "", "", "SourceTV", "", "bob"]
+    assert [r["nick"] for r in talk] == [
+        "alice",
+        "alice",
+        "",
+        "",
+        "SourceTV",
+        "",
+        "SourceTV",
+        "bob",
+    ]
     rows = sorted(rows[1:], key=lambda r: r[0])
     assert [r[3:4] + r[11:] for r in rows] == [
         ["alice", "1", "true", ""],
@@ -930,6 +945,7 @@ def test_voice_lines_say_whether_the_slot_is_the_speakers(tmp_path):
         ["", "6", "", ""],
         ["SourceTV", "3", "", ""],
         ["", "4", "false", "0"],
+        ["", "1", "false", str(sid["alice"])],
         ["bob", "1", "true", ""],
     ]
     cmd = [sys.executable, "-B", "-m", "stvwatch.cli", "--replay", rec, "--speed", "0"]
@@ -946,11 +962,12 @@ def test_voice_lines_say_whether_the_slot_is_the_speakers(tmp_path):
             f"voice {steam2(account(4))}",
             "voice SourceTV [bot]",
             f"voice {steam2(account(5))} [slot 4: eve]",
+            "voice [A:1:1234567:4321] [slot 1: alice]",
             "voice bob",
         ]
         assert [
-            ln.endswith(f" slot {n}") for ln, n in zip(shown, (1, 2, 5, 6, 3, 4, 1), strict=True)
-        ] == [bool(debug)] * 7
+            ln.endswith(f" slot {n}") for ln, n in zip(shown, (1, 2, 5, 6, 3, 4, 1, 1), strict=True)
+        ] == [bool(debug)] * 8
     painted = App(parse_args(["--replay", rec, "--out", str(tmp_path / "p")]))
     utt = Utt(("k", 1), sid["alice"], 0)
     utt.state, utt.slot, utt.verified = "recognizing", 2, False

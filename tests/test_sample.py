@@ -247,6 +247,8 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
     bot = {k: v for k, v in voice.items() if k not in ("verified", "slot_steamid64")}
     assert check(dict(bot, bot=True), schema) == check(dict(talk, bot=True), schema) == []
     assert check(dict(bot, bot=True, verified=None), schema) == ["$: verified on 'voice'"]
+    assert check(dict(bot, bot=False), schema) == check(dict(talk, bot=False), schema)
+    assert check(dict(talk, bot=False), schema) == ["$.bot: False is not True"]
     assert check(dict(CHAT, channel="all", ent=1, bot=True), schema) == ["$: bot on 'chat'"]
 
 

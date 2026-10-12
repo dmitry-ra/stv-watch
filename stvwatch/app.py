@@ -946,8 +946,10 @@ class App:
             utt.audio_s = len(pcm) / SR
             utt.end_ns, utt.state = t_ns, "recognizing"
             self.refresh_name(ch)
-            utt.nick, utt.spectator = self.speaker_nick(utt, ch), self.game.unheard(sid)
             utt.slot, utt.verified, utt.slot_owner = facts.slot, facts.verified(), facts.slot_owner
+            if utt.verified is False:
+                utt.bot = None  # a player's slot signed as the bot: a forgery, not the bot
+            utt.nick, utt.spectator = self.speaker_nick(utt, ch), self.game.unheard(sid)
             utt.meta = meta
             utt.pcm = pcm if meta["wav"] else None
             utt.place = self.out.put(closed)

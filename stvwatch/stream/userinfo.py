@@ -44,7 +44,8 @@ def steam_text(sid64):
     if kind == 1:
         a = sid64 - STEAMID64_BASE
         return f"STEAM_0:{a & 1}:{a >> 1}"
-    letter = "IUMGAPCgTa"[kind] if kind < 10 else "I"
+    # 9 (a console user) and types past 10 have no letter of their own
+    letter = "IUMGAPCgTia"[kind] if kind <= 10 else "i"
     inst = f":{sid64 >> 32 & 0xFFFFF}" if letter in "Aa" else ""
     return f"[{letter}:{sid64 >> 56}:{sid64 & 0xFFFFFFFF}{inst}]"
 
