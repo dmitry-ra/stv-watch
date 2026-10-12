@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Read the SendTable CRC of a server build, for stvwatch/net/builds.py.
+"""Read the SendTable CRC of a server build, for `crc_by_build` of a game profile.
 
-    python3 tools/read_crc.py SRCDS_DIR [--offset 0xNNNN] [--log srcds.log]
+    python3 tools/read_crc.py SRCDS_DIR [--game hl2dm|tf2] [--map MAP]
+                              [--offset 0xNNNN] [--log srcds.log]
 
 SRCDS_DIR is a dedicated server install of the build in question (SteamCMD app
-232370, updated to that build). The script starts a LOCAL srcds from it
-(loopback, LAN, no SourceTV, no rcon, no crash upload), waits until it has loaded
-a map, then reads g_SendTableCRC from the memory of its engine_srv.so through
-/proc/<pid>/mem. We are its parent, so ptrace_scope=1 allows the read.
+232370 for hl2dm, 232250 for tf2, updated to that build). The script starts a
+LOCAL srcds from it (loopback, LAN, no SourceTV, no rcon, no crash upload),
+waits until it has loaded a map, then reads g_SendTableCRC from the memory of
+its engine_srv.so through /proc/<pid>/mem. We are its parent, so
+ptrace_scope=1 allows the read.
 
-The symbol's offset is taken from `readelf -sW bin/engine_srv.so` unless given
+The symbol's offset is taken from `readelf -sW` of engine_srv.so unless given
 with --offset. Prints the CRC as 0xXXXXXXXX; the build number is `version` in
-the A2S_INFO reply of a server running that build.
+the A2S_INFO reply of a server running that build, and `PatchVersion` in
+GAME/steam.inf of the install.
 """
 
 import argparse
@@ -32,24 +35,30 @@ def symbol_offset(srv_dir, rel="bin/engine_srv.so"):
     raise SystemExit(f"g_SendTableCRC not found in the symbols of {so}")
 
 
+# game -> (-game folder, launcher, engine library, a stock map)
+GAMES = {
+    "hl2dm": ("hl2mp", "srcds_linux", "bin/engine_srv.so", "dm_lockdown"),
+    "tf2": ("tf", "srcds_linux64", "bin/linux64/engine_srv.so", "ctf_2fort"),
+}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("srcds_dir")
     ap.add_argument("--offset", type=lambda v: int(v, 0), default=None)
     ap.add_argument("--log", default="srcds.log")
-    ap.add_argument("--game", default="hl2mp")
-    ap.add_argument("--map", default="dm_lockdown")
-    ap.add_argument("--binary", default="srcds_linux")
-    ap.add_argument("--engine", default="bin/engine_srv.so")
+    ap.add_argument("--game", choices=sorted(GAMES), default="hl2dm")
+    ap.add_argument("--map", default=None)
     a = ap.parse_args()
+    folder, binary, engine, stock_map = GAMES[a.game]
     d = os.path.abspath(a.srcds_dir)
-    off = a.offset if a.offset is not None else symbol_offset(d, a.engine)
+    off = a.offset if a.offset is not None else symbol_offset(d, engine)
     print(f"g_SendTableCRC at offset 0x{off:x} of engine_srv.so")
-    env = dict(os.environ, LD_LIBRARY_PATH=f"{d}:{d}/{os.path.dirname(a.engine)}")
+    env = dict(os.environ, LD_LIBRARY_PATH=f"{d}:{d}/{os.path.dirname(engine)}")
     cmd = [
-        f"{d}/{a.binary}",
+        f"{d}/{binary}",
         "-game",
-        a.game,
+        folder,
         "-console",
         "-norestart",
         "-nohltv",
@@ -63,7 +72,7 @@ def main():
         "+maxplayers",
         "2",
         "+map",
-        a.map,
+        a.map or stock_map,
         "+rcon_password",
         "",
     ]

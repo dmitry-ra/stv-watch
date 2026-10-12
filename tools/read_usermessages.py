@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print the user message names of a server build in id order, for a game profile.
 
-    python3 tools/read_usermessages.py SRCDS_DIR [--game tf]
+    python3 tools/read_usermessages.py SRCDS_DIR [--game hl2dm|tf2]
 
 A user message travels as its id, the index of its Register() call; no table
 of names is sent. The names are read from the game library itself: the string
@@ -24,6 +24,7 @@ FUNCS = (
     "_Z22RegisterHapticMessagesv",
     "_Z22RegisterScriptMessagesv",
 )
+FOLDERS = {"hl2dm": "hl2mp", "tf2": "tf"}
 LEA = re.compile(r"\blea\s+0x[0-9a-f]+\(%rip\),%r\w+\s+# ([0-9a-f]+)")
 
 
@@ -89,9 +90,9 @@ def names(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("srcds_dir")
-    ap.add_argument("--game", default="hl2mp", help="the game folder (hl2mp, tf)")
+    ap.add_argument("--game", choices=sorted(FOLDERS), default="hl2dm")
     a = ap.parse_args()
-    for i, name in enumerate(names(library(os.path.abspath(a.srcds_dir), a.game))):
+    for i, name in enumerate(names(library(os.path.abspath(a.srcds_dir), FOLDERS[a.game]))):
         print(i, name)
     return 0
 

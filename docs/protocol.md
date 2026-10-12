@@ -24,10 +24,46 @@ its 300 s timeout.
 ## Before connecting
 
 `net/client.py` `precheck`: A2S_INFO of the relay port (spectator count, slots,
-password flag, build number in `version`), then a connectionless getchallenge
-to read the auth protocol. Nothing in it takes a slot. Refused: a silent relay,
-a password when none was given, an unknown build, a relay that wants Steam
-login (auth protocol 3), no slot left for others after us.
+password flag, the game's `folder`, build number in `version`), then a
+connectionless getchallenge to read the auth protocol. Nothing in it takes a
+slot. Refused: a silent relay, a relay of another game than the profile's, a
+password when none was given, a build the profile has no CRC for, a relay that
+wants Steam login (auth protocol 3), no slot left for others after us.
+
+## Games
+
+Half-Life 2: Deathmatch and Team Fortress 2 run on the same engine branch
+since February 2025, and a relay of either speaks the same protocol up to the
+game's own part: the transport, the netchannel, the reliable stream, the
+signon ladder, the string tables, game events (described on the wire by
+`svc_GameEventList`) and voice are the same code. A game profile
+(`stvwatch/games/`) holds what differs:
+
+- `folder`: A2S_INFO `folder` of the game's servers (`hl2mp`, `tf`); the
+  precheck compares it with the profile chosen by `--game`;
+- `crc_by_build`: the SendTable CRC of each build (below);
+- `user_messages`: the names of user message ids. No table of names travels:
+  an id is the index of the message's `Register()` call in the game library,
+  and the games register different lists (HL2DM 35, TF2 86), so HudMsg is id
+  6 in one and 21 in the other. `tools/read_usermessages.py SRCDS_DIR --game
+  tf2` reads the order from `server_srv.so` of a dedicated server (the string
+  arguments of `RegisterUserMessages()`, `RegisterHapticMessages()` and
+  `RegisterScriptMessages()`, in the order the code loads them); for both
+  games it matches the lists of the public Source SDK 2013;
+- `chat_prefix`: SayText2 formats of players' chat (`HL2MP_Chat_*`,
+  `TF_Chat_*`; `TF_Chat_Team_Loc` carries a third parameter, the place);
+- `teams` (TF2: 2 RED, 3 BLU), and for TF2's `player_death` the `death_flags`
+  bit of a faked death and the names of `customkill` values.
+
+TF2's `player_death` has 26 keys; besides those HL2DM has, stv-watch reads
+`assister` (a userid, -1 for none), `customkill` and `death_flags`. The game
+is a record of `capture.tvd` (`0x18`, the first one of every file), so a
+replay picks the same profile.
+
+A TF2 relay sends the `userinfo` table of a full server compressed with
+Snappy (`SNAP` and a raw block, as `-3` datagrams are); the reader takes LZSS
+and Snappy. A TF2 relay of build 11087207 takes the
+same CONNECTED packet and anonymous login as an HL2DM one.
 
 ## Handshake
 
@@ -149,27 +185,35 @@ and those messages fail the Steam voice CRC check (`voice_crc_bad` in
 
 ## Server builds
 
-The SendTable CRC depends on the server build and a wrong one is refused by the
-relay ("different class tables"). `net/builds.py` maps the build number from
-A2S_INFO `version` to its CRC. The server computes it over all its send tables
+The SendTable CRC depends on the game and the server build and a wrong one is
+refused by the relay ("different class tables"). `net/builds.py` looks up the
+build number from A2S_INFO `version` in the game profile's `crc_by_build`. The server computes it over all its send tables
 when the game library loads; other client implementations found no practical
 way to compute it from what a client receives (see
 [prior-art.md](prior-art.md)), and 0 is refused like any other wrong value. It
 changes with game updates that touch the class tables, as the 2023 anniversary
-update of the game did. When Valve ships a new build, stv-watch refuses relays
-on it until its CRC is added. To get it:
+update of HL2DM did; TF2 is patched many times a year. When Valve ships a new
+build, stv-watch refuses relays on it until its CRC is added. To get it:
 
-1. Install a dedicated server of that build with SteamCMD (app 232370):
-   `steamcmd +force_install_dir /path/to/srcds +login anonymous +app_update 232370 +quit`
-2. Run `python3 tools/read_crc.py /path/to/srcds`. It starts the server on
-   loopback (LAN only, no SourceTV, `-nobreakpad`), waits for the map to load
-   and reads `g_SendTableCRC` from the memory of `engine_srv.so` (the symbol's
-   offset is taken with `readelf`). It needs `readelf` (binutils) and
-   permission to read its own child's memory (the default `ptrace_scope` 1 is
-   enough).
-3. Add `"BUILD": 0xCRC,` to `CRC_BY_BUILD` in `stvwatch/net/builds.py`; the
+1. Install a dedicated server of that build with SteamCMD (app 232370 for
+   HL2DM, 232250 for TF2; TF2's is about 15 GB, and an update of an install
+   fetches only what changed):
+   `steamcmd +force_install_dir /path/to/srcds +login anonymous +app_update 232250 +quit`
+2. Run `python3 tools/read_crc.py /path/to/srcds --game tf2` (`--game hl2dm`
+   is the default). It starts the server on loopback (LAN only, no SourceTV,
+   `-nobreakpad`), waits for the map to load and reads `g_SendTableCRC` from
+   the memory of `engine_srv.so` (the symbol's offset is taken with
+   `readelf`). It needs `readelf` (binutils) and permission to read its own
+   child's memory (the default `ptrace_scope` 1 is enough).
+3. Add `"BUILD": 0xCRC,` to `crc_by_build` in `stvwatch/games/<game>.py`; the
    build number is what A2S_INFO reports as `version` for a server of that
-   build (stv-watch's refusal names it).
+   build (stv-watch's refusal names it), and `PatchVersion` in the install's
+   `GAME/steam.inf`.
+4. Run `python3 tools/read_usermessages.py /path/to/srcds --game tf2` and
+   compare the list with `user_messages` of the profile: an update that adds
+   a message in the middle moves every id after it, and chat would be read
+   as another message (a misparse, not a wrong line: every body is checked
+   against its length).
 
 ## Receive buffer
 

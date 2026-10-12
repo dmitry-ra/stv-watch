@@ -33,6 +33,11 @@ uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text o
   connection of its own. It does not end when the writer stops (`--duration-ms`
   counts only the time of arriving records): stop it with a signal, and use
   `--replay` for a finished file.
+- The default game is Half-Life 2: Deathmatch; add `--game tf2` for a Team
+  Fortress 2 relay. A relay of another game than `--game` is refused before
+  connecting with exit code 2 and the option to use (`relay serves tf2, not
+  hl2dm ... use --game tf2`). `--replay` and `--follow` take the game from the
+  recording; do not pass `--game` to them.
 - `--relay` takes the SourceTV port (`tv_port`, 27020 by default), not the game
   port (often 27015). `uv run python -m stvwatch.net.a2s IP:GAMEPORT` prints the
   server's A2S_INFO as JSON with `tv_port`; no `tv_port` means no SourceTV. A
@@ -140,13 +145,13 @@ The `done` line has the same as `class` and `rc`, and the reason as `cause`.
 |---|---|---|---|
 | 0 | `ok` | ended as asked: end of recording, `--duration-ms` (`quit` `client left: time limit` live, `time limit` in a replay), a signal, `q` | read the output |
 | 1 | `bug` | an error in stv-watch (traceback on stderr and in the session's `stderr.log`) | report it with `version` and the traceback |
-| 2 | `usage` | the command line, a recording, a password file or store, a socket, recognition weights, or a model that failed to load (message on stderr or the `asr` line) | fix the call; report it |
+| 2 | `usage` | the command line (a relay of another game than `--game` too), a recording, a password file or store, a socket, recognition weights, or a model that failed to load (message on stderr or the `asr` line) | fix the call; report it |
 | 3 | `refused` | the relay does not take us: before connecting (`conn` line `refused: ...`) or for a reason retrying will not change (`tvd` line `[alarm] ...`) | do not retry the same relay in a loop; report the reason |
 | 4 | `client` | the network client died (killed or crashed; `cause` says how) | report it; one retry is fine |
 | 5 | `io` | the session cannot be written (disk full, no permission) | report it |
 
 A refusal naming an unknown server build means the relay runs a game build this
-version has no CRC for; the fix is in [docs/protocol.md](docs/protocol.md#server-builds),
+version has no CRC for (TF2 is patched often, so it happens there first); the fix is in [docs/protocol.md](docs/protocol.md#server-builds),
 and it needs a human with a local dedicated server.
 
 ## Do not

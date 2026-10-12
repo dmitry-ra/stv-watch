@@ -161,13 +161,13 @@ Game event types (filtered by `--events`) and their extra fields:
 
 | type | extra fields | what |
 |---|---|---|
-| `chat` | `channel`, `ent` | a chat line; `channel` is the game's channel (`all`, `team`, `alldead`, `allspec`, ...), `plugin` when a server plugin formatted it, `saytext` for SayText |
+| `chat` | `channel`, `ent`, `location` | a chat line; `channel` is the game's channel, its chat format in lower case (`all`, `team`, `alldead`, `team_dead`, `allspec`, `spec`; TF2 also `coach`), `plugin` when a server plugin formatted it, `saytext` for SayText; `location` (TF2 team chat on maps that name their places) is where the speaker was |
 | `console` | - | a message from the server console |
 | `connect` | `userid` | a player appeared in the `userinfo` table (is connecting) |
 | `join` | - | a player entered the game (not repeated for those who stay over a map change) |
 | `leave` | `userid`, `networkid`, `bot` | a player left; `text` is the reason |
-| `death` | `weapon`, `userid`, `attacker`, `victim`, `victim_steamid64` | a kill; the line is about the killer, `victim*` only for a kill by another player |
-| `team` | `team`, `oldteam`, `userid` | a team change (0 unassigned, 1 spectator, 2 combine, 3 rebels) |
+| `death` | `weapon`, `userid`, `attacker`, `victim`, `victim_steamid64`, `assister`, `assister_nick`, `assister_steamid64`, `custom`, `feign` | a kill; the line is about the killer, `victim*` only for a kill by another player; TF2 only: `assister*` when a player had the assist (`text` adds `assist NICK`), `custom` `headshot` or `backstab`, `feign` true for a faked death (Dead Ringer: the victim lives; `text` adds `feigned`) |
+| `team` | `team`, `oldteam`, `userid` | a team change (0 unassigned, 1 spectator; HL2DM 2 combine, 3 rebels; TF2 2 red, 3 blu) |
 | `name` | `old`, `userid` | a nick change |
 | `server` | `via`, `dest` or `cvar`, `value` | a server notice (TextMsg, HudMsg) or a changed console variable |
 | `sourcemod` | `via` | a notice of a SourceMod plugin |
@@ -273,6 +273,7 @@ epoch ns), `u16` length and the relay's address. Then records:
 | `0x15` | a `-2` split part was seen (JSON: `length`) |
 | `0x16` | we left (JSON: `why`, `sent` = net_Disconnect copies) |
 | `0x17` | `--rotate`: the last record; the recording goes on in the file `path` (JSON), absolute |
+| `0x18` | the game (JSON: `game`, `hl2dm` or `tf2`): the first record of every file, a rotated one too, stamped when the file was opened; a file without one (written before 0.7.0) is HL2DM |
 
 `version` in a session start is the stv-watch version that wrote the record;
 the event records are JSON, so it needed no change of the format, and files
@@ -295,8 +296,8 @@ datagrams only).
 Written when the session starts and again when it ends (at exit, or at a
 rotation), each time whole (a new file renamed over the old one), so a full
 disk leaves the earlier one: `version`, `build` (`version`, `release`, `commit` = the full
-hash, `dirty`; the last two null outside a git checkout), `args` (the command
-line), `model` (the `--asr` engine or null), `dir`, `tz`, `pid`, `start_utc`,
+hash, `dirty`; the last two null outside a git checkout), `game` (`hl2dm`,
+`tf2`), `args` (the command line), `model` (the `--asr` engine or null), `dir`, `tz`, `pid`, `start_utc`,
 `end_utc`, `quit` (as in the `done` line, or `rotated`), `class`, `cause` and
 `rc` (as in the `done` line; not in a session a rotation ended),
 `tvdump_rc` (exit code of the last network client; null when none ran or it
