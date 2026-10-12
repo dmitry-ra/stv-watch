@@ -219,6 +219,7 @@ class GameEvents:
             nick, text = uncolor(params[0]), uncolor(params[1])
             where = fmt[len(prefix) + 1 :].lower()
             extra = {}
+            # not a profile's: the _Loc formats of hl2mp, tf and cstrike alike
             if where.endswith("_loc"):
                 where = where[: -len("_loc")]
                 extra["location"] = uncolor(params[2]) if len(params) > 2 else ""
@@ -301,7 +302,7 @@ class GameEvents:
         aacc, anick = self._player(attacker)
         vnick = vnick or f"#{victim}"
         weapon = f.get("weapon", "")
-        how, more = self._kill_details(f)
+        how, more = self.game.death_details(f, self._named)
         if not self.muted:
             self.deaths += 1
             self.death_times.append(t)
@@ -333,36 +334,14 @@ class GameEvents:
             **more,
         )
 
-    def _kill_details(self, f):
-        """TF2's extra player_death fields -> (text after the weapon, extra
-        fields). An assister is a userid, -1 when none; a faked death (Dead
-        Ringer) is a player_death the players see as real."""
-        how, more = "", {}
-        custom = self.game.custom_kills.get(f.get("customkill"))
-        if custom:
-            how += ", " + custom
-            more["custom"] = custom
-        if self.game.feign_flag and f.get("death_flags", 0) & self.game.feign_flag:
-            how += ", feigned"
-            more["feign"] = True
-        assister = f.get("assister", -1)
-        if assister > 0:
-            acc, nick = self._player(assister)
-            nick = nick or f"#{assister}"
-            how += ", assist " + nick
-            more.update(
-                assister=assister,
-                assister_nick=nick,
-                assister_steamid64=acc + STEAMID64_BASE if acc else 0,
-            )
-        return how, more
+    def _named(self, userid):
+        acc, nick = self._player(userid)
+        return (acc + STEAMID64_BASE if acc else 0), nick or f"#{userid}"
 
     def unheard(self, sid64):
-        """Voice the players may not hear: CanPlayerHearPlayer of hl2mp and
-        tf passes voice only between equal teams (hl2mp_gamerules.cpp,
-        tf_gamerules.cpp), sv_alltalk 1 to all; a spectator talks to
-        spectators. Unknown team: not marked."""
-        return not self.alltalk and self.team.get(sid64 - STEAMID64_BASE) == 1
+        """Voice the players may not hear, by the game's rule. Unknown team:
+        not marked."""
+        return self.game.unheard(self.team.get(sid64 - STEAMID64_BASE), self.alltalk)
 
     def _ev_player_team(self, t, f):
         uid = f.get("userid", 0)

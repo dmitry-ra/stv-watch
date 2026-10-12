@@ -4,16 +4,30 @@ The transport, the signon ladder, string tables, game events (self-described
 on the wire) and voice are the engine's and the same for every game here. A
 profile holds the rest: the SendTable CRC of each server build, the order of
 user message registration (ids are that order, no names travel), the chat
-format names, the teams, and the folder A2S_INFO reports, by which a relay of
-another game is told apart before connecting.
+format names, the teams, the game's own player_death fields, who may not
+hear whom, and the folder A2S_INFO reports, by which a relay of another game
+is told apart before connecting.
 
 There is no default game below the command line: every consumer takes a
 profile, so a caller that forgot it fails instead of decoding as HL2DM.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Callable
 
 DEFAULT = "hl2dm"  # of the command line only (cli.py, net/main.py)
+SPECTATOR = 1  # TEAM_SPECTATOR of the engine's shared teams
+
+
+def no_death_details(_f, _player):
+    return "", {}
+
+
+def spectator_unheard(team, alltalk):
+    """CanPlayerHearPlayer of hl2mp and tf (hl2mp_gamerules.cpp,
+    tf_gamerules.cpp) passes voice only between equal teams, all of it with
+    sv_alltalk 1: a spectator talks to spectators."""
+    return not alltalk and team == SPECTATOR
 
 
 @dataclass(frozen=True)
@@ -27,9 +41,11 @@ class Game:
     user_messages: tuple
     chat_prefix: str  # SayText2 format of a player's chat: PREFIX_Channel
     teams: dict
-    # player_death: death_flags bit of a faked death, customkill names
-    feign_flag: int = 0
-    custom_kills: dict = field(default_factory=dict)
+    # player_death of this game: (event fields, player) -> (text after the
+    # weapon, extra fields); player(userid) -> (steamid64 or 0, nick)
+    death_details: Callable = no_death_details
+    # (team of the speaker or None, sv_alltalk) -> voice the players may not hear
+    unheard: Callable = spectator_unheard
 
     def user_message(self, mid):
         return self.user_messages[mid] if mid < len(self.user_messages) else f"#{mid}"

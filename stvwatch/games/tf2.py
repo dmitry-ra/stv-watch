@@ -9,6 +9,28 @@ and ETFDmgCustom in src/game/shared/tf/tf_shareddefs.h.
 
 from . import Game
 
+FEIGN_DEATH = 0x20  # TF_DEATH_FEIGN_DEATH: Dead Ringer, a death the players see as real
+CUSTOM_KILLS = {1: "headshot", 2: "backstab"}
+
+
+def death_details(f, player):
+    """An assister is a userid, -1 when none."""
+    how, more = "", {}
+    custom = CUSTOM_KILLS.get(f.get("customkill"))
+    if custom:
+        how += ", " + custom
+        more["custom"] = custom
+    if f.get("death_flags", 0) & FEIGN_DEATH:
+        how += ", feigned"
+        more["feign"] = True
+    assister = f.get("assister", -1)
+    if assister > 0:
+        sid, nick = player(assister)
+        how += ", assist " + nick
+        more.update(assister=assister, assister_nick=nick, assister_steamid64=sid)
+    return how, more
+
+
 GAME = Game(
     name="tf2",
     title="Team Fortress 2",
@@ -109,6 +131,5 @@ GAME = Game(
     ),
     chat_prefix="TF_Chat",
     teams={0: "unassigned", 1: "spectator", 2: "red", 3: "blu"},
-    feign_flag=0x20,
-    custom_kills={1: "headshot", 2: "backstab"},
+    death_details=death_details,
 )
