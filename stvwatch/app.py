@@ -292,8 +292,8 @@ class App:
         self.audio = {}
         self.seg = Segmenter(close_s=CLOSE_S)
         self.counters = {"payload_bad": 0, "phrases": 0, "nospeech": 0, "utterances": 0, "wav": 0}
-        self.profile = games.get(getattr(a, "game", None))
-        self.game = gamevents.GameEvents(a.event_types, self.profile)
+        self.profile = games.get(a.game)
+        self.game = gamevents.GameEvents(a.event_types, game=self.profile)
         self.framer = Framer(
             keep_fates=False,
             on_table=self._on_table,

@@ -56,7 +56,7 @@ class Feed:
 
     def __init__(self, types=ge.TYPES):
         self.fr = SimpleNamespace(cur_session=1, cur_t_ns=T0)
-        self.g = ge.GameEvents(types)
+        self.g = ge.GameEvents(types, game=HL2DM)
         self.g.attach(self.fr)
 
     def at(self, s, session=None):
@@ -400,7 +400,7 @@ def record_link(path, seed, legacy, steps, loss, dup, part_loss, bodies=40, drop
     up = simlink.Link(rng, loss, dup, jitter_s=0.03 if loss else 0.0)
     events = {k + 1: lambda _r: setattr(down, "loss", loss) for k in drop}
     events.update({k: lambda _r: setattr(down, "loss", 1.0) for k in drop})
-    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
         simlink.run(
             s,
             relay,
@@ -1010,7 +1010,7 @@ def test_follow_a_growing_journal_equals_replaying_it(tmp_path):
         plan.append((ms, packet(seq)))
         seq += 1
     path = str(tmp_path / "j.tvd")
-    w = dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0)
+    w = dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm")
     w.write(
         dump.SESSION_START,
         b'{"session": 1, "endpoint": "127.0.0.1:27020"}',

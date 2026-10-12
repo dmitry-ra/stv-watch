@@ -307,6 +307,10 @@ def parse_args(argv=None):
         a.event_types = gamevents.parse_types(a.events)
     except ValueError as e:
         ap.error(str(e))
+    # the one default of the game below which every consumer wants it named;
+    # a recording's own game replaces it (check_recording)
+    a.game_given = a.game is not None
+    a.game = a.game or games.DEFAULT
     a.tz_given = a.tz is not None
     if a.tz_given:
         try:
@@ -355,7 +359,6 @@ def check_recording(a):
     """A recording to replay or follow must exist and be one; its game is the
     run's (a.game)."""
     if a.replay is None:
-        a.game = a.game or games.DEFAULT
         return
     opt = "--follow" if a.follow else "--replay"
     try:
@@ -366,9 +369,9 @@ def check_recording(a):
         raise ValueError(f"{opt}: {why}: {a.replay}") from None
     if recorded is not None and recorded not in games.GAMES:
         raise ValueError(f"{opt}: a recording of {recorded!r}, a game this version does not know")
-    if a.game and recorded and a.game != recorded:
+    if a.game_given and recorded and a.game != recorded:
         raise ValueError(f"{opt}: the recording is of {recorded}, not --game {a.game}")
-    a.game = recorded or a.game or games.DEFAULT
+    a.game = recorded or a.game
 
 
 def has_screen(a):

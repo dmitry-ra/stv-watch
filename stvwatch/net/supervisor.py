@@ -25,7 +25,7 @@ class Options:
         self.ip = kw.get("ip", "127.0.0.1")
         self.port = kw.get("port", 27020)
         self.name = kw.get("name", "tvdump")
-        self.game = kw.get("game") or games.DEFAULT  # the profile's name
+        self.game = games.get(kw.get("game")).name
         # None = auto: build from the relay's A2S_INFO, CRC from the profile.
         self.build = kw.get("build")
         self.password = kw.get("password", "")

@@ -62,7 +62,7 @@ class FakeSink:
 
 
 def make_session():
-    return sess.Session(FakeConn(), supervisor.Options(crc=0xD9B6082D), FakeSink())
+    return sess.Session(FakeConn(), supervisor.Options(game="hl2dm", crc=0xD9B6082D), FakeSink())
 
 
 def inbound(session, seq, unreliable=b"", reliable_region=b"", relstate=0):

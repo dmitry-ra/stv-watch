@@ -11,8 +11,10 @@ import sys
 import pytest
 from fakerelay import FakeRelay
 
-from stvwatch import games
-from stvwatch.net import builds, dump
+from stvwatch import cli, events, games
+from stvwatch.app import App
+from stvwatch.net import builds, client, dump, supervisor
+from stvwatch.stream import streamevents
 from stvwatch.stream.recording import Recording, game_of
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -30,20 +32,52 @@ def stv(*args, timeout=60):
 
 def test_the_crc_is_the_build_of_that_game():
     assert builds.crc_for(TF2_BUILD, "tf2") == 0x5FCD4733
-    assert builds.crc_for("10889068") == builds.crc_for("10889068", "hl2dm") == 0xD9B6082D
+    assert builds.crc_for("10889068", "hl2dm") == 0xD9B6082D
     with pytest.raises(builds.UnknownBuild, match="of hl2dm: add its CRC to stvwatch/games/hl2dm"):
-        builds.crc_for(TF2_BUILD)
+        builds.crc_for(TF2_BUILD, "hl2dm")
     with pytest.raises(builds.UnknownBuild, match="10889068 of tf2: .*stvwatch/games/tf2.py"):
         builds.crc_for("10889068", "tf2")
     assert builds.classify("unknown build 1 of tf2: ...") == builds.PERMANENT
 
 
 def test_profiles_by_name_and_by_folder():
-    assert games.get(None).name == games.DEFAULT == "hl2dm"
+    assert games.get(games.DEFAULT).name == "hl2dm"
     assert [games.by_folder(f).name for f in ("hl2mp", "tf")] == ["hl2dm", "tf2"]
     assert games.by_folder("cstrike") is None
     with pytest.raises(ValueError, match="unknown game 'cs'"):
         games.get("cs")
+
+
+def test_below_the_command_line_a_forgotten_game_is_an_error_not_hl2dm(tmp_path):
+    """The default is the command line's (cli.py, net/main.py); everything
+    under it wants the game named."""
+    assert cli.parse_args(["--relay", "127.0.0.1:1"]).game == games.DEFAULT == "hl2dm"
+    with pytest.raises(ValueError, match="no game given"):
+        games.get(None)
+    with pytest.raises(ValueError, match="no game given"):
+        supervisor.Options(build="10889068")
+    a = cli.parse_args(["--relay", "127.0.0.1:1", "--out", str(tmp_path / "o")])
+    a.game = None
+    with pytest.raises(ValueError, match="no game given"):
+        App(a)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda _d: events.GameEvents(),
+        lambda _d: streamevents.Collector(),
+        lambda d: dump.DumpWriter(str(d / "x.tvd"), "127.0.0.1:1"),
+        lambda _d: client.precheck("127.0.0.1:1"),
+        lambda _d: builds.known("10889068"),
+        lambda _d: builds.crc_for("10889068"),
+    ],
+    ids=["GameEvents", "Collector", "DumpWriter", "precheck", "known", "crc_for"],
+)
+def test_no_consumer_of_a_profile_has_a_default_one(tmp_path, call):
+    with pytest.raises(TypeError, match="'game'|'profile'"):
+        call(tmp_path)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_tf2_user_message_ids_seen_on_live_relays():
@@ -79,7 +113,7 @@ def test_every_capture_file_names_its_game_and_the_stream_skips_it(tmp_path):
     assert [d.data for d in Recording(second, on_event=lambda *e: seen.append(e))] == [b"x9"]
     assert seen == []
     plain = str(tmp_path / "c.tvd")
-    with dump.DumpWriter(plain, "127.0.0.1:1", fsync_ms=0) as w:
+    with dump.DumpWriter(plain, "127.0.0.1:1", fsync_ms=0, game=None) as w:
         w.write(dump.DATAGRAM_IN, b"y", t_ns=1)
     assert (game_of(plain), game_of(SAMPLE), game_of(SAMPLE_TF2)) == (None, None, "tf2")
 

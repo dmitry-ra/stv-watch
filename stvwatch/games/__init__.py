@@ -6,11 +6,14 @@ profile holds the rest: the SendTable CRC of each server build, the order of
 user message registration (ids are that order, no names travel), the chat
 format names, the teams, and the folder A2S_INFO reports, by which a relay of
 another game is told apart before connecting.
+
+There is no default game below the command line: every consumer takes a
+profile, so a caller that forgot it fails instead of decoding as HL2DM.
 """
 
 from dataclasses import dataclass, field
 
-DEFAULT = "hl2dm"
+DEFAULT = "hl2dm"  # of the command line only (cli.py, net/main.py)
 
 
 @dataclass(frozen=True)
@@ -43,9 +46,11 @@ NAMES = tuple(GAMES)
 
 
 def get(name):
-    """--game value (None: the default) -> Game; ValueError on an unknown name."""
+    """--game value -> Game; ValueError on an unknown name or none."""
+    if name is None:
+        raise ValueError(f"no game given (games: {', '.join(NAMES)})")
     try:
-        return GAMES[name or DEFAULT]
+        return GAMES[name]
     except KeyError:
         raise ValueError(f"unknown game {name!r} (games: {', '.join(NAMES)})") from None
 

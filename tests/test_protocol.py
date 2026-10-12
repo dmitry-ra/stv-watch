@@ -152,7 +152,7 @@ def test_outbound_packet_checksum_selfconsistent():
 def test_dump_roundtrip():
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "x.tvd")
-        with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+        with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
             w.event(dump.SESSION_START, attempt=1)
             w.write(dump.DATAGRAM_IN, b"\xde\xad")
             w.event(dump.SIGNON, state=6)
@@ -162,6 +162,7 @@ def test_dump_roundtrip():
         assert r.endpoint == "127.0.0.1:27020" and r.version == dump.VERSION
         recs = list(r)
         assert [t for _, t, _ in recs] == [
+            dump.GAME,
             dump.SESSION_START,
             dump.DATAGRAM_IN,
             dump.SIGNON,
@@ -178,11 +179,11 @@ def test_dump_survives_truncated_tail():
     """A kill -9 mid-write must leave every complete record readable."""
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "x.tvd")
-        with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+        with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
             for i in range(5):
                 w.write(dump.DATAGRAM_IN, bytes([i]) * 10)
         raw = open(path, "rb").read()
         open(path, "wb").write(raw[:-4])  # chop mid-record
         r = dump.DumpReader(path)
-        assert len(list(r)) == 4
+        assert len(list(r)) == 5  # the game record and four of five datagrams
         assert r.truncated_tail

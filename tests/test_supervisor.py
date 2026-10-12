@@ -39,7 +39,9 @@ class DrivenSupervisor(supervisor.Supervisor):
 
     def __init__(self, script):
         path = os.path.join(tempfile.mkdtemp(), "t.tvd")
-        super().__init__(supervisor.Options(seconds=0, build="10889068"), path, log=lambda *a: None)
+        super().__init__(
+            supervisor.Options(game="hl2dm", seconds=0, build="10889068"), path, log=lambda *a: None
+        )
         self.script = list(script)
         self.step = 0
         self.waits = []

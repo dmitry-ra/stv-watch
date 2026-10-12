@@ -35,11 +35,11 @@ class UnknownBuild(Exception):
     pass
 
 
-def known(build, game=None):
+def known(build, game):
     return str(build) in games.get(game).crc_by_build
 
 
-def crc_for(build, game=None):
+def crc_for(build, game):
     g = games.get(game)
     try:
         return g.crc_by_build[str(build)]

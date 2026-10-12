@@ -18,8 +18,6 @@ not end exactly at the length is reported as `misparse`, not trusted.
 import struct
 from collections import Counter
 
-from .. import games
-
 SVC_USERMESSAGE = 23
 SVC_GAMEEVENT = 25
 SVC_GAMEEVENTLIST = 30
@@ -161,8 +159,8 @@ def chat_kind(fmt, chat_prefix):
 class Collector:
     """Framer on_msg hook: counts every message id, decodes 23/25/30."""
 
-    def __init__(self, sink=None, game=None):
-        self.game = game or games.get(None)
+    def __init__(self, sink=None, *, game):
+        self.game = game
         self.framer = None
         self.sink = sink  # callable(record dict) or None
         self.msg_ids = Counter()

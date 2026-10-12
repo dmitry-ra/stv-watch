@@ -87,7 +87,7 @@ def timeline():
 @pytest.fixture(scope="module")
 def rec(tmp_path_factory):
     path = str(tmp_path_factory.mktemp("rec") / "stream.tvd")
-    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
         for t, d in timeline():
             w.write(dump.DATAGRAM_IN, d, t_ns=t)
     return path
@@ -306,7 +306,7 @@ class EndingClient:
         self.path, self.log_path = dump_path, log_path
 
     def start(self):
-        with dump.DumpWriter(self.path, "127.0.0.1:9", fsync_ms=0) as w:
+        with dump.DumpWriter(self.path, "127.0.0.1:9", fsync_ms=0, game="hl2dm") as w:
             w.write(dump.DATAGRAM_IN, packet(1), t_ns=at(1))
         open(self.log_path, "w").close()
         return True
@@ -380,7 +380,7 @@ class WallClient:
     def start(self):
         open(self.log_path, "w").close()
         t0 = time.time_ns()
-        with dump.DumpWriter(self.path, "127.0.0.1:9", fsync_ms=0) as w:
+        with dump.DumpWriter(self.path, "127.0.0.1:9", fsync_ms=0, game="hl2dm") as w:
             # every network client counts its sessions from 1
             w.write(dump.SESSION_START, b'{"session": 1}', t_ns=t0)
             for n, (s, make) in enumerate(self.plan):

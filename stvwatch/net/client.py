@@ -29,7 +29,6 @@ import subprocess
 import sys
 import time
 
-from .. import games
 from . import a2s, builds, handshake, wire
 
 # The child imports this same package, whatever the caller's cwd.
@@ -78,11 +77,11 @@ def precheck(
     info=None,
     auth=None,
     have_password=False,
-    profile=None,
+    *,
+    profile,
 ):
     """-> (ok, why, facts). `why` is a short reason word (+ detail)."""
     info, auth = info or safe_info, auth or auth_proto
-    profile = profile or games.get(None)
     gi = info(game) if game else None
     ri = info(relay)
     facts = {

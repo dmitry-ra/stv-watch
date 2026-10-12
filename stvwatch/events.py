@@ -17,7 +17,6 @@ observed on live relays:
 import re
 from collections import Counter, deque
 
-from . import games
 from .stream import streamevents as se
 from .stream.userinfo import STEAMID64_BASE
 
@@ -90,11 +89,11 @@ class GameEvents:
     for the caller to drain. While `muted` (replay fast-forward) state is kept
     but nothing is emitted or counted."""
 
-    def __init__(self, types=DEFAULT, game=None):
+    def __init__(self, types=DEFAULT, *, game):
         self.types = set(types)
-        self.game = game or games.get(None)
+        self.game = game
         self.framer = None
-        self.collector = se.Collector(self.record, self.game)
+        self.collector = se.Collector(self.record, game=game)
         self.out = []
         self.muted = False
         self.session = None

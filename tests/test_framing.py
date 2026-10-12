@@ -38,7 +38,9 @@ X = messages.signonstate_body(wire.SIGNON_SPAWN, 3)
 def chats_of(fr_kw=None):
     """A Framer whose Collector keeps the chat texts it decodes, in order."""
     got = []
-    col = se.Collector(lambda r: got.append(r["f"]["params"][1]) if r["name"] == "SayText2" else 0)
+    col = se.Collector(
+        lambda r: got.append(r["f"]["params"][1]) if r["name"] == "SayText2" else 0, game=HL2DM
+    )
     fr = Framer(on_msg=col, **(fr_kw or {}))
     col.framer = fr
     return fr, got
@@ -139,7 +141,7 @@ def test_following_a_growing_journal_equals_reading_it_finished(tmp_path):
     done = threading.Event()
 
     def writer():
-        with dump.DumpWriter(grown, "127.0.0.1:27020", fsync_ms=0) as w:
+        with dump.DumpWriter(grown, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
             for i, d in enumerate(data):
                 w.write(dump.DATAGRAM_IN, d, t_ns=T + i * 15_000_000)
                 time.sleep(0.01)
@@ -213,7 +215,7 @@ def test_same_region_in_a_new_session_is_new_data(tmp_path):
     the same subchannel first thing in session 2: a reconnect drops the
     sender's queue, so this is not a resend."""
     p = str(tmp_path / "two.tvd")
-    with dump.DumpWriter(p, "127.0.0.1:27020", fsync_ms=0) as w:
+    with dump.DumpWriter(p, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
         w.event(dump.SESSION_START, session=1)
         w.write(dump.DATAGRAM_OUT, ack(1, 0), t_ns=T)
         w.write(dump.DATAGRAM_IN, reliable_packet(10, X), t_ns=T + 1)
@@ -236,7 +238,7 @@ def resent_first_packet_of_session_2(path):
     flipped by our ack and comes again."""
     c2 = 0x55667788
     hello = [reliable_packet(n, chat_bytes("nick", "hello"), challenge=c2) for n in (1, 2)]
-    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
         for t, rtype, data in [
             (T, dump.SESSION_START, b'{"session": 1}'),
             (T + 1, dump.DATAGRAM_OUT, ack(1, 0)),
@@ -317,7 +319,7 @@ def test_recording_cut_inside_a_split_group(tmp_path):
     p = str(tmp_path / "cut.tvd")
     big = reliable_packet(11, X, [(1, voice_payload(A, n=12))])
     parts = split(big, group=9)
-    with dump.DumpWriter(p, "127.0.0.1:27020", fsync_ms=0) as w:
+    with dump.DumpWriter(p, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
         w.write(dump.DATAGRAM_OUT, ack(1, 0), t_ns=T)
         w.write(dump.DATAGRAM_IN, reliable_packet(10, X), t_ns=T + 1)
         w.write(dump.DATAGRAM_OUT, ack(2, 10, bits=1), t_ns=T + 2)
@@ -409,7 +411,7 @@ def test_framer_hands_string_tables_to_the_table_hook():
 
 def test_chain_decodes_text_events_and_flags_bad_length():
     got = []
-    col = se.Collector(got.append)
+    col = se.Collector(got.append, game=HL2DM)
     fr = Framer(on_msg=col)
     col.framer = fr
     w = wire.BitWriter()
@@ -470,7 +472,7 @@ def test_chain_decodes_text_events_and_flags_bad_length():
 
 
 def test_event_before_list_is_unknown_not_guessed():
-    col = se.Collector()
+    col = se.Collector(game=HL2DM)
     col.framer = SimpleNamespace(cur_t_ns=0, cur_session=0, tick=0)
     ev = body(lambda b: (b.write_ubit(7, 9), b.write_ubit(5, 16)))
     w = wire.BitWriter()

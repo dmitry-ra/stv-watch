@@ -283,7 +283,7 @@ def build(path):
     ev(6001, dump.BROKEN, cause="changelevel", detail="server signalled changelevel")
     ev(6002, dump.LEAVE, why="changelevel", sent=2)
     ev(6100, dump.RECONNECT, attempt=2, ok=False, error="timed out")
-    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game=None) as w:
         for ms, rtype, data in timed:
             w.write(rtype, data, t_ns=T0 + ms * 1_000_000)
 

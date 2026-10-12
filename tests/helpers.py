@@ -309,6 +309,6 @@ def table_update(*players, create=False):
 
 def write_recording(path, timed, endpoint="127.0.0.1:27020"):
     """timed: [(t_ns, datagram)] as DATAGRAM_IN records."""
-    with dump.DumpWriter(path, endpoint, fsync_ms=0) as w:
+    with dump.DumpWriter(path, endpoint, fsync_ms=0, game="hl2dm") as w:
         for t, d in timed:
             w.write(dump.DATAGRAM_IN, d, t_ns=t)

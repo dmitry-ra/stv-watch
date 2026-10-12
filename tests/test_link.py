@@ -20,7 +20,7 @@ TEXTS = [f"m{i:03d} " + "x" * (40 + (i * 397) % 2500) for i in range(40)]
 
 
 def client(legacy=False):
-    s = sess.Session(FakeConn(), supervisor.Options(crc=0xD9B6082D), FakeSink())
+    s = sess.Session(FakeConn(), supervisor.Options(game="hl2dm", crc=0xD9B6082D), FakeSink())
     if legacy:
         s.rx.reassemble_splits = False
     got = []
@@ -59,7 +59,7 @@ def drive(
     up = simlink.Link(rng, loss, dup, jitter_s=jitter)
     kw = {}
     if record is not None:
-        w = dump.DumpWriter(record, "127.0.0.1:27020", fsync_ms=0)
+        w = dump.DumpWriter(record, "127.0.0.1:27020", fsync_ms=0, game="hl2dm")
         kw = {
             "on_inbound": lambda d, t: w.write(dump.DATAGRAM_IN, d, t_ns=t),
             "on_outbound": lambda p, t: w.write(dump.DATAGRAM_OUT, p, t_ns=t),

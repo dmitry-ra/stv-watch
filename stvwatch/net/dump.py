@@ -86,9 +86,12 @@ class DumpWriter:
     (a per-record fsync on a mechanical disk stalls recvfrom long enough to drop
     live datagrams). Worst case loss is `fsync_ms` of tail, and only on power
     loss.
+
+    `game` is the profile's name for the GAME record; None writes a file as
+    before 0.7.0, without one (tests of old recordings).
     """
 
-    def __init__(self, path, endpoint, fsync_ms=1000, next_path=None, on_next=None, game=None):
+    def __init__(self, path, endpoint, fsync_ms=1000, next_path=None, on_next=None, *, game):
         self.path = path
         self.endpoint = endpoint
         self.game = game

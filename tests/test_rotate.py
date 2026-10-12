@@ -75,7 +75,7 @@ def timeline():
 @pytest.fixture(scope="module")
 def rec(tmp_path_factory):
     path = str(tmp_path_factory.mktemp("rec") / "minute.tvd")
-    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+    with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
         for t, d in timeline():
             w.write(dump.DATAGRAM_IN, d, t_ns=t)
     return path
@@ -314,6 +314,7 @@ class FakeClient:
             self.a.dump,
             "127.0.0.1:9",
             fsync_ms=0,
+            game=self.a.game,
             next_path=next_path,
             on_next=lambda p: logs.append(os.path.join(os.path.dirname(p), self.a.rotate_log)),
         )
@@ -348,7 +349,11 @@ def test_live_the_session_follows_the_network_client_into_its_new_directory(tmp_
     assert App(args).run() == 0
     old, new = chain(out)
     assert new.name == f"20251007T094100Z_127.0.0.1_9_{os.getpid()}"
-    caps = [list(dump.DumpReader(str(s / "capture.tvd"))) for s in (old, new)]
+    # every file starts with the game record, stamped when it opens
+    caps = [
+        [r for r in dump.DumpReader(str(s / "capture.tvd")) if r[1] != dump.GAME]
+        for s in (old, new)
+    ]
     assert caps[0][-1][1:] == (
         dump.NEXT_FILE,
         json.dumps({"path": str(new / "capture.tvd")}).encode(),
@@ -384,12 +389,14 @@ def test_a_rotated_journal_never_opens_over_a_file_that_exists(tmp_path, capsys,
         netmain.main(argv + ["--rotate", EVERY_MINUTE, "--rotate-dir", str(tmp_path / "d")])
     assert e.value.code == 2 and "--rotate-dir needs {stamp}" in capsys.readouterr().err
     path = str(tmp_path / "j.tvd")
-    w = dump.DumpWriter(path, "127.0.0.1:9", fsync_ms=0, next_path=lambda t: path if t else None)
+    w = dump.DumpWriter(
+        path, "127.0.0.1:9", fsync_ms=0, game="hl2dm", next_path=lambda t: path if t else None
+    )
     w.write(dump.DATAGRAM_IN, b"kept", t_ns=0)
     with pytest.raises(dump.DumpError, match="File exists"):
         w.write(dump.DATAGRAM_IN, b"next", t_ns=at(1))
     w.close()
-    assert [(t, d) for t, _r, d in dump.DumpReader(path)] == [(0, b"kept")]
+    assert [(t, d) for t, r, d in dump.DumpReader(path) if r != dump.GAME] == [(0, b"kept")]
 
 
 def test_the_network_client_moves_its_log_into_the_new_directory(tmp_path):
