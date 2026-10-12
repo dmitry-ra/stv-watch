@@ -98,7 +98,10 @@ def game_of(path):
         if rtype != TVD_GAME:
             return None
         try:
-            return json.loads(f.read(length).decode("utf-8"))["game"]
+            game = json.loads(f.read(length).decode("utf-8"))["game"]
+            if not isinstance(game, str):
+                raise TypeError(f"game is {game!r}")
+            return game
         except (ValueError, KeyError, TypeError) as e:
             raise RecordingError(f"{path}: bad game record: {e}") from e
     finally:

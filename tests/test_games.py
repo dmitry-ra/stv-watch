@@ -146,6 +146,13 @@ def test_a_replay_takes_the_game_of_the_recording(tmp_path):
     )
     (session,) = (tmp_path / "c").iterdir()
     assert (rc, json.loads((session / "meta.json").read_text())["game"]) == (0, "tf2")
+    for bad in (["tf2"], {"name": "tf2"}, 7):
+        rec = str(tmp_path / "bad.tvd")
+        with dump.DumpWriter(rec, "127.0.0.1:1", fsync_ms=0, game=bad) as w:
+            w.write(dump.DATAGRAM_IN, b"x", t_ns=1)
+        rc, lines, err = stv("--replay", rec, "--json", "--out", str(tmp_path / "d"))
+        assert (rc, lines) == (2, [])
+        assert f"bad game record: game is {bad!r}".encode() in err
 
 
 @pytest.mark.parametrize(
