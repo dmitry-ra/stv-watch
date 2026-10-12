@@ -13,6 +13,7 @@ import struct
 
 import pytest
 
+from stvwatch import games
 from stvwatch.net import messages, netchan, supervisor, wire
 from stvwatch.net import session as sess
 from stvwatch.net import split as sp
@@ -61,8 +62,8 @@ class FakeSink:
         self.replay_bits.append(flag)
 
 
-def make_session():
-    return sess.Session(FakeConn(), supervisor.Options(game="hl2dm", crc=0xD9B6082D), FakeSink())
+def make_session(game="hl2dm"):
+    return sess.Session(FakeConn(), supervisor.Options(game=game, crc=0xD9B6082D), FakeSink())
 
 
 def inbound(session, seq, unreliable=b"", reliable_region=b"", relstate=0):
@@ -421,6 +422,14 @@ def test_unparseable_reliable_packet_is_not_acked():
     assert s.in_reliable_state == 0
     ack = netchan.decode_header(s.conn.sock.sent[-1])
     assert ack.sequence_ack == 5 and ack.reliable_state == 0
+
+
+@pytest.mark.parametrize("game", games.NAMES)
+def test_the_connected_reply_carries_the_userinfo_of_the_game(game):
+    s = make_session(game)
+    s.send_connected_reply()
+    body = messages.connected_reply_body(s.opt.name, games.get(game).userinfo)
+    assert s.pending == messages.reliable_region(body, 0)
 
 
 def test_our_reliable_block_is_done_only_when_the_relay_flips_its_bit():

@@ -34,6 +34,7 @@ from stvwatch import events as ge
 from stvwatch.app import SLOT_HEAD, TSV_HEAD, App
 from stvwatch.cli import default_out, parse_args
 from stvwatch.games.hl2dm import GAME as HL2DM
+from stvwatch.games.tf2 import GAME as TF2
 from stvwatch.net import dump, netchan, wire
 from stvwatch.source import Pacer
 from stvwatch.stream.userinfo import STEAMID64_BASE, Player
@@ -54,9 +55,9 @@ def u(acc):
 class Feed:
     """GameEvents behind a stand-in framer: session and receive time."""
 
-    def __init__(self, types=ge.TYPES):
+    def __init__(self, types=ge.TYPES, game=HL2DM):
         self.fr = SimpleNamespace(cur_session=1, cur_t_ns=T0)
-        self.g = ge.GameEvents(types, game=HL2DM)
+        self.g = ge.GameEvents(types, game=game)
         self.g.attach(self.fr)
 
     def at(self, s, session=None):
@@ -168,6 +169,18 @@ def test_every_event_type_becomes_one_self_contained_line(app):
     ]
     assert f.g.kill_summary(T0 + 2 * 10**9) == "kills 3 3/min"
     assert f.g.kill_summary(T0 + 70 * 10**9) == "kills 3 0/min"
+
+
+def test_a_tf2_assister_out_of_the_table_is_named_by_userid():
+    a, b = account(1001), account(2002)
+    f = Feed(game=TF2)
+    f.tab(CREATE, ("alice", u(a), a, 11), ("bob", u(b), b, 12))
+    f.ev("player_death", userid=12, attacker=11, weapon="scattergun", assister=9)
+    f.ev("player_death", userid=11, attacker=12, weapon="minigun", assister=11)
+    unknown, known = f.take()
+    assert unknown["text"] == "killed bob (scattergun, assist #9)"
+    assert (unknown["extra"]["assister_nick"], unknown["extra"]["assister_steamid64"]) == ("#9", 0)
+    assert known["extra"]["assister_steamid64"] == a + STEAMID64_BASE
 
 
 def test_steam2_form_of_networkid_names_the_same_account():
