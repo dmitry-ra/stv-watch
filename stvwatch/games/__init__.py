@@ -5,8 +5,8 @@ on the wire) and voice are the engine's and the same for every game here. A
 profile holds the rest: the SendTable CRC of each server build, the order of
 user message registration (ids are that order, no names travel), the chat
 format names, the teams, the game's own player_death fields, who may not
-hear whom, and the folder A2S_INFO reports, by which a relay of another game
-is told apart before connecting.
+hear whom, the userinfo we connect with, and the folder A2S_INFO reports, by
+which a relay of another game is told apart before connecting.
 
 There is no default game below the command line: every consumer takes a
 profile, so a caller that forgot it fails instead of decoding as HL2DM.
@@ -41,6 +41,8 @@ class Game:
     user_messages: tuple
     chat_prefix: str  # SayText2 format of a player's chat: PREFIX_Channel
     teams: dict
+    # net_SetConVar at CONNECTED, in wire order; `name` is set per run
+    userinfo: tuple
     # player_death of this game: (event fields, player) -> (text after the
     # weapon, extra fields); player(userid) -> (steamid64 or 0, nick)
     death_details: Callable = no_death_details

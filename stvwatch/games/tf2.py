@@ -7,7 +7,7 @@ src/game/shared/tf/tf_gamerules.cpp; death_flags and customkill: TF_DEATH_*
 and ETFDmgCustom in src/game/shared/tf/tf_shareddefs.h.
 """
 
-from . import Game
+from . import Game, hl2dm
 
 FEIGN_DEATH = 0x20  # TF_DEATH_FEIGN_DEATH: Dead Ringer, a death the players see as real
 CUSTOM_KILLS = {1: "headshot", 2: "backstab"}
@@ -131,5 +131,7 @@ GAME = Game(
     ),
     chat_prefix="TF_Chat",
     teams={0: "unassigned", 1: "spectator", 2: "red", 3: "blu"},
+    # the hl2mp set, as since the first TF2 session: the relay takes it
+    userinfo=hl2dm.USERINFO,
     death_details=death_details,
 )
