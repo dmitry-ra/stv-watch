@@ -151,7 +151,10 @@ paired by `utt`.
   `steamid64` is whatever the server signed the voice with (SourceTV: the
   server's own, an anonymous game server). The screen shows the name and a
   dim `[bot]`; a SteamID that is not a player's reads in Steam3, as the
-  server's `status` prints it (`[A:1:1234567:4321]`).
+  server's `status` prints it (`[A:1:1234567:4321]`). The `talk` line goes by
+  the first packet; if a later one comes from a player's slot with the same
+  SteamID (someone signing as the bot), the `voice` line has no `bot` and is
+  checked as any other: `verified: false`, `slot_steamid64` that player.
 
 Game event types (filtered by `--events`) and their extra fields:
 
