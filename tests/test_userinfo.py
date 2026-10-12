@@ -61,7 +61,7 @@ def test_entries_decode_in_every_encoding_of_index_key_and_user_data():
     assert got == [
         (0, None),
         (1, Player(account(1), "alice", 11)),
-        (2, Player(0, "Sniper", 13)),
+        (2, Player(0, "Sniper", 13, True)),
         (3, Player(account(2), "bob", 12)),
     ]
     assert tables.userinfo(1).keys == [b"slot0", b"slot1", b"slot12", b"slot3"]
@@ -196,3 +196,18 @@ def test_a_cut_of_a_relay_stream_map_change_join_leave_and_voice():
     assert book.by_account == {acc: f"player{acc - account(0)}" for acc in book.by_account}
     assert {6, 7, 9, 10, 15, 19} <= {acc - account(0) for acc in book.by_account}
     assert tables.errors == 0
+
+
+def test_a_steamid_reads_as_steam2_for_a_player_and_as_steam3_otherwise():
+    """A player as STEAM_0:x:n; an anonymous game server (the SourceTV voice
+    signature) with its instance, a persistent one without, as `status`; an
+    anonymous user with its instance too; types without a letter as i."""
+
+    def sid(kind, acc, inst=0):
+        return 1 << 56 | kind << 52 | inst << 32 | acc
+
+    assert [
+        userinfo.steam_text(s)
+        for s in (userinfo.STEAMID64_BASE + 13, 90090551102330503, 85568392920039424 + 12345)
+        + (sid(9, 5), sid(10, 6, 7), sid(11, 8))
+    ] == ["STEAM_0:1:6", "[A:1:1234567:4321]", "[G:1:12345]", "[i:1:5]", "[a:1:6:7]", "[i:1:8]"]

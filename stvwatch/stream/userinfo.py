@@ -9,8 +9,10 @@ Each entry's user data is a player_info_t, `name[32] | i32 userID | guid[33]
 | pad | u32 friendsID | ...`; an entry without user data is an empty slot.
 Some servers hand the guid to SourceTV viewers hashed (`STEAM_H:x:n`), so it
 cannot be the key; friendsID is the plain Steam account id, SteamID64 minus
-the individual-account base. Bots have the guid `BOT`; some servers fill
-their friendsID with made-up ids, so a bot's is taken as 0.
+the individual-account base. Bots and SourceTV have the guid `BOT`, which
+the server writes only for its fake clients; some servers fill their
+friendsID with made-up ids, so a bot's is taken as 0. A player's friendsID
+can be 0 too (Steam auth pending, a server without Steam): that is not a bot.
 """
 
 import struct
@@ -32,6 +34,20 @@ class Player(NamedTuple):
     friends_id: int
     name: str
     userid: int
+    bot: bool = False  # a fake client: a bot or SourceTV
+
+
+def steam_text(sid64):
+    """A SteamID as people read it: STEAM_0:x:n for a player, else Steam3 as
+    the server's `status` prints it, with the instance for anonymous types."""
+    kind = sid64 >> 52 & 0xF
+    if kind == 1:
+        a = sid64 - STEAMID64_BASE
+        return f"STEAM_0:{a & 1}:{a >> 1}"
+    # 9 (a console user) and types past 10 have no letter of their own
+    letter = "IUMGAPCgTia"[kind] if kind <= 10 else "i"
+    inst = f":{sid64 >> 32 & 0xFFFFF}" if letter in "Aa" else ""
+    return f"[{letter}:{sid64 >> 56}:{sid64 & 0xFFFFFFFF}{inst}]"
 
 
 def player_info(ud):
@@ -40,8 +56,9 @@ def player_info(ud):
         return None
     # a nick of 31 bytes may end in a cut multibyte character
     name = ud[:32].split(b"\0", 1)[0].decode("utf-8", "replace").rstrip("\ufffd")
-    friends_id = 0 if ud[36:40] == b"BOT\0" else struct.unpack_from("<I", ud, 72)[0]
-    return Player(friends_id, name, struct.unpack_from("<i", ud, 32)[0])
+    bot = ud[36:40] == b"BOT\0"
+    friends_id = 0 if bot else struct.unpack_from("<I", ud, 72)[0]
+    return Player(friends_id, name, struct.unpack_from("<i", ud, 32)[0], bot)
 
 
 def lzss(blob):

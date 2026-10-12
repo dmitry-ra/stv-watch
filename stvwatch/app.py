@@ -32,7 +32,7 @@ from .ordered import Ordered
 from .render import Screen, clean
 from .serve import ServedScreen
 from .stream.framing import Framer
-from .stream.userinfo import STEAMID64_BASE, NickBook, StringTables
+from .stream.userinfo import STEAMID64_BASE, NickBook, StringTables, steam_text
 from .times import local, stamp, tz_label, utc_iso
 from .voice import audio, steamvoice
 from .voice.segments import ChannelFrame, Segmenter
@@ -129,11 +129,6 @@ def hms(seconds):
     return "%02d:%02d:%02d" % (s // 3600, s % 3600 // 60, s % 60)
 
 
-def steam2(sid64):
-    a = sid64 - 76561197960265728
-    return f"STEAM_0:{a & 1}:{a >> 1}"
-
-
 def owner_sid(player):
     return STEAMID64_BASE + player.friends_id if player.friends_id else 0
 
@@ -199,6 +194,7 @@ class ChannelAudio:
         self.index = 0
         self.key = None  # (sid, index) of the open utterance
         self.from_client = None  # slot of the last frame
+        self.owner = None  # its Player, None for an empty slot or no table yet
         self.reset_stats()
 
     def reset_stats(self):
@@ -235,12 +231,14 @@ class ChannelAudio:
         return piece
 
     def check_slot(self, m, steamid64):
-        """Count one voice message against its slot's userinfo entry."""
-        bad = m.owner is not None and m.owner.friends_id != steamid64 - STEAMID64_BASE
+        """Count one voice message against its slot's userinfo entry. A bot's
+        slot has no account to check: the SteamID it sends is a signature."""
+        owner = None if m.owner is None or m.owner.bot else m.owner
+        bad = owner is not None and owner.friends_id != steamid64 - STEAMID64_BASE
         if not self.slot_bad:
-            self.slot, self.slot_owner = m.from_client, m.owner if bad else None
+            self.slot, self.slot_owner = m.from_client, owner if bad else None
         self.slot_bad += bad
-        self.slot_ok += m.owner is not None and not bad
+        self.slot_ok += owner is not None and not bad
 
     def verified(self):
         """False if any message's slot belonged to someone else, None if no
@@ -263,6 +261,7 @@ class Utt:
         self.audio_s = 0.0
         self.cont = False  # a piece of a monologue after the first
         self.nick, self.spectator = "", None  # as of the end, see App.speaker
+        self.bot = None  # the bot's Player when it talks from a bot's slot
         self.slot, self.verified, self.slot_owner = None, None, None  # as of the end
         self.meta = {}  # the recognizer job, once closed
         self.partial = ""  # the live recognizer's text while talking
@@ -717,7 +716,8 @@ class App:
                 continue
             for fr in p.frames:
                 self.on_frame(
-                    ChannelFrame(p.steamid64, m.t_ns, m.tick, m.session, m.from_client, fr)
+                    ChannelFrame(p.steamid64, m.t_ns, m.tick, m.session, m.from_client, fr),
+                    m.owner,
                 )
             ca = self.audio.get(p.steamid64)
             if ca is not None and ca.open:
@@ -737,7 +737,7 @@ class App:
     def who(r):
         nick = clean(r["nick"])
         sid = r["steamid64"]
-        return [nick] if nick else [steam2(sid)] if sid else []
+        return [nick] if nick else [steam_text(sid)] if sid else []
 
     def game_spans(self, r, full=False):
         """Time is added by feed(); here: type tag, who, what. Each line stands
@@ -766,16 +766,16 @@ class App:
             else:
                 out += who + [" " + text if typ != "leave" else " left: " + text]
             if sid:
-                out.append(f"  {steam2(sid)}")
+                out.append(f"  {steam_text(sid)}")
             elif typ == "leave" and x.get("networkid"):
                 out.append(f"  {clean(x['networkid'])}")
         elif typ == "death":
             out += who + [" " + text]
             victim = x.get("victim_steamid64", 0)
             if full and (sid or victim):
-                ids = steam2(sid) if sid else "-"
+                ids = steam_text(sid) if sid else "-"
                 if "victim" in x:
-                    ids += " > " + (steam2(victim) if victim else "-")
+                    ids += " > " + (steam_text(victim) if victim else "-")
                 out.append("  " + ids)
         else:
             out.append(text)
@@ -802,11 +802,16 @@ class App:
         end once closed - the recognizer answers seconds of stream later, and
         by then the player may have changed team or name."""
         if utt.spectator is None:
-            return ch.nick, self.game.unheard(ch.sid64)
+            return self.speaker_nick(utt, ch), self.game.unheard(ch.sid64)
         return utt.nick, utt.spectator
 
+    @staticmethod
+    def speaker_nick(utt, ch):
+        """A bot is named by its slot: the SteamID it sends is not its own."""
+        return clean(utt.bot.name) if utt.bot else ch.nick
+
     def name_spans(self, nick, sid):
-        return [(nick or steam2(sid), "cyan")]
+        return [(nick or steam_text(sid), "cyan")]
 
     def spec_mark(self, spectator):
         """A spectator's voice reaches only spectators unless sv_alltalk."""
@@ -822,14 +827,17 @@ class App:
 
     def slot_mark(self, utt):
         """The server put someone else in the slot this voice came from: the
-        SteamID in the payload is the sender's claim, the slot the server's."""
+        SteamID in the payload is the sender's claim, the slot the server's.
+        A bot's slot is marked as such, not checked."""
+        if utt.bot:
+            return [(" [bot]", "dim")]
         slot, verified, owner = self.slot_state(utt)
         if verified is not False:
             return []
-        who = clean(owner.name) or steam2(owner_sid(owner))
+        who = clean(owner.name) or steam_text(owner_sid(owner))
         return [(f" [slot {slot}: {who}]", line_style("voice", "slot mismatch"))]
 
-    def on_frame(self, cf):
+    def on_frame(self, cf, owner=None):
         f = cf.frame
         sid = cf.steamid64
         ch = self.channel(sid, cf.t_ns)
@@ -844,7 +852,7 @@ class App:
         if s is None or not s.items or s.items[-1][1] is not f:
             return
         ca = self.audio[sid]
-        ca.from_client = cf.from_client
+        ca.from_client, ca.owner = cf.from_client, owner
         if not ca.open:
             ca.open, ca.start_ns, ca.index = True, cf.t_ns, ca.index + 1
             ch.talking = True
@@ -938,8 +946,10 @@ class App:
             utt.audio_s = len(pcm) / SR
             utt.end_ns, utt.state = t_ns, "recognizing"
             self.refresh_name(ch)
-            utt.nick, utt.spectator = ch.nick, self.game.unheard(sid)
             utt.slot, utt.verified, utt.slot_owner = facts.slot, facts.verified(), facts.slot_owner
+            if utt.verified is False:
+                utt.bot = None  # a player's slot signed as the bot: a forgery, not the bot
+            utt.nick, utt.spectator = self.speaker_nick(utt, ch), self.game.unheard(sid)
             utt.meta = meta
             utt.pcm = pcm if meta["wav"] else None
             utt.place = self.out.put(closed)
@@ -969,13 +979,17 @@ class App:
         utt = self.utts[ca.key] = Utt(ca.key, ch.sid64, t_ns, self.utt_n)
         utt.cont = cut_ns is not None
         utt.first = ch.utterances == 0
+        utt.bot = ca.owner if ca.owner is not None and ca.owner.bot else None
         self.screen.live_open(ca.key, self.progress(utt), t_ns)
         if self.live_asr is not None:
             self.live_asr.open(ca.key)
         self.refresh_name(ch)
         extra = {"utt": utt.n, "start_utc": utc_iso(t_ns), "continued": utt.cont}
         extra["slot"] = ca.from_client
-        rec = {"type": "talk", "steamid64": ch.sid64, "nick": ch.nick, "text": "", "extra": extra}
+        if utt.bot:
+            extra["bot"] = True
+        nick = self.speaker_nick(utt, ch)
+        rec = {"type": "talk", "steamid64": ch.sid64, "nick": nick, "text": "", "extra": extra}
         self.out.put(cut_ns or t_ns, lambda t: self.write(rec, t))
 
     def details(self, ca, t_ns, why, audio_s):
@@ -1026,7 +1040,7 @@ class App:
                     (f" {kbps:.0f}kb/s fr {ca.frames} gap {ca.gap} msg {len(ca.arrivals)}", "dim")
                 )
                 if utt.first:
-                    out.append((f" {steam2(utt.sid)} new", "dim"))
+                    out.append((f" {steam_text(utt.sid)} new", "dim"))
             if utt.partial:
                 # last: a line too wide keeps the end of it (render.fit)
                 out += [(": ", ""), (utt.partial, line_style("voice", "partial"))]
@@ -1189,9 +1203,13 @@ class App:
         }
         if speech is not None:
             extra["speech_ms"] = speech
-        extra["slot"], extra["verified"] = utt.slot, utt.verified
-        if utt.verified is False:
-            extra["slot_steamid64"] = owner_sid(utt.slot_owner)
+        extra["slot"] = utt.slot
+        if utt.bot:
+            extra["bot"] = True
+        else:
+            extra["verified"] = utt.verified
+            if utt.verified is False:
+                extra["slot_steamid64"] = owner_sid(utt.slot_owner)
         if not self.a.json:
             self.screen.live_close(utt.key, head + spans, [("^ ", "dim")], utt.start_ns)
         rec = {"type": "voice", "steamid64": ch.sid64, "nick": nick, "text": text, "extra": extra}

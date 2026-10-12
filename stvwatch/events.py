@@ -177,11 +177,11 @@ class GameEvents:
         fr = self.framer
         self._session(fr.cur_session)
         players = [p for _slot, p in entries if p is not None]
-        if mid == STRING_TABLE_CREATE and any(fid for fid, _n, _u in players):
+        if mid == STRING_TABLE_CREATE and any(p.friends_id for p in players):
             # not in the table we join with: left during the map change while
             # we were reconnecting, so his next greeting is a first entry
-            self.prev &= {fid for fid, _n, _u in players}
-        for fid, nick, userid in players:
+            self.prev &= {p.friends_id for p in players}
+        for fid, nick, userid, _bot in players:
             self.userids[userid] = (fid, nick)
             if not fid:
                 continue  # bots: no connect or rename lines

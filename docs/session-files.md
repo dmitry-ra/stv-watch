@@ -96,8 +96,8 @@ paired by `utt`.
 
 | type | extra fields | what |
 |---|---|---|
-| `talk` | `utt`, `start_utc`, `continued`, `slot` | a player starts an utterance, or a piece of a monologue; `text` is empty |
-| `voice` | `utt`, `start_utc`, `end_utc`, `result`, `continued`, `spectator`, `details`, `speech_ms`, `slot`, `verified`, `slot_steamid64` | the utterance closed; `text` is what was recognized |
+| `talk` | `utt`, `start_utc`, `continued`, `slot`, `bot` | a player starts an utterance, or a piece of a monologue; `text` is empty |
+| `voice` | `utt`, `start_utc`, `end_utc`, `result`, `continued`, `spectator`, `details`, `speech_ms`, `slot`, `verified`, `slot_steamid64`, `bot` | the utterance closed; `text` is what was recognized |
 
 - `utt`: the utterance's number in the run (1, 2, ...); every `talk` line has
   exactly one `voice` line with the same `utt`, later in the same session or in
@@ -144,7 +144,18 @@ paired by `utt`.
   NICK being who the server had there; `--debug` adds `slot N` to the
   transport numbers of every voice line (and so does `feed.log`).
 - `slot_steamid64`: only when `verified` is `false`: SteamID64 of the player
-  in that slot (0 for a bot).
+  in that slot (0 for one without an account).
+- `bot`: only when the voice came from the slot of a bot (SourceTV or a bot:
+  the server's fake client, guid `BOT`), always `true`, in both lines of the
+  utterance. Such a slot has no Steam account to check, so the `voice` line
+  has no `verified` (and no `slot_steamid64`); `nick` is the slot's, and
+  `steamid64` is whatever the server signed the voice with (SourceTV: the
+  server's own, an anonymous game server). The screen shows the name and a
+  dim `[bot]`; a SteamID that is not a player's reads in Steam3, as the
+  server's `status` prints it (`[A:1:1234567:4321]`). The `talk` line goes by
+  the first packet; if a later one comes from a player's slot with the same
+  SteamID (someone signing as the bot), the `voice` line has no `bot` and is
+  checked as any other: `verified: false`, `slot_steamid64` that player.
 
 Game event types (filtered by `--events`) and their extra fields:
 
@@ -235,7 +246,7 @@ become spaces):
 | `asr_ms` | milliseconds the recognizer spent on it |
 | `lag_ms` | milliseconds of the recording's clock from the close of the utterance (of a monologue piece: from its cut) to its text |
 | `t_local` | only with `--tz`: the start in that zone, `YYYY-MM-DD HH:MM:SS` |
-| `slot`, `verified`, `slot_steamid64` | as in the `voice` line; `verified` is `true`, `false` or empty (null), `slot_steamid64` empty unless `verified` is `false` |
+| `slot`, `verified`, `slot_steamid64` | as in the `voice` line; `verified` is `true`, `false` or empty (null, and for a `bot` line), `slot_steamid64` empty unless `verified` is `false` |
 
 ## audio/
 

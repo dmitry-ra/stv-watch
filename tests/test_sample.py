@@ -123,6 +123,8 @@ def check(value, schema, where="$"):
         errors.append(f"{where}: {value!r} does not match {schema['pattern']}")
     if "minimum" in schema and value is not None and value < schema["minimum"]:
         errors.append(f"{where}: {value!r} below {schema['minimum']}")
+    if "not" in schema and not check(value, schema["not"], where):
+        errors.append(f"{where}: matches {schema['not']}")
     if isinstance(value, dict):
         props = schema.get("properties", {})
         errors += [f"{where}: {k} missing" for k in schema.get("required", []) if k not in value]
@@ -241,6 +243,13 @@ def test_voice_and_recognizer_lines_match_the_schema(tmp_path, monkeypatch):
         "$.slot_steamid64: None is not integer",
         "$: slot_steamid64 on 'voice'",
     ]
+    # a bot's slot is not checked: its voice line has bot instead of verified
+    bot = {k: v for k, v in voice.items() if k not in ("verified", "slot_steamid64")}
+    assert check(dict(bot, bot=True), schema) == check(dict(talk, bot=True), schema) == []
+    assert check(dict(bot, bot=True, verified=None), schema) == ["$: verified on 'voice'"]
+    assert check(dict(bot, bot=False), schema) == check(dict(talk, bot=False), schema)
+    assert check(dict(talk, bot=False), schema) == ["$.bot: False is not True"]
+    assert check(dict(CHAT, channel="all", ent=1, bot=True), schema) == ["$: bot on 'chat'"]
 
 
 CHAT = {

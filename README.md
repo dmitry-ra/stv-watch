@@ -283,6 +283,9 @@ own game writes; the slot the data came from is the server's, and the server's
 `userinfo` table says who is in that slot. Each voice line checks one against
 the other (`verified`): a mismatch, a client claiming someone else's SteamID,
 is marked in red on screen with the slot and the nick of its real owner.
+A bot's slot (SourceTV talking, as a server plugin can make it) has no
+account to check: its lines carry `bot` and the slot's name instead, marked
+`[bot]` on screen.
 
 Durations in options and in the files are whole milliseconds, their names end
 in `_ms` / `-ms`; moments are ISO times. The screen speaks seconds.
