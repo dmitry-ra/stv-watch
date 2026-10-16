@@ -12,9 +12,9 @@ JSON object per line.
 Every live session is recorded byte for byte (`capture.tvd`), and a replay of
 that recording gives the same lines the live run printed.
 
-![stv-watch 0.6.0 replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
+![stv-watch 0.7.0 replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
 
-stv-watch 0.6.0 replaying a synthetic recording: invented players, English TTS
+stv-watch 0.7.0 replaying a synthetic recording: invented players, English TTS
 voices, real Parakeet recognition.
 
 ## Requirements
