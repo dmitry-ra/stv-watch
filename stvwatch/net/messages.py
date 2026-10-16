@@ -9,44 +9,10 @@ state, spawncount, disconnect reason, tick. Payloads stay opaque.
 from . import wire
 from .wire import BitWriter
 
-# The userinfo cvar set a stock hl2mp client sends at CONNECTED, in wire order.
-# Values are the engine defaults a fresh client reports; `name` is overridden per
-# run. Order matters only for byte-identity with the reference capture - the
-# server reads them as an unordered set.
-DEFAULT_USERINFO = [
-    ("cl_interp_npcs", "0"),
-    ("cl_thirdperson", "0"),
-    ("cl_team", "default"),
-    ("cl_class", "default"),
-    ("cl_predict", "1"),
-    ("cl_interp_ratio", "2"),
-    ("cl_interp", "0.1"),
-    ("cl_showhelp", "1"),
-    ("english", "1"),
-    ("cl_predictweapons", "1"),
-    ("cl_lagcompensation", "1"),
-    ("cl_spec_mode", "1"),
-    ("cl_playermodel", "none"),
-    ("cl_defaultweapon", "weapon_physcannon"),
-    ("cl_autowepswitch", "1"),
-    ("name", "unnamed"),
-    ("cl_interpolate", "1"),
-    ("cl_clanid", "0"),
-    ("cl_connectmethod", ""),
-    ("tv_nochat", "0"),
-    ("cl_language", "english"),
-    ("rate", "80000"),
-    ("cl_cmdrate", "30"),
-    ("cl_updaterate", "20"),
-    ("closecaption", "0"),
-    ("net_maxroutable", "1260"),
-    ("voice_loopback", "0"),
-]
 
-
-def userinfo_for(name):
-    """DEFAULT_USERINFO with `name` substituted, order preserved."""
-    return [(k, name if k == "name" else v) for k, v in DEFAULT_USERINFO]
+def userinfo_for(userinfo, name):
+    """A profile's userinfo with `name` substituted, order preserved."""
+    return [(k, name if k == "name" else v) for k, v in userinfo]
 
 
 # --- outbound message bodies (message-chain bytes, byte-padded) -------------
@@ -72,10 +38,10 @@ def signonstate(state, spawncount, w=None):
     return w
 
 
-def connected_reply_body(name, spawncount=-1):
+def connected_reply_body(name, userinfo, spawncount=-1):
     """The CONNECTED-stage message stream: net_SetConVar(userinfo) then
     net_SignonState(CONNECTED, spawncount). Both messages share one stream."""
-    w = setconvar(userinfo_for(name))
+    w = setconvar(userinfo_for(userinfo, name))
     signonstate(wire.SIGNON_CONNECTED, spawncount, w)
     return w.get_bytes()
 

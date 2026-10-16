@@ -47,8 +47,10 @@ class FakeRelay:
         early=False,
         accept=True,
         password=None,
+        folder="hl2mp",
     ):
         self.version = version
+        self.folder = folder  # A2S: the game the relay serves
         self.bodies = list(bodies)  # reliable message streams for each connection
         self.early = early  # its first packet goes out before the accept
         self.accept = accept  # False: no 'B' at all, the stream alone
@@ -208,7 +210,9 @@ class FakeRelay:
         players = self.connected()
         body = (
             bytes([a2s.S2A_INFO, 17])
-            + b"Fake relay\0dm_test\0hl2mp\0Half-Life 2 Deathmatch\0"
+            + b"Fake relay\0dm_test\0"
+            + self.folder.encode()
+            + b"\0Half-Life 2 Deathmatch\0"
             + struct.pack("<H", 320)
             + bytes([players, self.max_players, 0])
             + b"dl"

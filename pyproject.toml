@@ -1,7 +1,7 @@
 [project]
 name = "stv-watch"
-version = "0.6.1"
-description = "SourceTV relay viewer for Half-Life 2: Deathmatch: voice with a transcript, game chat and events, live or from a recording"
+version = "0.7.0"
+description = "SourceTV relay viewer for Half-Life 2: Deathmatch and Team Fortress 2: voice with a transcript, game chat and events, live or from a recording"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -34,6 +34,8 @@ keywords = [
     "hltv",
     "half-life-2",
     "hl2dm",
+    "tf2",
+    "team-fortress-2",
     "source-engine",
     "voice-chat",
     "speech-recognition",

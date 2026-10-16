@@ -12,9 +12,11 @@ import sys
 import pytest
 from fakerelay import BAD_PASSWORD, FakeRelay
 
-from stvwatch import cli
+from stvwatch import cli, games
 from stvwatch.net import client
 from stvwatch.stream.recording import C2S_CONNECT
+
+HL2DM = games.get("hl2dm")
 
 STV = [sys.executable, "-B", "-m", "stvwatch.cli"]
 ENV = {k: v for k, v in os.environ.items() if k != "STV_WATCH_PASSWORD"}
@@ -51,11 +53,18 @@ def argv_of(pid):
 
 
 def test_precheck_lets_a_password_relay_through_only_with_a_password(monkeypatch):
-    ri = {"players": 0, "max_players": 8, "version": "10889068", "visibility": 1, "map": "m"}
+    ri = {
+        "players": 0,
+        "max_players": 8,
+        "version": "10889068",
+        "visibility": 1,
+        "map": "m",
+        "folder": "hl2mp",
+    }
     monkeypatch.setattr(client, "safe_info", lambda a: ri)
     monkeypatch.setattr(client, "auth_proto", lambda a: 2)
-    assert client.precheck("r:1")[:2] == (False, "password")
-    ok, why, facts = client.precheck("r:1", have_password=True)
+    assert client.precheck("r:1", profile=HL2DM)[:2] == (False, "password")
+    ok, why, facts = client.precheck("r:1", have_password=True, profile=HL2DM)
     assert (ok, why, facts["password"]) == (True, "", True)
 
 

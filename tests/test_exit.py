@@ -59,9 +59,9 @@ def disconnect_reasons(packets):
 
 def make_sup(**kw):
     path = os.path.join(tempfile.mkdtemp(), "t.tvd")
-    opt = supervisor.Options(build="10889068", **kw)
+    opt = supervisor.Options(game="hl2dm", build="10889068", **kw)
     sup = supervisor.Supervisor(opt, path, log=lambda *a: None)
-    sup.crc = builds.crc_for("10889068")
+    sup.crc = builds.crc_for("10889068", "hl2dm")
     return sup, path
 
 
@@ -106,10 +106,10 @@ def test_no_disconnect_after_the_relay_dropped_us():
 
 
 def test_crc_by_build_and_unknown_build():
-    assert builds.crc_for("10889068") == 0xD9B6082D
-    assert builds.crc_for(9540945) == 0x35B19FD9
+    assert builds.crc_for("10889068", "hl2dm") == 0xD9B6082D
+    assert builds.crc_for(9540945, "hl2dm") == 0x35B19FD9
     with pytest.raises(builds.UnknownBuild):
-        builds.crc_for("10889069")
+        builds.crc_for("10889069", "hl2dm")
 
 
 @pytest.mark.parametrize(
@@ -137,7 +137,9 @@ class Driven(supervisor.Supervisor):
 
     def __init__(self, script, a2s_version=None, **kw):
         path = os.path.join(tempfile.mkdtemp(), "t.tvd")
-        super().__init__(supervisor.Options(seconds=0, **kw), path, log=lambda *a: None)
+        super().__init__(
+            supervisor.Options(game="hl2dm", seconds=0, **kw), path, log=lambda *a: None
+        )
         self.script = list(script)
         self.waits = []
         self.handshakes = 0

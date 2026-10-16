@@ -7,6 +7,11 @@ Format (little-endian, version 1):
            | u16 endpoint_len | endpoint (ASCII)
   record:  u64 t_ns | u8 type | u32 len | data
 
+Every file, a rotated one too, starts with a GAME record naming the game
+profile, so a replay decodes it as the live run did. A file without one was
+written before 0.7.0 (or by another tool): a replay takes the game of
+--game, by default HL2DM, the only game before the record existed.
+
 Times are UTC Unix-epoch nanoseconds (`time.time_ns()`), absolute. Datagram
 records carry raw bytes; event records carry UTF-8 JSON - events are rare, so
 the size cost is nil and the reader stays trivial.
@@ -38,6 +43,7 @@ MAPCHANGE = 0x14
 SPLIT_SEEN = 0x15
 LEAVE = 0x16
 NEXT_FILE = 0x17
+GAME = 0x18
 
 TYPE_NAMES = {
     DATAGRAM_IN: "DATAGRAM_IN",
@@ -50,8 +56,19 @@ TYPE_NAMES = {
     SPLIT_SEEN: "SPLIT_SEEN",
     LEAVE: "LEAVE",
     NEXT_FILE: "NEXT_FILE",
+    GAME: "GAME",
 }
-EVENT_TYPES = {SESSION_START, SIGNON, BROKEN, RECONNECT, MAPCHANGE, SPLIT_SEEN, LEAVE, NEXT_FILE}
+EVENT_TYPES = {
+    SESSION_START,
+    SIGNON,
+    BROKEN,
+    RECONNECT,
+    MAPCHANGE,
+    SPLIT_SEEN,
+    LEAVE,
+    NEXT_FILE,
+    GAME,
+}
 
 
 # The network client's exit code when it could not write the journal.
@@ -70,11 +87,15 @@ class DumpWriter:
     (a per-record fsync on a mechanical disk stalls recvfrom long enough to drop
     live datagrams). Worst case loss is `fsync_ms` of tail, and only on power
     loss.
+
+    `game` is the profile's name for the GAME record; None writes a file as
+    before 0.7.0, without one (tests of old recordings).
     """
 
-    def __init__(self, path, endpoint, fsync_ms=1000, next_path=None, on_next=None):
+    def __init__(self, path, endpoint, fsync_ms=1000, next_path=None, on_next=None, *, game):
         self.path = path
         self.endpoint = endpoint
+        self.game = game
         self.fsync_interval_ns = max(0, int(fsync_ms)) * 1_000_000
         self._last_fsync = time.monotonic_ns()  # monotonic: an NTP step must
         self.records = 0  # never wedge the gate
@@ -88,7 +109,11 @@ class DumpWriter:
             os.makedirs(d, exist_ok=True)
             f = open(path, mode)
             ep = self.endpoint.encode("ascii", "replace")
-            f.write(struct.pack(HEADER_HEAD, MAGIC, VERSION, time.time_ns(), len(ep)) + ep)
+            now = time.time_ns()
+            f.write(struct.pack(HEADER_HEAD, MAGIC, VERSION, now, len(ep)) + ep)
+            if self.game:
+                data = json.dumps({"game": self.game}).encode("utf-8")
+                f.write(struct.pack(RECORD_HEAD, now, GAME, len(data)) + data)
             f.flush()
             os.fsync(f.fileno())
         except OSError as e:

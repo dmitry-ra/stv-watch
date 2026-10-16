@@ -19,7 +19,7 @@ import sys
 import time
 import traceback
 
-from .. import rotate, times
+from .. import games, rotate, times
 from . import dump as dumpfmt
 from . import supervisor, wire
 
@@ -90,6 +90,7 @@ def cmd_run(a):
         ip=a.ip,
         port=a.port,
         name=a.name,
+        game=a.game,
         build=None if a.build == "auto" else a.build,
         password=os.environ.get(PASSWORD_ENV, "") if a.password is None else a.password,
         crc=None if a.crc == "auto" else int(a.crc, 0),
@@ -205,6 +206,12 @@ def parser():
     r.add_argument("--port", type=int, required=True)
     r.add_argument("--name", default="tvdump")
     r.add_argument(
+        "--game",
+        choices=games.NAMES,
+        default=games.DEFAULT,
+        help="game profile: the CRC table, recorded in the dump",
+    )
+    r.add_argument(
         "--build", default="auto", help="server build; auto = A2S_INFO version of the relay"
     )
     r.add_argument(
@@ -216,7 +223,7 @@ def parser():
     r.add_argument(
         "--crc",
         default="auto",
-        help="SendTable CRC; auto = builds.CRC_BY_BUILD[build]. "
+        help="SendTable CRC; auto = the game profile's CRC of the build. "
         'A wrong one is refused: "different class tables"',
     )
     r.add_argument(

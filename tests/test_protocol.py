@@ -11,6 +11,7 @@ import tempfile
 
 import pytest
 
+from stvwatch import games
 from stvwatch.net import codec, dump, messages, netchan, wire
 
 GOLD_REPLY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "connected_reply.bin")
@@ -64,14 +65,17 @@ def test_generated_connected_reply_matches_reference():
     if not os.path.exists(GOLD_REPLY):
         pytest.skip("reference packet not present")
     gold = open(GOLD_REPLY, "rb").read()[16:]
-    body = messages.connected_reply_body("unnamed")
+    hl2dm = games.get("hl2dm").userinfo
+    body = messages.connected_reply_body("unnamed", hl2dm)
+    # TF2 connects with the same set, byte for byte
+    assert messages.connected_reply_body("unnamed", games.get("tf2").userinfo) == body
     mine = messages.reliable_region(body, 0)
     assert len(mine) == len(gold), (len(mine), len(gold))
 
     # The message stream is byte-padded before being embedded, so the region has
     # two padding runs that carry no information: the stream's own tail padding,
     # and the region's final alignment. Compare content only.
-    inner = messages.setconvar(messages.userinfo_for("unnamed"))
+    inner = messages.setconvar(messages.userinfo_for(hl2dm, "unnamed"))
     messages.signonstate(wire.SIGNON_CONNECTED, -1, inner)
     body_used = inner.nbits()  # 3684: real content
     lw = wire.BitWriter()
@@ -152,7 +156,7 @@ def test_outbound_packet_checksum_selfconsistent():
 def test_dump_roundtrip():
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "x.tvd")
-        with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+        with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
             w.event(dump.SESSION_START, attempt=1)
             w.write(dump.DATAGRAM_IN, b"\xde\xad")
             w.event(dump.SIGNON, state=6)
@@ -162,6 +166,7 @@ def test_dump_roundtrip():
         assert r.endpoint == "127.0.0.1:27020" and r.version == dump.VERSION
         recs = list(r)
         assert [t for _, t, _ in recs] == [
+            dump.GAME,
             dump.SESSION_START,
             dump.DATAGRAM_IN,
             dump.SIGNON,
@@ -178,11 +183,11 @@ def test_dump_survives_truncated_tail():
     """A kill -9 mid-write must leave every complete record readable."""
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, "x.tvd")
-        with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+        with dump.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
             for i in range(5):
                 w.write(dump.DATAGRAM_IN, bytes([i]) * 10)
         raw = open(path, "rb").read()
         open(path, "wb").write(raw[:-4])  # chop mid-record
         r = dump.DumpReader(path)
-        assert len(list(r)) == 4
+        assert len(list(r)) == 5  # the game record and four of five datagrams
         assert r.truncated_tail

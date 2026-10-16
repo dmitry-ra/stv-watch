@@ -20,6 +20,7 @@ Design rules this file exists to enforce:
 
 import time
 
+from .. import games
 from . import chain, messages, netchan, receiver, wire
 
 # Break causes, recorded verbatim into the dump.
@@ -127,7 +128,8 @@ class Session:
         )
 
     def send_connected_reply(self):
-        body = messages.connected_reply_body(self.opt.name, spawncount=-1)
+        userinfo = games.get(self.opt.game).userinfo
+        body = messages.connected_reply_body(self.opt.name, userinfo, spawncount=-1)
         self.state = wire.SIGNON_CONNECTED
         self.send_reliable(body, subchannel=0)
 

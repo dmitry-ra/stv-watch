@@ -14,7 +14,7 @@ recorded as a RECONNECT record so the gap is explained rather than mysterious.
 import socket
 import time
 
-from .. import version
+from .. import games, version
 from . import a2s, builds, handshake, wire
 from . import dump as dumpfmt
 from . import session as sess
@@ -25,7 +25,8 @@ class Options:
         self.ip = kw.get("ip", "127.0.0.1")
         self.port = kw.get("port", 27020)
         self.name = kw.get("name", "tvdump")
-        # None = auto: build from the relay's A2S_INFO, CRC from builds.py.
+        self.game = games.get(kw.get("game")).name
+        # None = auto: build from the relay's A2S_INFO, CRC from the profile.
         self.build = kw.get("build")
         self.password = kw.get("password", "")
         self.crc = kw.get("crc")  # build-specific; 0 is rejected
@@ -39,6 +40,10 @@ class Options:
         self.reliable_resend_s = kw.get("reliable_resend_s", 0.5)
         self.tick_ack_s = kw.get("tick_ack_s", 0.1)
         self.backoff_s = kw.get("backoff_s", 2.0)
+        # FULL held shorter than this is not a productive session: a relay that
+        # sends us back to CONNECTED right after FULL, again and again (a TF2
+        # relay did, 16 times in 100 s after a map change), gets a growing delay
+        self.min_full_s = kw.get("min_full_s", 10.0)
         self.backoff_max_s = kw.get("backoff_max_s", 30.0)
         # A server that states a standing refusal (wrong password/build) will not
         # change its mind on the timescale of the ordinary cap, but it may change
@@ -63,6 +68,7 @@ class Supervisor:
         self.dump = dumpfmt.DumpWriter(
             dump_path,
             self.endpoint,
+            game=opt.game,
             fsync_ms=opt.fsync_ms,
             next_path=opt.next_path,
             on_next=opt.on_next,
@@ -76,6 +82,7 @@ class Supervisor:
         self.alarm = None  # set on a permanent failure
         self.build = None  # resolved for the current attempt
         self.crc = None
+        self.full_at = None  # monotonic time the current session reached FULL
 
     # -- sink callbacks used by Session -------------------------------------
     def on_outbound(self, packet):
@@ -92,6 +99,7 @@ class Supervisor:
         self.log("[signon] %d:%s" % (state, wire.SIGNON_NAMES.get(state, "?")))
         if state == wire.SIGNON_FULL:
             self.reached_full += 1
+            self.full_at = time.monotonic()
 
     def on_break(self, cause, detail):
         self.dump.event(dumpfmt.BROKEN, cause=cause, detail=detail)
@@ -131,6 +139,7 @@ class Supervisor:
                     self.log(
                         "[session] #%d open (challenge=0x%08x)" % (self.sessions, conn.challenge)
                     )
+                    self.full_at = None
                     try:
                         s = self._run_session(conn, deadline)
                     finally:
@@ -139,11 +148,16 @@ class Supervisor:
                         conn.close()
                     if self.sessions > 1:
                         self.reconnects += 1
-                    # Productive == the ladder was climbed. A session that reached
-                    # FULL and then hit a changelevel is the tool working, so it
-                    # must not accumulate delay; one that died below FULL is an
-                    # unproductive attempt however the handshake went.
-                    productive = s.state >= wire.SIGNON_FULL
+                    # Productive == the ladder was climbed and FULL held. A session
+                    # that reached FULL and then hit a changelevel is the tool
+                    # working, so it must not accumulate delay; one that died below
+                    # FULL, or left it at once, is an unproductive attempt however
+                    # the handshake went.
+                    productive = (
+                        s.state >= wire.SIGNON_FULL
+                        and self.full_at is not None
+                        and time.monotonic() - self.full_at >= self.opt.min_full_s
+                    )
                     if self._is_standing_refusal(s.broke):
                         cap = self._permanent(s.broke[1])
                 # Applied on EVERY path: a relay that accepts the connect and
@@ -182,7 +196,7 @@ class Supervisor:
                 return self._resolve_failed(attempt, "a2s: %s" % e)
         if crc is None:
             try:
-                crc = builds.crc_for(build)
+                crc = builds.crc_for(build, self.opt.game)
             except builds.UnknownBuild as e:
                 return self._resolve_failed(attempt, str(e))
         if (build, crc) != (self.build, self.crc):

@@ -164,7 +164,7 @@ def test_a_reader_that_fails_is_a_bug_not_the_end_of_the_recording(tmp_path, mon
     """A journal whose NEXT_FILE record names a file that is not there: the
     reader thread stops on it."""
     path = str(tmp_path / "j.tvd")
-    w = dump.DumpWriter(path, "127.0.0.1:9", fsync_ms=0)
+    w = dump.DumpWriter(path, "127.0.0.1:9", fsync_ms=0, game="hl2dm")
     w.write(dump.DATAGRAM_IN, b"\xff\xff\xff\xffx", t_ns=10**18)
     data = json.dumps({"path": str(tmp_path / "gone.tvd")}).encode()
     w.write(dump.NEXT_FILE, data, t_ns=10**18 + 1)
@@ -301,7 +301,7 @@ class CrashingClient:
         self.end = 0.0
 
     def start(self):
-        dump.DumpWriter(self.dump_path, "127.0.0.1:9", fsync_ms=0).close()
+        dump.DumpWriter(self.dump_path, "127.0.0.1:9", fsync_ms=0, game="hl2dm").close()
         with open(self.log_path, "a") as f:
             f.write("Traceback (most recent call last):\nRuntimeError: boom\n")
             f.write("[tvdump] crash: RuntimeError: boom\n")

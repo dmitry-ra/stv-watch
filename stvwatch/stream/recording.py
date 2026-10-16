@@ -27,6 +27,7 @@ TVD_DATAGRAM_OUT = 0x02
 TVD_SESSION_START = 0x10
 TVD_RECONNECT = 0x13
 TVD_NEXT_FILE = 0x17
+TVD_GAME = 0x18
 HCAP_DIR_IN = 0x01
 
 RECORD_HEAD = struct.Struct("<QBI")
@@ -85,6 +86,28 @@ def _open(path):
     return f, kind, version, start_ns, endpoint
 
 
+def game_of(path):
+    """The game profile a recording names in its first record, or None (a file
+    from before the record existed, an .hcap, an empty file)."""
+    f, kind, _v, _start, _ep = _open(path)
+    try:
+        head = f.read(RECORD_HEAD.size)
+        if kind != "tvd" or len(head) < RECORD_HEAD.size:
+            return None
+        _t, rtype, length = RECORD_HEAD.unpack(head)
+        if rtype != TVD_GAME:
+            return None
+        try:
+            game = json.loads(f.read(length).decode("utf-8"))["game"]
+            if not isinstance(game, str):
+                raise TypeError(f"game is {game!r}")
+            return game
+        except (ValueError, KeyError, TypeError) as e:
+            raise RecordingError(f"{path}: bad game record: {e}") from e
+    finally:
+        f.close()
+
+
 class Recording:
     """Iterable over Datagram. A truncated tail stops iteration and is
     reported in `truncated_tail`, as both writers allow a killed run.
@@ -138,6 +161,8 @@ class Recording:
                 if len(data) < length:
                     self.truncated_tail = True
                     return
+                if is_tvd and rtype == TVD_GAME:
+                    continue  # about the file, read by game_of; written at open, out of time
                 if rtype != TVD_DATAGRAM_IN and self.on_event is not None:
                     self.on_event(t_ns, rtype, data)
                 if is_tvd and rtype == TVD_NEXT_FILE and self.follow:

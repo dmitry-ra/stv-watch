@@ -92,7 +92,9 @@ def test_a_datagram_from_another_address_never_reaches_the_session(tmp_path):
     local socket would make every later relay packet stale."""
     path = str(tmp_path / "c.tvd")
     with FakeRelay() as r:
-        opt = supervisor.Options(ip="127.0.0.1", port=r.port, build="10889068", crc=0xD9B6082D)
+        opt = supervisor.Options(
+            game="hl2dm", ip="127.0.0.1", port=r.port, build="10889068", crc=0xD9B6082D
+        )
         sup = supervisor.Supervisor(opt, path, log=lambda *_a: None)
         th = threading.Thread(target=sup.run)
         th.start()
@@ -136,7 +138,9 @@ def test_the_relays_first_packet_belongs_to_its_connection_in_any_order(tmp_path
     Replayed, it still opens the connection's first transfer."""
     path = str(tmp_path / "c.tvd")
     with FakeRelay(bodies=[long_chat()], early=early, accept=accept) as r:
-        opt = supervisor.Options(ip="127.0.0.1", port=r.port, build="10889068", crc=0xD9B6082D)
+        opt = supervisor.Options(
+            game="hl2dm", ip="127.0.0.1", port=r.port, build="10889068", crc=0xD9B6082D
+        )
         sup = supervisor.Supervisor(opt, path, log=lambda *_a: None)
         th = threading.Thread(target=sup.run)
         th.start()
@@ -163,7 +167,7 @@ def test_the_gap_assertion_compares_the_measured_gap_not_its_rounding(tmp_path, 
     from stvwatch.net import main
 
     path = str(tmp_path / "g.tvd")
-    with dumpfmt.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0) as w:
+    with dumpfmt.DumpWriter(path, "127.0.0.1:27020", fsync_ms=0, game="hl2dm") as w:
         for t in (10**18, 10**18 + gap_ns):
             w.write(dumpfmt.DATAGRAM_IN, b"\0" * 8, t_ns=t)
     assert main.main(["read", path, "--assert-no-gaps-over-ms", "2000"]) == rc

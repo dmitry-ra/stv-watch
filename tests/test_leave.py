@@ -205,7 +205,9 @@ def test_a_session_cut_during_signon_reconnects_and_still_leaves(tmp_path):
     breaker ends the session (with net_Disconnect, the slot may exist), the
     supervisor waits and connects again; the stop leaves the second one."""
     with FakeRelay(cut_first_after=10) as r:
-        opt = supervisor.Options(ip="127.0.0.1", port=r.port, silence_signon_s=0.5, backoff_s=0.2)
+        opt = supervisor.Options(
+            game="hl2dm", ip="127.0.0.1", port=r.port, silence_signon_s=0.5, backoff_s=0.2
+        )
         sup = supervisor.Supervisor(opt, str(tmp_path / "c.tvd"), log=lambda *_a: None)
         import threading
 

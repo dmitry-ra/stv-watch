@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from stvwatch import games
 from stvwatch.net import client, wire
 
 RELAY, GAME = "relay.invalid:27020", "game.invalid:27015"
@@ -21,6 +22,7 @@ def relay(**kw):
         "visibility": 0,
         "map": "dm_x",
         "bots": 0,
+        "folder": "hl2mp",
     }
     base.update(kw)
     return base
@@ -29,28 +31,39 @@ def relay(**kw):
 GAME_INFO = {"players": 5, "bots": 1, "map": "dm_x"}
 
 
+TF = {"folder": "tf", "version": "11087207"}
+
+
 @pytest.mark.parametrize(
-    "ri,gi,empty_ok,last,auth,why",
+    "ri,gi,empty_ok,last,auth,why,game",
     [
-        (relay(), GAME_INFO, False, False, 2, ""),
-        (None, GAME_INFO, False, False, 2, "relay_silent"),
-        (relay(version="1"), GAME_INFO, False, False, 2, "unknown_build 1"),
-        (relay(visibility=1), GAME_INFO, False, False, 2, "password"),
-        (relay(players=1, max_players=2), GAME_INFO, False, False, 2, "few_free_slots"),
-        (relay(players=1, max_players=2), GAME_INFO, False, True, 2, ""),
-        (relay(players=0, max_players=1), GAME_INFO, False, False, 2, "few_free_slots"),
-        (relay(players=1, max_players=1), GAME_INFO, False, True, 2, "few_free_slots"),
-        (relay(), {"players": 1, "bots": 1, "map": "dm_x"}, False, False, 2, "no_humans"),
-        (relay(), {"players": 1, "bots": 1, "map": "dm_x"}, True, False, 2, ""),
-        (relay(), GAME_INFO, False, False, 3, "auth_3"),
-        (relay(), GAME_INFO, False, False, None, "auth_None"),
+        (relay(), GAME_INFO, False, False, 2, "", "hl2dm"),
+        (None, GAME_INFO, False, False, 2, "relay_silent", "hl2dm"),
+        (relay(version="1"), GAME_INFO, False, False, 2, "unknown_build 1", "hl2dm"),
+        (relay(visibility=1), GAME_INFO, False, False, 2, "password", "hl2dm"),
+        (relay(players=1, max_players=2), GAME_INFO, False, False, 2, "few_free_slots", "hl2dm"),
+        (relay(players=1, max_players=2), GAME_INFO, False, True, 2, "", "hl2dm"),
+        (relay(players=0, max_players=1), GAME_INFO, False, False, 2, "few_free_slots", "hl2dm"),
+        (relay(players=1, max_players=1), GAME_INFO, False, True, 2, "few_free_slots", "hl2dm"),
+        (relay(), {"players": 1, "bots": 1, "map": "dm_x"}, False, False, 2, "no_humans", "hl2dm"),
+        (relay(), {"players": 1, "bots": 1, "map": "dm_x"}, True, False, 2, "", "hl2dm"),
+        (relay(), GAME_INFO, False, False, 3, "auth_3", "hl2dm"),
+        (relay(), GAME_INFO, False, False, None, "auth_None", "hl2dm"),
+        # the folder before the build: a TF2 build is no HL2DM build
+        (relay(**TF), GAME_INFO, False, False, 2, "wrong_game tf", "hl2dm"),
+        (relay(**TF), GAME_INFO, False, False, 2, "", "tf2"),
+        (relay(), GAME_INFO, False, False, 2, "wrong_game hl2mp", "tf2"),
+        (relay(folder="tf"), GAME_INFO, False, False, 2, "unknown_build 10889068", "tf2"),
+        (relay(folder="cstrike"), GAME_INFO, False, False, 2, "wrong_game cstrike", "hl2dm"),
     ],
 )
-def test_precheck(monkeypatch, ri, gi, empty_ok, last, auth, why):
+def test_precheck(monkeypatch, ri, gi, empty_ok, last, auth, why, game):
     answers = {RELAY: ri, GAME: gi}
     monkeypatch.setattr(client, "safe_info", lambda a: answers[a])
     monkeypatch.setattr(client, "auth_proto", lambda a: auth)
-    ok, got, _facts = client.precheck(RELAY, GAME, need_humans=not empty_ok, allow_last_slot=last)
+    ok, got, _facts = client.precheck(
+        RELAY, GAME, need_humans=not empty_ok, allow_last_slot=last, profile=games.get(game)
+    )
     assert (ok, got) == (why == "", why)
     assert wire.AUTH_HASHEDCDKEY == 2
 

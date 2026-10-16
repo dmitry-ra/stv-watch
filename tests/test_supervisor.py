@@ -33,22 +33,27 @@ class FakeSession:
 
 class DrivenSupervisor(supervisor.Supervisor):
     """Supervisor with the network and the clock removed. `script` is a list of
-    (conn_or_None, final_state, broke) tuples, one per attempt; the loop stops
-    when the script is exhausted. Every backoff it would sleep is recorded."""
+    (conn_or_None, final_state, broke[, seconds held at FULL]) tuples, one per
+    attempt; the loop stops when the script is exhausted. Every backoff it
+    would sleep is recorded."""
 
     def __init__(self, script):
         path = os.path.join(tempfile.mkdtemp(), "t.tvd")
-        super().__init__(supervisor.Options(seconds=0, build="10889068"), path, log=lambda *a: None)
+        super().__init__(
+            supervisor.Options(game="hl2dm", seconds=0, build="10889068"), path, log=lambda *a: None
+        )
         self.script = list(script)
         self.step = 0
         self.waits = []
 
     def _handshake(self, attempt):
-        conn, _state, _broke = self.script[self.step]
-        return conn
+        return self.script[self.step][0]
 
     def _run_session(self, conn, deadline):
-        _conn, state, broke = self.script[self.step]
+        _conn, state, broke, *held = self.script[self.step]
+        if state == wire.SIGNON_FULL:
+            self.on_signon(wire.SIGNON_FULL)
+            self.full_at -= held[0] if held else 600
         return FakeSession(state, broke)
 
     def _wait(self, seconds, deadline):
@@ -131,6 +136,21 @@ def test_failed_handshake_also_escalates():
     sup.run()
     assert sup.waits == _expected(sup.opt, [False] * 4)
     assert sup.waits[1] > sup.waits[0]  # escalates without a session
+
+
+def test_a_full_left_at_once_is_not_productive():
+    """A TF2 relay sent us back to CONNECTED 0.1 s after FULL, 16 times in a
+    row: without a delay that is a reconnect every 6 s."""
+    left = (
+        FakeConn(),
+        wire.SIGNON_FULL,
+        (sess.BREAK_CHANGELEVEL, "regressed to 2 after FULL"),
+        0.1,
+    )
+    sup = DrivenSupervisor([left] * 4 + [full_session()])
+    sup.run()
+    assert sup.waits == _expected(sup.opt, [False] * 4 + [True])
+    assert sup.reached_full == 5
 
 
 def test_full_resets_backoff_after_a_bad_streak():

@@ -33,7 +33,6 @@ TYPES = (
     "sourcemod",
 )
 DEFAULT = ("chat", "console", "connect", "join", "leave", "name")
-TEAMS = {0: "unassigned", 1: "spectator", 2: "combine", 3: "rebels"}
 STRING_TABLE_CREATE, STRING_TABLE_UPDATE = 12, 13
 # Source chat colours: \x01-\x06 single codes, \x07RRGGBB, \x08RRGGBBAA
 COLOR = re.compile(r"\x07[0-9A-Fa-f]{6}|\x08[0-9A-Fa-f]{8}|[\x01-\x06]")
@@ -90,10 +89,11 @@ class GameEvents:
     for the caller to drain. While `muted` (replay fast-forward) state is kept
     but nothing is emitted or counted."""
 
-    def __init__(self, types=DEFAULT):
+    def __init__(self, types=DEFAULT, *, game):
         self.types = set(types)
+        self.game = game
         self.framer = None
-        self.collector = se.Collector(self.record)
+        self.collector = se.Collector(self.record, game=game)
         self.out = []
         self.muted = False
         self.session = None
@@ -214,17 +214,24 @@ class GameEvents:
 
     def _SayText2(self, t, f):
         fmt, params = f["fmt"], f["params"]
-        if fmt.startswith("HL2MP_Chat"):
+        prefix = self.game.chat_prefix
+        if fmt.startswith(prefix):
             nick, text = uncolor(params[0]), uncolor(params[1])
-            where = fmt[len("HL2MP_Chat_") :]
+            where = fmt[len(prefix) + 1 :].lower()
+            extra = {}
+            # not a profile's: the _Loc formats of hl2mp, tf and cstrike alike
+            if where.endswith("_loc"):
+                where = where[: -len("_loc")]
+                extra["location"] = uncolor(params[2]) if len(params) > 2 else ""
             self.emit(
                 "chat",
                 t,
                 self._nick_account(nick),
                 nick,
                 text,
-                channel=where.lower() or "all",
+                channel=where or "all",
                 ent=f["ent"],
+                **extra,
             )
         elif ": \x01" in fmt:
             # a chat plugin's own line: nick and text glued, split at the
@@ -295,20 +302,22 @@ class GameEvents:
         aacc, anick = self._player(attacker)
         vnick = vnick or f"#{victim}"
         weapon = f.get("weapon", "")
+        how, more = self.game.death_details(f, self._named)
         if not self.muted:
             self.deaths += 1
             self.death_times.append(t)
         if not attacker or attacker == victim:
-            how = "killed self" if attacker == victim else "died"
+            what = "killed self" if attacker == victim else "died"
             self.emit(
                 "death",
                 t,
                 vacc,
                 vnick,
-                f"{how} ({weapon})",
+                f"{what} ({weapon}{how})",
                 weapon=weapon,
                 userid=victim,
                 attacker=attacker,
+                **more,
             )
             return
         self.emit(
@@ -316,19 +325,23 @@ class GameEvents:
             t,
             aacc,
             anick or f"#{attacker}",
-            f"killed {vnick} ({weapon})",
+            f"killed {vnick} ({weapon}{how})",
             weapon=weapon,
             userid=victim,
             attacker=attacker,
             victim=vnick,
             victim_steamid64=vacc + STEAMID64_BASE if vacc else 0,
+            **more,
         )
 
+    def _named(self, userid):
+        acc, nick = self._player(userid)
+        return (acc + STEAMID64_BASE if acc else 0), nick or f"#{userid}"
+
     def unheard(self, sid64):
-        """Voice the players may not hear: hl2mp CanPlayerHearPlayer passes
-        voice only between equal teams (hl2mp_gamerules.cpp), sv_alltalk 1
-        to all; a spectator talks to spectators. Unknown team: not marked."""
-        return not self.alltalk and self.team.get(sid64 - STEAMID64_BASE) == 1
+        """Voice the players may not hear, by the game's rule. Unknown team:
+        not marked."""
+        return self.game.unheard(self.team.get(sid64 - STEAMID64_BASE), self.alltalk)
 
     def _ev_player_team(self, t, f):
         uid = f.get("userid", 0)
@@ -340,12 +353,13 @@ class GameEvents:
                 self.team[acc] = f.get("team", 0)
         nick = f.get("name") or nick or f"#{uid}"
         old, new = f.get("oldteam", 0), f.get("team", 0)
+        teams = self.game.teams
         self.emit(
             "team",
             t,
             acc,
             nick,
-            f"team {TEAMS.get(old, old)} -> {TEAMS.get(new, new)}"
+            f"team {teams.get(old, old)} -> {teams.get(new, new)}"
             + (" (disconnect)" if f.get("disconnect") else ""),
             team=new,
             oldteam=old,

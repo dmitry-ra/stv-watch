@@ -1,6 +1,6 @@
 ---
 name: stv-watch
-description: Watch a Half-Life 2 Deathmatch SourceTV relay or replay a .tvd recording with stv-watch, and read its output (voice transcripts, chat, kills, connects) as JSON lines or session files. Use when asked what players say or do on a Half-Life 2 Deathmatch server, to record or transcribe a relay, or to read an stv-watch session directory.
+description: Watch a Half-Life 2 Deathmatch or Team Fortress 2 SourceTV relay or replay a .tvd recording with stv-watch, and read its output (voice transcripts, chat, kills, connects) as JSON lines or session files. Use when asked what players say or do on a Half-Life 2 Deathmatch or Team Fortress 2 server, to record or transcribe a relay, or to read an stv-watch session directory.
 ---
 
 # stv-watch
@@ -18,6 +18,9 @@ uv run stv-watch --replay FILE.tvd --speed 0 --json --events all
 uv run stv-watch --follow SESSION_DIR/capture.tvd --json   # a live run's journal, no connection of its own
 ```
 
+- A Team Fortress 2 relay needs `--game tf2` (default `hl2dm`); a relay of
+  the other game is refused with exit code 2. A replay takes the game from
+  the recording.
 - Always `--json` (one object per line, flushed per event) or `--monitor`
   (text). Never parse the screen of a normal run or of `--attach`.
 - `--events`: `all`, `default`, `none` or a comma list of `chat`, `console`,

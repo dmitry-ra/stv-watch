@@ -7,6 +7,7 @@ account, so no SteamID here belongs to a person.
 
 import struct
 
+from stvwatch.games.hl2dm import GAME as HL2DM
 from stvwatch.net import dump, messages, netchan, wire
 from stvwatch.stream import streamevents as se
 from stvwatch.stream.userinfo import STEAMID64_BASE
@@ -63,7 +64,7 @@ def chat(w, nick, text, fmt="HL2MP_Chat_All", ent=1):
     """A SayText2 chat line as the game sends it."""
     usermessage(
         w,
-        se.USER_MESSAGES.index("SayText2"),
+        HL2DM.user_messages.index("SayText2"),
         body(
             lambda b: (
                 b.write_byte(ent),
@@ -182,6 +183,39 @@ def write_entries(w, entries, max_entries=USERINFO_MAX, fixed_bits=0):
             w.write_bytes(ud)
 
 
+def snap(data):
+    """b"SNAP" and a raw Snappy block: literals and 2-byte-offset copies of
+    repeats found greedily, so the input is not in the block as it is."""
+    out, n = bytearray(b"SNAP"), len(data)
+    while True:
+        out.append((n & 0x7F) | (0x80 if n > 0x7F else 0))
+        n >>= 7
+        if not n:
+            break
+    seen, lit, i = {}, bytearray(), 0
+
+    def flush():
+        if lit:
+            out.extend(bytes([61 << 2]) + (len(lit) - 1).to_bytes(2, "little") + lit)
+            lit.clear()
+
+    while i < len(data):
+        at = seen.get(data[i : i + 4])
+        seen[data[i : i + 4]] = i
+        if at is None or i - at > 0xFFFF or len(data) - i < 4:
+            lit.append(data[i])
+            i += 1
+            continue
+        k = 4
+        while k < 64 and i + k < len(data) and data[at + k] == data[i + k]:
+            k += 1
+        flush()
+        out.extend(bytes([(k - 1) << 2 | 2]) + (i - at).to_bytes(2, "little"))
+        i += k
+    flush()
+    return bytes(out)
+
+
 def lzss(data):
     """CLZSS::Compress, greedy: literals and back references of 2..16 bytes
     within 4 KiB, then the end mark."""
@@ -275,6 +309,6 @@ def table_update(*players, create=False):
 
 def write_recording(path, timed, endpoint="127.0.0.1:27020"):
     """timed: [(t_ns, datagram)] as DATAGRAM_IN records."""
-    with dump.DumpWriter(path, endpoint, fsync_ms=0) as w:
+    with dump.DumpWriter(path, endpoint, fsync_ms=0, game="hl2dm") as w:
         for t, d in timed:
             w.write(dump.DATAGRAM_IN, d, t_ns=t)

@@ -1,7 +1,8 @@
 # stv-watch
 
-A SourceTV relay viewer for Half-Life 2: Deathmatch, in the terminal. It joins a
-relay as a spectator, as the game client would, and shows what the relay sends:
+A SourceTV relay viewer for Half-Life 2: Deathmatch and Team Fortress 2, in the
+terminal. It joins a relay as a spectator, as the game client would, and shows
+what the relay sends:
 who talks on voice chat and, with `--asr parakeet`, what they say; chat, console
 messages, connects, joins, leaves, kills, team and nick changes, server and
 SourceMod notices, the connection's state and its traffic. It can also replay a
@@ -11,9 +12,9 @@ JSON object per line.
 Every live session is recorded byte for byte (`capture.tvd`), and a replay of
 that recording gives the same lines the live run printed.
 
-![stv-watch 0.6.0 replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
+![stv-watch 0.7.0 replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
 
-stv-watch 0.6.0 replaying a synthetic recording: invented players, English TTS
+stv-watch 0.7.0 replaying a synthetic recording: invented players, English TTS
 voices, real Parakeet recognition.
 
 ## Requirements
@@ -132,6 +133,41 @@ Given a game port, stv-watch refuses before connecting with
 `refused: relay does not take anonymous login, auth protocol 3`: the game
 server wants a Steam login, which a SourceTV relay does not.
 
+### Team Fortress 2
+
+`--game tf2` watches a relay of Team Fortress 2 (the default is `hl2dm`):
+
+```sh
+uv run stv-watch --relay RELAY_IP:27020 --game tf2 --events all --asr parakeet
+```
+
+The game must match the relay's: A2S_INFO names the game's folder (`hl2mp`,
+`tf`), and stv-watch refuses a relay of another game before connecting, with
+exit code 2 and the option to use (`refused: relay serves tf2, not hl2dm (A2S
+folder tf): use --game tf2`); `--keep-trying` does not wait that out. A relay
+of a game stv-watch does not know is refused like any other relay that does not
+take us (exit code 3). The game is written into `capture.tvd` and
+`meta.json`, so `--replay` and `--follow` take it from the recording; a
+recording made before 0.7.0 has none and is read as `hl2dm` (or as `--game`).
+
+What differs from HL2DM is the game's own part of the stream, and stv-watch
+decodes it for the same lines: chat (`channel` `all`, `team`, `alldead`,
+`team_dead`, `allspec`, `spec`, `coach`; team chat on maps that name their
+places also has `location`), the kill feed with the assister (`killed bob
+(scattergun, assist carol)`), headshots and backstabs, a faked death of a
+Dead Ringer spy marked `feigned` (the spy lives), and teams RED and BLU. Bots
+(MvM robots too) take part like players but get no `connect` or `join` lines.
+Voice is the same `steam` codec as on HL2DM relays. Events of TF2 alone
+(capture points, flags, uber charges, classes) are not shown yet.
+
+Fewer TF2 servers can be watched than announce SourceTV: a third of them are
+on Steam Datagram Relay addresses (`169.254.x.x`), which plain UDP cannot
+reach, and of the rest many keep the relay port closed, set `tv_password`
+or want a Steam login (`auth protocol 3`). TF2 is patched often; after a
+patch its relays are refused as an unknown build until the CRC of the new
+build is added (see A server on an unknown build). Some servers announce a
+joining spectator in chat by its name (`--name`, default `stvwatch`).
+
 ### A relay with a password
 
 A server that sets `tv_password` closes its relay to spectators without it, and
@@ -204,7 +240,8 @@ the old one by `rotate` lines with `reason` `restart`, as `--rotate` does: the
 stream is cut where the new client starts, so the old session ends with the
 failed attempt, its `wait` line and the `rotate` line. `q`, signals and
 `--duration-ms` end the run as always, waiting or not. Usage errors (a bad
-option, a password file that cannot be read, a store others may read) and
+option, a password file that cannot be read, a store others may read, a relay
+of another game than `--game`) and
 errors in stv-watch itself still end it: waiting would not fix them.
 
 Without `--keep-trying` a run ends at the first refusal or client death, with
@@ -397,7 +434,7 @@ waits for a screen. The engine's stdout gets a first line
 pid. A socket file left by an engine that died is
 taken over, one that a live engine serves is refused. A screen and an engine of
 different socket protocol versions (0.4.0 brought protocol 2, 0.5.0 protocol 3,
-which 0.6.0 keeps) do not work together: the screen names both versions and
+which every release since keeps) do not work together: the screen names both versions and
 exits.
 
 ### For scripts and agents
@@ -452,8 +489,8 @@ the same in fields: `quit` (what ended it), `class`, `cause`, `rc`.
 |---|---|---|
 | 0 | `ok` | done as asked: `q`, a signal, `--duration-ms` (`quit` `client left: time limit` live, `time limit` in a replay), the end of a recording |
 | 1 | `bug` | an error in stv-watch itself (`quit` `crash`): the traceback is on the terminal and in the session's `stderr.log`, `cause` names the exception |
-| 2 | `usage` | a usage or configuration error: the command line, a recording that cannot be read, a password file or store that cannot be read or that others may read, the socket of `--serve` or `--attach`, recognition weights that could not be fetched or checked, a model that failed to load (`asr failed`) |
-| 3 | `refused` | the relay does not take us: refused before connecting (`precheck`) or with a standing refusal (`alarm`) |
+| 2 | `usage` | a usage or configuration error: the command line, a relay of another game than `--game` (`relay serves tf2, not hl2dm`), a recording that cannot be read, a password file or store that cannot be read or that others may read, the socket of `--serve` or `--attach`, recognition weights that could not be fetched or checked, a model that failed to load (`asr failed`) |
+| 3 | `refused` | the relay does not take us: refused before connecting (`precheck`; also a relay of a game stv-watch does not know) or with a standing refusal (`alarm`) |
 | 4 | `client` | the network client died: killed or stopped from outside (also a SIGTERM to it alone), or crashed (`quit` `client died (rc N)`) |
 | 5 | `io` | the session cannot be written: the directory cannot be made, a full disk (`write error`, or `client died (rc 5)` when the network client could not write `capture.tvd`) |
 
@@ -466,6 +503,7 @@ Codes 3 and 4 end a run only without `--keep-trying`.
 | Option | What it does |
 |---|---|
 | `--name NAME` | the client name the relay shows for us (default `stvwatch`) |
+| `--game GAME` | the relay's game, `hl2dm` (default) or `tf2`; see Team Fortress 2 |
 | `--threads N` | CPU threads of the `--asr` recognizer (default 2) |
 | `--debug` | on screen also the transport and recognizer numbers (per utterance and in the block), both SteamIDs of a kill and a line per sequence gap counted as lost; `feed.log` and `--json` always hold the numbers |
 | `--quiet-ms MS` | traffic counts as stopped after this long without datagrams (default 3000) |
@@ -498,11 +536,14 @@ chooses another parent), and its last feed line (`done`) names it:
 ## A server on an unknown build
 
 To join, a client must send the SendTable CRC of the server's build. stv-watch
-knows the CRCs of the builds in `stvwatch/net/builds.py` and refuses a relay on
-any other build, naming the build number, instead of guessing (each wrong guess
-would be a connection on someone else's server). After a game update, extract the
-new CRC with `tools/read_crc.py` from a local dedicated server of that build and
-add it to the table: [docs/protocol.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/protocol.md#server-builds).
+knows the CRCs of the builds of each game in its profile
+(`stvwatch/games/hl2dm.py`, `stvwatch/games/tf2.py`) and refuses a relay on
+any other build, naming the game and the build number, instead of guessing
+(each wrong guess would be a connection on someone else's server). After a game
+update, extract the new CRC with `tools/read_crc.py` from a local dedicated
+server of that build and add it to the table; `tools/read_usermessages.py`
+checks that the update did not move the game's user message ids:
+[docs/protocol.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/protocol.md#server-builds).
 
 ## Responsible use
 
@@ -536,7 +577,7 @@ place, or the directory in `STV_WATCH_MODELS`; the Nemotron test also fetches th
 English sample of its export from Hugging Face, 229 KB, as the k2-fsa archive
 has none).
 `tools/local_srcds.py` starts a loopback dedicated server with SourceTV for
-manual checks, `tools/tmux_check.sh` checks the screen in a real terminal.
+manual checks (`--game tf2` for Team Fortress 2, with bots from `tf_bot_add`), `tools/tmux_check.sh` checks the screen in a real terminal.
 How the protocol works: [docs/protocol.md](https://github.com/dmitry-ra/stv-watch/blob/main/docs/protocol.md).
 
 Every pull request that changes `stvwatch/` raises `version` in `pyproject.toml`

@@ -2,11 +2,9 @@
 and game events, decoded from the same stream the framer walks.
 
 Sources for the formats (read, not recalled):
-- user message ids: registration order in RegisterUserMessages()
-  (source-sdk-2013 src/game/shared/hl2/hl2_usermessages.cpp, then
-  RegisterHapticMessages() and RegisterScriptMessages()). The id is the index
-  in CUserMessages' dictionary, i.e. the order of Register() calls. No table of
-  names travels on the wire.
+- user message ids: the index in CUserMessages' dictionary, i.e. the order of
+  Register() calls, which differs by game (the game profile's
+  `user_messages`, stvwatch/games/). No table of names travels on the wire.
 - SayText / SayText2 / TextMsg / HudMsg / KeyHintText bodies: UTIL_* writers in
   src/game/server/util.cpp.
 - game event list and events: svc_GameEventList carries descriptors
@@ -23,44 +21,6 @@ from collections import Counter
 SVC_USERMESSAGE = 23
 SVC_GAMEEVENT = 25
 SVC_GAMEEVENTLIST = 30
-
-USER_MESSAGES = [
-    "Geiger",
-    "Train",
-    "HudText",
-    "SayText",
-    "SayText2",
-    "TextMsg",
-    "HudMsg",
-    "ResetHUD",
-    "GameTitle",
-    "ItemPickup",
-    "ShowMenu",
-    "Shake",
-    "Fade",
-    "VGUIMenu",
-    "Rumble",
-    "Battery",
-    "Damage",
-    "VoiceMask",
-    "RequestState",
-    "CloseCaption",
-    "HintText",
-    "KeyHintText",
-    "SquadMemberDied",
-    "AmmoDenied",
-    "CreditsMsg",
-    "LogoTimeMsg",
-    "AchievementEvent",
-    "UpdateJalopyRadar",
-    "SPHapWeapEvent",
-    "HapDmg",
-    "HapPunch",
-    "HapSetDrag",
-    "HapSetConst",
-    "HapMeleeContact",
-    "SavedConvar",
-]
 
 EVENT_TYPES = {1: "string", 2: "float", 3: "long", 4: "short", 5: "byte", 6: "bool"}
 
@@ -116,7 +76,7 @@ def _need(params, n, what):
     return params
 
 
-def decode_usermessage(name, b):
+def decode_usermessage(name, b, chat_prefix):
     """-> dict of fields for the message types that carry text, else None.
     The stock formats are checked for the parameters they name: a shorter
     message that still ends at its length is a misparse, not a chat line."""
@@ -125,7 +85,7 @@ def decode_usermessage(name, b):
     if name == "SayText2":
         ent, chat, fmt = b.ubit(8), b.ubit(8), b.string()
         params = _strings_to_end(b, 4)
-        if fmt.startswith("HL2MP_Chat"):
+        if fmt.startswith(chat_prefix):
             _need(params, 2, fmt)
         return {"ent": ent, "chat": chat, "fmt": fmt, "params": params}
     if name == "TextMsg":
@@ -188,10 +148,10 @@ def parse_event(b, descriptors):
     return eid, name, vals
 
 
-def chat_kind(fmt):
+def chat_kind(fmt, chat_prefix):
     """SayText2 format class without its text: the stock localisation key, or
     a line a chat plugin formatted itself (colour codes \x01-\x08 inline)."""
-    if fmt.startswith("HL2MP_Chat"):
+    if fmt.startswith(chat_prefix):
         return fmt
     return "plugin:chat" if ": \x01" in fmt else "plugin:other"
 
@@ -199,7 +159,8 @@ def chat_kind(fmt):
 class Collector:
     """Framer on_msg hook: counts every message id, decodes 23/25/30."""
 
-    def __init__(self, sink=None):
+    def __init__(self, sink=None, *, game):
+        self.game = game
         self.framer = None
         self.sink = sink  # callable(record dict) or None
         self.msg_ids = Counter()
@@ -246,11 +207,11 @@ class Collector:
     def _usermessage(self, payload, start, end):
         b = Bits(payload, start, end)
         mtype, length = b.ubit(8), b.ubit(11)
-        name = USER_MESSAGES[mtype] if mtype < len(USER_MESSAGES) else f"#{mtype}"
+        name = self.game.user_message(mtype)
         self.usermsg[name] += 1
         body = Bits(payload, b.pos, b.pos + length)
         try:
-            fields = decode_usermessage(name, body)
+            fields = decode_usermessage(name, body, self.game.chat_prefix)
             if fields is not None and body.left() != 0:
                 raise Misparse(f"{body.left()} bits left")
         except Misparse:
@@ -259,7 +220,7 @@ class Collector:
         if fields is None:
             return
         if name == "SayText2":
-            self.chat["SayText2:" + chat_kind(fields["fmt"])] += 1
+            self.chat["SayText2:" + chat_kind(fields["fmt"], self.game.chat_prefix)] += 1
         elif name == "SayText":
             self.chat[f"SayText:chat={fields['chat']}"] += 1
         self._emit("usermsg", name, fields)
