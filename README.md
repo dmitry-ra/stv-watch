@@ -144,7 +144,9 @@ uv run stv-watch --relay RELAY_IP:27020 --game tf2 --events all --asr parakeet
 The game must match the relay's: A2S_INFO names the game's folder (`hl2mp`,
 `tf`), and stv-watch refuses a relay of another game before connecting, with
 exit code 2 and the option to use (`refused: relay serves tf2, not hl2dm (A2S
-folder tf): use --game tf2`). The game is written into `capture.tvd` and
+folder tf): use --game tf2`); `--keep-trying` does not wait that out. A relay
+of a game stv-watch does not know is refused like any other relay that does not
+take us (exit code 3). The game is written into `capture.tvd` and
 `meta.json`, so `--replay` and `--follow` take it from the recording; a
 recording made before 0.7.0 has none and is read as `hl2dm` (or as `--game`).
 
@@ -238,7 +240,8 @@ the old one by `rotate` lines with `reason` `restart`, as `--rotate` does: the
 stream is cut where the new client starts, so the old session ends with the
 failed attempt, its `wait` line and the `rotate` line. `q`, signals and
 `--duration-ms` end the run as always, waiting or not. Usage errors (a bad
-option, a password file that cannot be read, a store others may read) and
+option, a password file that cannot be read, a store others may read, a relay
+of another game than `--game`) and
 errors in stv-watch itself still end it: waiting would not fix them.
 
 Without `--keep-trying` a run ends at the first refusal or client death, with
@@ -431,7 +434,7 @@ waits for a screen. The engine's stdout gets a first line
 pid. A socket file left by an engine that died is
 taken over, one that a live engine serves is refused. A screen and an engine of
 different socket protocol versions (0.4.0 brought protocol 2, 0.5.0 protocol 3,
-which 0.6.0 keeps) do not work together: the screen names both versions and
+which every release since keeps) do not work together: the screen names both versions and
 exits.
 
 ### For scripts and agents
@@ -486,8 +489,8 @@ the same in fields: `quit` (what ended it), `class`, `cause`, `rc`.
 |---|---|---|
 | 0 | `ok` | done as asked: `q`, a signal, `--duration-ms` (`quit` `client left: time limit` live, `time limit` in a replay), the end of a recording |
 | 1 | `bug` | an error in stv-watch itself (`quit` `crash`): the traceback is on the terminal and in the session's `stderr.log`, `cause` names the exception |
-| 2 | `usage` | a usage or configuration error: the command line, a recording that cannot be read, a password file or store that cannot be read or that others may read, the socket of `--serve` or `--attach`, recognition weights that could not be fetched or checked, a model that failed to load (`asr failed`) |
-| 3 | `refused` | the relay does not take us: refused before connecting (`precheck`) or with a standing refusal (`alarm`) |
+| 2 | `usage` | a usage or configuration error: the command line, a relay of another game than `--game` (`relay serves tf2, not hl2dm`), a recording that cannot be read, a password file or store that cannot be read or that others may read, the socket of `--serve` or `--attach`, recognition weights that could not be fetched or checked, a model that failed to load (`asr failed`) |
+| 3 | `refused` | the relay does not take us: refused before connecting (`precheck`; also a relay of a game stv-watch does not know) or with a standing refusal (`alarm`) |
 | 4 | `client` | the network client died: killed or stopped from outside (also a SIGTERM to it alone), or crashed (`quit` `client died (rc N)`) |
 | 5 | `io` | the session cannot be written: the directory cannot be made, a full disk (`write error`, or `client died (rc 5)` when the network client could not write `capture.tvd`) |
 

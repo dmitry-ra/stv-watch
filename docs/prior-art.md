@@ -13,7 +13,7 @@ a protocol client, a message layout, a demo parser or a voice decoder.
   Deathmatch, with the connect handshake, the
   reliable subchannel and sending and receiving `svc_VoiceData`. It hardcodes the
   SendTable CRC of one game build in `clc_ClientInfo` (`src/leysourceengineclient.cpp`),
-  the same mechanism as `stvwatch/net/builds.py`; its issues #7 and #19 discuss
+  the same mechanism as `crc_by_build` of the game profiles (`stvwatch/games/`); its issues #7 and #19 discuss
   how to obtain the value.
 - [Gbps/se-rust-client](https://github.com/Gbps/se-rust-client) (Rust,
   archived). The clearest written account of the netchannel: challenge and
