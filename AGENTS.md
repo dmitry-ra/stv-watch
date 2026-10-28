@@ -7,14 +7,16 @@ agents", says how to link it).
 
 ## Run
 
-From the clone, or from anywhere with `uv run --project CLONE` (Linux, Python
-3.12 to 3.14, uv):
+Installed from PyPI (`uv tool install stv-watch`; Linux, Python 3.12 to 3.14):
 
 ```sh
-uv run stv-watch --relay RELAY_IP:PORT --json --events all
-uv run stv-watch --replay FILE.tvd --speed 0 --json --events all
-uv run stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text of voice
+stv-watch --relay RELAY_IP:PORT --json --events all
+stv-watch --replay FILE.tvd --speed 0 --json --events all
+stv-watch --relay RELAY_IP:PORT --json --asr parakeet   # with the text of voice
 ```
+
+From a clone, run the same as `uv run stv-watch ...` in it, or from anywhere
+with `uv run --project CLONE stv-watch ...`.
 
 - Use `--json` (one JSON object per line on stdout, flushed per event) or
   `--monitor` (the same as text). Both turn off colour, the pinned status block
