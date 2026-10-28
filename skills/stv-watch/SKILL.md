@@ -7,15 +7,16 @@ description: Watch a Half-Life 2 Deathmatch or Team Fortress 2 SourceTV relay or
 
 stv-watch joins a SourceTV relay as a spectator, or replays a recording, and
 reports voice (with `--asr parakeet`, its text), chat and game events. Full
-guide: `AGENTS.md` in the stv-watch clone. If this skill is a link into the
-clone, the clone is two directories above the skill directory's real path
-(`realpath` of it). Run it from the clone, or from anywhere with
-`uv run --project CLONE stv-watch ...`.
+guide: `AGENTS.md` in the stv-watch repository. Installed from PyPI
+(`uv tool install stv-watch`), the command is `stv-watch`. If this skill is a
+link into a clone, the clone is two directories above the skill directory's
+real path (`realpath` of it): there run `uv run stv-watch ...` in the clone, or
+from anywhere `uv run --project CLONE stv-watch ...`.
 
 ```sh
-uv run stv-watch --relay IP:TV_PORT --json --events all --duration-ms 120000
-uv run stv-watch --replay FILE.tvd --speed 0 --json --events all
-uv run stv-watch --follow SESSION_DIR/capture.tvd --json   # a live run's journal, no connection of its own
+stv-watch --relay IP:TV_PORT --json --events all --duration-ms 120000
+stv-watch --replay FILE.tvd --speed 0 --json --events all
+stv-watch --follow SESSION_DIR/capture.tvd --json   # a live run's journal, no connection of its own
 ```
 
 - A Team Fortress 2 relay needs `--game tf2` (default `hl2dm`); a relay of

@@ -12,9 +12,9 @@ JSON object per line.
 Every live session is recorded byte for byte (`capture.tvd`), and a replay of
 that recording gives the same lines the live run printed.
 
-![stv-watch 0.7.0 replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
+![stv-watch 0.7.1 replaying a recording: chat, voice with its text, kills and the status block](https://raw.githubusercontent.com/dmitry-ra/stv-watch/main/docs/demo.gif)
 
-stv-watch 0.7.0 replaying a synthetic recording: invented players, English TTS
+stv-watch 0.7.1 replaying a synthetic recording: invented players, English TTS
 voices, real Parakeet recognition.
 
 ## Requirements
@@ -24,15 +24,15 @@ voices, real Parakeet recognition.
 - Python 3.12 to 3.14 (CI tests each), x86-64. onnxruntime publishes wheels
   up to CPython 3.14; on a newer Python the install stops at it with no
   matching wheel.
-- git, to clone the repository.
-- [uv](https://docs.astral.sh/uv/). uv provides the interpreter (a Python 3.12 or
-  newer it finds on the system, else one it downloads) and the
+- [uv](https://docs.astral.sh/uv/) (or pipx). uv provides the interpreter (a
+  Python 3.12 or newer it finds on the system, else one it downloads) and the
   environment with the dependencies, all wheels from PyPI: numpy,
   opuslib-next-bundled (the Opus decoder, libopus inside), onnxruntime, onnx-asr
-  and sherpa-onnx (speech recognition), cronsim (the `--rotate` schedule).
-  `uv run` also installs the development tools of the project (black, ruff,
-  pytest): about 70 MB of downloads in all, 210 MB in `.venv`. onnxruntime 1.29
-  and later on Linux sends usage events to Microsoft by default; stv-watch sets
+  and sherpa-onnx (speech recognition), cronsim (the `--rotate` schedule):
+  about 175 MB on disk after `uv tool install`. A clone run with `uv run`
+  also gets the development tools of the project (black, ruff, pytest): about
+  70 MB of downloads in all, 210 MB in `.venv`. onnxruntime 1.29 and later on
+  Linux sends usage events to Microsoft by default; stv-watch sets
   `ORT_DISABLE_TELEMETRY=1` before loading it, unless you set that variable
   yourself.
 - For `--asr parakeet`: 2.55 GB of disk for the model weights (Parakeet and
@@ -52,7 +52,21 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 source ~/.local/bin/env    # or open a new shell
 ```
 
-Then:
+Then install stv-watch from PyPI:
+
+```sh
+uv tool install stv-watch    # or: pipx install stv-watch
+stv-watch --version
+stv-watch --help
+```
+
+`uv tool install` puts the `stv-watch` command into `~/.local/bin`, in an
+environment of its own; `uv tool upgrade stv-watch` moves it to the latest
+release, `uv tool uninstall stv-watch` removes it. The examples below run this
+command.
+
+To run from the source instead (the tests, the tools and the sample recording
+are only there):
 
 ```sh
 git clone https://github.com/dmitry-ra/stv-watch.git
@@ -63,16 +77,17 @@ uv run stv-watch --replay tests/data/sample.tvd --speed 0
 
 The first `uv run` creates `.venv` in the clone and installs the dependencies
 into it. Run later commands from the same directory, or pass
-`--project PATH_TO_CLONE` to `uv run`. The replay of the bundled sample prints a
-dozen lines (chat, a connect, a map change) and ends at once: it checks the
-install without a network or a game server.
+`--project PATH_TO_CLONE` to `uv run`, and put `uv run` before `stv-watch` in
+the examples below. The replay of the bundled sample prints a dozen lines (chat,
+a connect, a map change) and ends at once: it checks the install without a
+network or a game server.
 
 ## Examples
 
 Watch a relay live (the relay's address is its SourceTV port, often 27020):
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020
+stv-watch --relay RELAY_IP:27020
 ```
 
 The feed scrolls above a status block pinned to the bottom of the terminal; `q`
@@ -85,9 +100,9 @@ Replay a recording, as fast as possible or at its own pace, from the start or
 from a point in it, all of it or a part:
 
 ```sh
-uv run stv-watch --replay tests/data/sample.tvd --speed 0
-uv run stv-watch --replay ~/.local/share/stv-watch/sessions/SESSION/capture.tvd --speed 4
-uv run stv-watch --replay capture.tvd --skip-ms 600000 --duration-ms 60000
+stv-watch --replay capture.tvd --speed 0
+stv-watch --replay ~/.local/share/stv-watch/sessions/SESSION/capture.tvd --speed 4
+stv-watch --replay capture.tvd --skip-ms 600000 --duration-ms 60000
 ```
 
 `--duration-ms` also bounds a live run: the viewer leaves the relay after that
@@ -99,7 +114,7 @@ next. It waits for more until `q` or a signal, also once the writer has
 stopped; a finished recording is for `--replay`:
 
 ```sh
-uv run stv-watch --follow ~/.local/share/stv-watch/sessions/SESSION/capture.tvd
+stv-watch --follow ~/.local/share/stv-watch/sessions/SESSION/capture.tvd
 ```
 
 Choose the events (`--events`, default `chat,console,connect,join,leave,name`;
@@ -107,9 +122,9 @@ the types are `chat`, `console`, `connect`, `join`, `leave`, `death`, `team`,
 `name`, `server`, `sourcemod`):
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --events all
-uv run stv-watch --relay RELAY_IP:27020 --events all,-server   # everything but server notices
-uv run stv-watch --relay RELAY_IP:27020 --events chat,death
+stv-watch --relay RELAY_IP:27020 --events all
+stv-watch --relay RELAY_IP:27020 --events all,-server   # everything but server notices
+stv-watch --relay RELAY_IP:27020 --events chat,death
 ```
 
 Voice and the viewer's own lines (connection, traffic, recognizer) are always
@@ -123,7 +138,7 @@ SourceTV listens on a port of its own (`tv_port`, 27020 by default), not on
 the game port players join (often 27015), and not every server runs it. A
 server with SourceTV names its relay port in its A2S_INFO reply; this prints
 the reply as JSON, and `tv_port` is the port to give `--relay` (no `tv_port`:
-the server has no SourceTV):
+the server has no SourceTV; from a clone):
 
 ```sh
 uv run python -m stvwatch.net.a2s SERVER_IP:27015
@@ -138,7 +153,7 @@ server wants a Steam login, which a SourceTV relay does not.
 `--game tf2` watches a relay of Team Fortress 2 (the default is `hl2dm`):
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --game tf2 --events all --asr parakeet
+stv-watch --relay RELAY_IP:27020 --game tf2 --events all --asr parakeet
 ```
 
 The game must match the relay's: A2S_INFO names the game's folder (`hl2mp`,
@@ -176,9 +191,9 @@ such a relay before connecting unless you give it the password: in a file
 (its first line), in the environment, or in the password store:
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --password-file ~/.config/stv-watch/relay.pw
-STV_WATCH_PASSWORD=... uv run stv-watch --relay RELAY_IP:27020
-uv run stv-watch --relay RELAY_IP:27020        # the line of RELAY_IP:27020 in the store
+stv-watch --relay RELAY_IP:27020 --password-file ~/.config/stv-watch/relay.pw
+STV_WATCH_PASSWORD=... stv-watch --relay RELAY_IP:27020
+stv-watch --relay RELAY_IP:27020        # the line of RELAY_IP:27020 in the store
 ```
 
 The store is `$XDG_CONFIG_HOME/stv-watch/passwords`
@@ -217,7 +232,7 @@ because the relay turned it away for a while. With `--keep-trying` the refusals
 that may pass without a change to stv-watch are waited out inside the run:
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --keep-trying
+stv-watch --relay RELAY_IP:27020 --asr parakeet --keep-trying
 ```
 
 - the relay refused us before connecting (silent, no free slot, a password
@@ -261,7 +276,7 @@ file and a row of `transcript.tsv` (`--no-audio` turns the WAV files off).
 To see what is said, add a recognizer:
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --asr parakeet
+stv-watch --relay RELAY_IP:27020 --asr parakeet
 ```
 
 The first run downloads the weights of Parakeet TDT 0.6B v3 (2.55 GB, about 25
@@ -301,7 +316,7 @@ failed, an error) in `events.jsonl` and `feed.log`, and `live_asr` in
 `meta.json`. With `--plain`, `--monitor` or `--json` it is not loaded at all.
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --live-asr nemotron
+stv-watch --relay RELAY_IP:27020 --asr parakeet --live-asr nemotron
 ```
 
 Its weights (0.68 GB, a 0.48 GB archive to download) are fetched and checked
@@ -328,7 +343,7 @@ Durations in options and in the files are whole milliseconds, their names end
 in `_ms` / `-ms`; moments are ISO times. The screen speaks seconds.
 
 Without a recording at hand, `tests/voicegen.py` writes a synthetic one with
-voice made of tones and noise (no speech):
+voice made of tones and noise (no speech; from a clone):
 
 ```sh
 uv run python tests/voicegen.py /tmp/voice.tvd
@@ -341,7 +356,7 @@ Times are in UTC. `--tz` takes an IANA zone name for the screen and the files
 (the system time zone database, package `tzdata`, must be installed):
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin
+stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin
 ```
 
 An `--attach` screen takes its own `--tz`, for that screen only (the engine's
@@ -356,7 +371,7 @@ zone (UTC without it) and in the recording's time: a replay of a recording
 rotates where the live run would have. Off by default.
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin --rotate "0 6 * * *"   # 06:00 daily
+stv-watch --relay RELAY_IP:27020 --tz Europe/Berlin --rotate "0 6 * * *"   # 06:00 daily
 ```
 
 Every file of the session goes on in the new directory, `capture.tvd` too; the
@@ -407,9 +422,9 @@ the relay, no parsing and no model of its own. A name without `/` is a socket in
 `sudo`), give a path:
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --asr parakeet --serve watch   # in tmux, a service, ...
-uv run stv-watch --attach watch                                         # in any terminal, as often as you like
-uv run stv-watch --attach watch --plain                                 # finished lines only
+stv-watch --relay RELAY_IP:27020 --asr parakeet --serve watch   # in tmux, a service, ...
+stv-watch --attach watch                                         # in any terminal, as often as you like
+stv-watch --attach watch --plain                                 # finished lines only
 ```
 
 The attached screen is the engine's screen, marked so that it is not taken for
@@ -443,7 +458,7 @@ exits.
 escape sequences, no status lines:
 
 ```sh
-uv run stv-watch --relay RELAY_IP:27020 --json --events all
+stv-watch --relay RELAY_IP:27020 --json --events all
 ```
 
 ```json
@@ -498,7 +513,7 @@ Codes 3 and 4 end a run only without `--keep-trying`.
 
 ### Other options
 
-`uv run stv-watch --help` lists every option. Those not shown above:
+`stv-watch --help` lists every option. Those not shown above:
 
 | Option | What it does |
 |---|---|
@@ -511,7 +526,7 @@ Codes 3 and 4 end a run only without `--keep-trying`.
 
 ## Version
 
-`uv run stv-watch --version` prints the version: the release from
+`stv-watch --version` prints the version: the release from
 `pyproject.toml`, and when run from a git checkout also the commit, as a PEP 440
 local label: `0.1.0+g976b9ae`, or `0.1.0+g976b9ae.dirty` when tracked files
 differ from that commit. Without git, outside a checkout, or at the release's
